@@ -207,9 +207,13 @@ there was none to begin with. The same path in all three cases, because
 those states look different and are not. Headless initialises SDL without
 video at all, so asking for a window there adds the subsystem first --
 everything else has been running the whole time; this only adds somewhere
-to look. The local speakers stay closed: that was decided when the
-program started and reopening them would mean restarting the audio
-thread.
+to look. The speakers here come with it: they are opened on demand rather
+than only at startup, since a picture with no sound is half a capture.
+
+Being open and being silent are two different things. Muting an open
+stream is instant and keeps the device alive; closing it is what headless
+does, and what a mute button should never do -- tearing a device down and
+building it again to answer a question about volume.
 
 **serve to switch** turns the console's server on and off, separately
 from the web one because they are separate servers -- and a session with

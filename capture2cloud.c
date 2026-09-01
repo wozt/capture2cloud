@@ -179,6 +179,15 @@ static void count_native_clients(void *ctx, int *now, int *max) {
  * the main loop -- SDL's window calls belong on the thread that
  * initialised video, and the tray runs on its own. */
 static int open_capture_window(void) {
+    /* Sound comes with the picture. Showing the capture brought the
+     * window back and nothing else, because in a session that started
+     * headless the speakers were never opened -- and the only chance to
+     * open them had gone by half an hour earlier. They are asked for
+     * here; the capture thread opens them, since it owns the stream.
+     * Muting is left alone: it is a separate answer to a separate
+     * question. */
+    audio_capture_set_local_output(g_audio, 1, g_settings.local_volume);
+
     if (g_window) {
         SDL_ShowWindow(g_window);
         SDL_RestoreWindow(g_window);
@@ -286,7 +295,12 @@ static void on_settings(void *userdata, const AppSettings *want) {
     if (want->local_muted != have->local_muted || want->local_volume != have->local_volume) {
         have->local_muted = want->local_muted;
         have->local_volume = want->local_volume;
-        audio_capture_set_local_output(g_audio, !want->local_muted, want->local_volume);
+        /* Muting silences an open stream; it does not close the
+         * speakers. Closing them on every tick of a checkbox would mean
+         * tearing a device down and building it again to answer a
+         * question about volume. */
+        audio_capture_set_local_mute(g_audio, want->local_muted);
+        audio_capture_set_local_output(g_audio, 1, want->local_volume);
     }
 
     /* The rest are read where they are used -- the controller poll, the
