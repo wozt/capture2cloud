@@ -60,7 +60,7 @@ struct GtkShell {
 /* Every control that shows a value, so refreshing is a loop rather than
  * a list of assignments repeated in three places. */
 typedef struct {
-    GtkWidget *stream_enabled, *port, *resolution, *bitrate, *capture_format;
+    GtkWidget *stream_enabled, *port, *switch_port, *resolution, *bitrate, *capture_format;
     GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
@@ -111,6 +111,7 @@ static void on_spin(GtkWidget *w, gpointer user_data) {
     const int v = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(w));
     SDL_LockMutex(shell->lock);
     if (w == g_c.port) shell->settings.web_port = v;
+    else if (w == g_c.switch_port) shell->settings.switch_port = v;
     SDL_UnlockMutex(shell->lock);
     publish(shell);
 }
@@ -212,6 +213,7 @@ static void load_controls(GtkShell *shell) {
     shell->loading = 1;
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.stream_enabled), s.stream_enabled);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.switch_port), s.switch_port);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.resolution),
                              s.browser_height == 1080 ? 0 : (s.browser_height == 720 ? 1 : 2));
     gtk_range_set_value(GTK_RANGE(g_c.bitrate), s.bitrate_mbps);
@@ -267,6 +269,16 @@ static void build_settings_window(GtkShell *shell) {
     g_c.port = add_row(grid, row++, "port",
                        gtk_spin_button_new_with_range(1, 65535, 1));
     g_signal_connect(g_c.port, "value-changed", G_CALLBACK(on_spin), shell);
+
+    g_c.switch_port = add_row(grid, row++, "console port",
+                              gtk_spin_button_new_with_range(1, 65535, 1));
+    gtk_widget_set_tooltip_text(g_c.switch_port,
+        "Where the Switch client connects. Its own port, because the two streams "
+        "are two servers -- the browser's is HTTP, this one is a small binary "
+        "protocol -- and moving one has no reason to move the other. Changing it "
+        "disconnects whatever is connected: it has to be changed on the console "
+        "as well.");
+    g_signal_connect(g_c.switch_port, "value-changed", G_CALLBACK(on_spin), shell);
 
     g_c.resolution = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "1080p60");

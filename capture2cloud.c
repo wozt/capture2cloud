@@ -20,6 +20,7 @@
 #include "app_config.h"
 #include "audio_capture.h"
 #include "app_settings.h"
+#include "c2s_protocol.h"
 #include "gtk_shell.h"
 #include "local_pad.h"
 #include "video_capture.h"
@@ -174,6 +175,16 @@ static void on_settings(void *userdata, const AppSettings *want) {
         } else {
             web_stream_stop(g_web);
         }
+    }
+    if (want->switch_port != have->switch_port && want->switch_port > 0) {
+        have->switch_port = want->switch_port;
+        /* Torn down and started again: a listening socket cannot be
+         * moved. Whoever was connected is dropped, which is the honest
+         * outcome -- they were told to knock on a door that is no longer
+         * there, and the console has to be pointed at the new one. */
+        switch_stream_stop(g_switch);
+        g_switch = switch_stream_start(g_web, (uint16_t)want->switch_port);
+        gst_webrtc_stream_set_switch_output(g_gst, g_switch);
     }
     if (want->browser_height != have->browser_height) {
         have->browser_height = want->browser_height;
@@ -381,8 +392,9 @@ int main(int argc, char **argv) {
     /* The native transport for non-browser clients (the Switch
      * homebrew). Listening costs nothing while nobody connects, and
      * failing to bind is not fatal -- the browser path is unaffected. */
-    g_switch = switch_stream_start(g_web, (uint16_t)config_get_int("SWITCH_PORT", 0, 0, 65535));
-    gst_webrtc_stream_set_switch_output(g_gst, g_switch);
+    g_settings.switch_port =
+        (int)config_get_int("SWITCH_PORT", C2S_DEFAULT_PORT, 1, 65535);
+    g_switch = switch_stream_start(g_web, (uint16_t)g_settings.switch_port);
     gst_webrtc_stream_set_switch_output(g_gst, g_switch);
 
     if (SDL_Init(sdl_flags) != 0) {

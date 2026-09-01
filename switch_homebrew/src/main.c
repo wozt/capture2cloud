@@ -118,6 +118,8 @@ static const SDL_Color COL_SCRIM    = {  8,  10,  16, 128};
 
 typedef enum {
     MENU_CONNECT = 0,
+    MENU_HOST,
+    MENU_PORT,
     MENU_LOGIN,
     MENU_FORGET_PASSWORD,
     MENU_AUTOLOGIN,
@@ -174,7 +176,7 @@ typedef struct {
  * on-screen pad alike -- and buried three rows inside a category it was
  * simply forgotten, which reads as the controls being broken. */
 static const MenuAction CAT_CONNECTION_ITEMS[] = {
-    MENU_CONNECT, MENU_AUTOLOGIN, MENU_FORGET_PASSWORD};
+    MENU_CONNECT, MENU_HOST, MENU_PORT, MENU_AUTOLOGIN, MENU_FORGET_PASSWORD};
 static const MenuAction CAT_STREAM_ITEMS[] = {MENU_PROFILE, MENU_BITRATE, MENU_CODEC};
 static const MenuAction CAT_TOUCH_ITEMS[] = {
     MENU_TOUCHPAD, MENU_TOUCH_EDIT, MENU_TOUCH_COLOUR, MENU_TOUCH_OPACITY, MENU_TOUCH_RESET};
@@ -477,6 +479,14 @@ static void menu_label(int index, char *out, size_t out_size, char *detail, size
                 snprintf(detail, detail_size, "%s:%u", g_host, g_port);
             }
             break;
+        case MENU_HOST:
+            snprintf(out, out_size, "Host address");
+            snprintf(detail, detail_size, "%s", g_host);
+            break;
+        case MENU_PORT:
+            snprintf(out, out_size, "Host port");
+            snprintf(detail, detail_size, "%u   (web %u)", g_port, g_web_port);
+            break;
         case MENU_LOGIN:
             if (net_info()->may_control) {
                 snprintf(out, out_size, "Log out");
@@ -773,7 +783,7 @@ static void menu_activate(int index) {
     /* Which entries change something worth remembering. Written once at
      * the end rather than in each case, so a new setting cannot be added
      * and quietly not persisted. */
-    int persists = (index == MENU_PROFILE || index == MENU_BITRATE || index == MENU_CODEC ||
+    int persists = (index == MENU_HOST || index == MENU_PORT || index == MENU_PROFILE || index == MENU_BITRATE || index == MENU_CODEC ||
                     index == MENU_MUTE || index == MENU_VOLUME_DOWN || index == MENU_VOLUME_UP ||
                     index == MENU_LOGIN || index == MENU_FORGET_PASSWORD ||
                     index == MENU_AUTOLOGIN || index == MENU_DIAGNOSTICS ||
@@ -798,6 +808,56 @@ static void menu_activate(int index) {
                 net_connect(g_host, g_port, NULL);
             }
             break;
+        case MENU_HOST:
+        case MENU_PORT: {
+            /* Typed on the console's own keyboard. The address and the
+             * port were only editable by taking the SD card out and
+             * opening a text file, which is a poor way to move a stream
+             * to another port. */
+            char typed[64] = {0};
+            SwkbdConfig kbd;
+            if (R_FAILED(swkbdCreate(&kbd, 0))) {
+                snprintf(g_login_message, sizeof(g_login_message), "keyboard unavailable");
+                break;
+            }
+            swkbdConfigMakePresetDefault(&kbd);
+            if (index == MENU_PORT) {
+                swkbdConfigSetType(&kbd, SwkbdType_NumPad);
+                swkbdConfigSetHeaderText(&kbd, "Host port");
+                swkbdConfigSetGuideText(&kbd, "SWITCH_PORT on the host; 5081 by default");
+                snprintf(typed, sizeof(typed), "%u", g_port);
+            } else {
+                swkbdConfigSetHeaderText(&kbd, "Host address");
+                swkbdConfigSetGuideText(&kbd, "the IP of the machine running capture2cloud");
+                snprintf(typed, sizeof(typed), "%s", g_host);
+            }
+            swkbdConfigSetInitialText(&kbd, typed);
+            swkbdConfigSetStringLenMax(&kbd, index == MENU_PORT ? 5 : (int)sizeof(g_host) - 1);
+            Result rc = swkbdShow(&kbd, typed, sizeof(typed));
+            swkbdClose(&kbd);
+            if (R_FAILED(rc) || typed[0] == '\0') {
+                break; /* cancelled */
+            }
+
+            if (index == MENU_PORT) {
+                const int p = atoi(typed);
+                if (p < 1 || p > 65535) {
+                    snprintf(g_login_message, sizeof(g_login_message), "port out of range");
+                    break;
+                }
+                g_port = (uint16_t)p;
+            } else {
+                snprintf(g_host, sizeof(g_host), "%s", typed);
+            }
+            /* Reconnected straight away: changing where to knock and
+             * then having to remember to knock is a step nobody wants
+             * for its own sake. */
+            if (n->state != NET_IDLE) {
+                net_connect(g_host, g_port, NULL);
+            }
+            snprintf(g_login_message, sizeof(g_login_message), "%s:%u", g_host, g_port);
+            break;
+        }
         case MENU_LOGIN: {
             /* Connecting never carries the token, so this is the only
              * way to become a player: asked for, not assumed. The
