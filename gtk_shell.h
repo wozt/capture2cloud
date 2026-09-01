@@ -45,6 +45,15 @@ GtkShell *gtk_shell_start(const AppSettings *settings, const GtkShellCallbacks *
  * unavailable. Thread-safe, callable before the window exists. */
 void gtk_shell_update(GtkShell *shell, const AppSettings *settings);
 
+/* The controllers the program can see, for the settings window's list.
+ * Thread-safe and callable before the window exists: the names are
+ * copied, and the list is rebuilt on the GTK thread when it next looks.
+ *
+ * The program supplies them rather than the interface asking, because
+ * enumerating them is SDL's business and SDL's joystick calls belong on
+ * the thread that initialised it. */
+void gtk_shell_set_controllers(GtkShell *shell, const char *const *names, int count);
+
 /* A line under the tray icon's tooltip and in the settings window:
  * whether the stream is up, how many are watching. Thread-safe. */
 void gtk_shell_set_status(GtkShell *shell, const char *text);

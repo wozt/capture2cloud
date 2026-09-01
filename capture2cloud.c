@@ -403,6 +403,28 @@ int main(int argc, char **argv) {
     /* What the current texture holds; -1 until the first frame says. */
     int texture_pixel = -1;
 
+    /* The tray and the local controller in BOTH modes.
+     *
+     * They lived inside the windowed branch, which is the wrong place
+     * for either: headless means no video window, not no desk. Someone
+     * running it that way still wants somewhere to change the bitrate
+     * and something to quit with, and a controller plugged into this
+     * machine is just as plugged in. The GTK thread checks for a display
+     * itself and stands down quietly when there is none, which is what
+     * happens over ssh. */
+    local_pad_init();
+
+    GtkShellCallbacks shell_callbacks = {
+        .on_settings = on_settings,
+        .on_action = on_action,
+        .userdata = NULL,
+    };
+    g_settings.web_port = g_web_port;
+    g_settings.capture_mjpeg = (video_capture_format(g_video) == VIDEO_FORMAT_MJPEG);
+    g_settings.gamepad_enabled = !g_headless;
+    g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
+
+
     if (!g_headless) {
     SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
 
@@ -420,29 +442,6 @@ int main(int argc, char **argv) {
                                           SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
-        SDL_Quit();
-        web_stream_destroy(g_web);
-        gst_webrtc_stream_destroy(g_gst);
-        video_capture_close(g_video);
-        return 1;
-    }
-
-    /* A controller plugged in here can drive the console, which until
-     * now needed a browser open on the machine the console is next
-     * to. */
-    local_pad_init();
-
-    GtkShellCallbacks shell_callbacks = {
-        .on_settings = on_settings,
-        .on_action = on_action,
-        .userdata = NULL,
-    };
-    g_settings.web_port = g_web_port;
-    g_settings.capture_mjpeg = (video_capture_format(g_video) == VIDEO_FORMAT_MJPEG);
-    g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
-    if (!g_shell) {
-        fprintf(stderr, "gtk_shell_start: failed\n");
-        SDL_DestroyWindow(window);
         SDL_Quit();
         web_stream_destroy(g_web);
         gst_webrtc_stream_destroy(g_gst);
@@ -519,6 +518,26 @@ int main(int argc, char **argv) {
     int browser_fed = -1, native_fed = -1;
 
     while (g_app.running) {
+        /* A controller here drives the console, on the same terms as a
+         * browser or the console client: one more source into the merge,
+         * so several hands combine rather than fight. Polled in both
+         * modes -- headless turns it off through the settings, not by
+         * never looking. */
+        local_pad_poll(&g_settings);
+
+        /* The list the settings window offers. Cheap, and SDL's joystick
+         * calls belong on the thread that initialised it. */
+        {
+            static Uint32 last_scan = 0;
+            const Uint32 now = SDL_GetTicks();
+            if (now - last_scan > 2000) {
+                last_scan = now;
+                const char *names[8];
+                const int n = local_pad_list(names, 8);
+                gtk_shell_set_controllers(g_shell, names, n);
+            }
+        }
+
         if (app_restart_requested()) {
             /* Out through the ordinary shutdown, which knows the order
              * that matters -- the adapter first, then the sockets and
@@ -547,10 +566,6 @@ int main(int argc, char **argv) {
                 }
             }
 
-            /* A controller here drives the console, on the same terms as
-             * a browser or the console client: one more source into the
-             * merge, so several hands combine rather than fight. */
-            local_pad_poll(&g_settings);
         } /* !g_headless */
 
         /* A format switch asked for from the page. Handled here because
@@ -730,6 +745,7 @@ int main(int argc, char **argv) {
      * else here is time-sensitive: the pipeline and the sockets are this
      * process's own, while the adapter is a device left in a state for
      * whatever runs next. */
+    local_pad_shutdown();
     gamepad_bridge_shutdown();
 
     switch_stream_stop(g_switch);

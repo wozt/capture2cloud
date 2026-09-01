@@ -77,6 +77,10 @@ struct PlaybackRing {
     SDL_mutex *mutex;
     SDL_cond *cond;
     pa_simple *play;
+    /* Kept so the stream can be built again without reaching back into
+     * the capture's own state from another thread. */
+    pa_sample_spec spec;
+    pa_buffer_attr attr;
 };
 
 struct AudioCapture {
@@ -122,8 +126,23 @@ static int playback_thread_main(void *arg) {
 
         int err = 0;
         if (pa_simple_write(r->play, chunk, r->chunk_samples * sizeof(int16_t), &err) < 0) {
-            fprintf(stderr, "audio_capture: local playback stopped (%s)\n", pa_strerror(err));
-            break;
+            /* Ending the thread here left the speakers dead for the rest
+             * of the session with one line in a log nobody was reading.
+             * The stream is rebuilt instead, the same way the capture
+             * side rebuilds its own. */
+            fprintf(stderr, "audio_capture: local playback failed (%s), reopening\n",
+                    pa_strerror(err));
+            pa_simple_free(r->play);
+            r->play = NULL;
+            while (r->running && !r->play) {
+                SDL_Delay(AUDIO_REOPEN_RETRY_MS);
+                r->play = pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, NULL,
+                                        "Capture audio", &r->spec, NULL, &r->attr, &err);
+            }
+            if (!r->play) {
+                break; /* asked to stop while retrying */
+            }
+            fprintf(stderr, "audio_capture: local playback is back\n");
         }
     }
     free(chunk);
@@ -427,6 +446,8 @@ static int audio_thread(void *arg) {
         ac->ring.data = malloc(PLAYBACK_RING_CHUNKS * ac->ring.chunk_samples * sizeof(int16_t));
         ac->ring.mutex = SDL_CreateMutex();
         ac->ring.cond = SDL_CreateCond();
+        ac->ring.spec = ss;
+        ac->ring.attr = play_attr;
         ac->ring.play =
             pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, NULL, "Capture audio", &ss, NULL, &play_attr, &error);
         if (!ac->ring.data || !ac->ring.mutex || !ac->ring.cond || !ac->ring.play) {
@@ -555,12 +576,26 @@ static int audio_thread(void *arg) {
             web_sample_frames = 0;
         }
 
-        if (ac->local_playback && !ac->local_muted) {
-            /* The local volume is applied to a copy: `samples` has
-             * already gone to the browser and the console, and turning
-             * the speakers here down must not turn them down there. */
-            if (ac->local_volume != 25) {
-                int16_t local[64 * 2];
+        if (ac->local_playback) {
+            /* Muting pushes SILENCE rather than pushing nothing.
+             *
+             * Stopping the writes was the obvious way and left the
+             * speakers dead after unmuting: a playback stream that is
+             * starved for any length of time is one the server has
+             * every right to tear down, and there is nothing to notice
+             * that from -- the thread is asleep waiting for data that
+             * is not coming. Feeding it zeros keeps it a live stream
+             * that happens to be quiet, which is what mute means
+             * anyway.
+             *
+             * The volume is applied to a copy: `samples` has already
+             * gone to the browser and the console, and turning the
+             * speakers here down must not turn them down there. */
+            int16_t local[64 * 2];
+            if (ac->local_muted) {
+                memset(local, 0, chunk_frames * 2 * sizeof(int16_t));
+                playback_ring_push(&ac->ring, local);
+            } else if (ac->local_volume != 25) {
                 const int gain = ac->local_volume * 4; /* percent of the source */
                 for (size_t i = 0; i < chunk_frames * 2; i++) {
                     int v = samples[i] * gain / 100;
