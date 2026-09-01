@@ -75,7 +75,11 @@ static int g_hue = 0;          /* degrees, -180..180 */
 /* The 2x2 matrix, in 8.8 fixed point, rebuilt only when a setting
  * changes rather than per frame. */
 static int g_cm[4] = {256, 0, 0, 256};
+/* Set while the settings are at their defaults, one for each of the two
+ * paths: the chroma pass is skipped outright, and the drawing falls back
+ * to the plain copy it was before any of this existed. */
 static int g_chroma_identity = 1;
+static int g_picture_identity = 1;
 
 static void rebuild_chroma_matrix(void) {
     const double s = g_saturation / 100.0;
@@ -86,6 +90,7 @@ static void rebuild_chroma_matrix(void) {
     g_cm[2] = (int)(d * 256.0);
     g_cm[3] = (int)(c * 256.0);
     g_chroma_identity = (g_saturation == 100 && g_hue == 0);
+    g_picture_identity = (g_brightness == 100 && g_contrast == 100);
 }
 
 void video_set_adjust(int brightness, int contrast, int saturation, int hue) {
@@ -463,6 +468,16 @@ int video_decode(const uint8_t *data, uint32_t size) {
  * negative number, so the operation changes rather than the value. */
 void video_draw(SDL_Renderer *renderer, const SDL_Rect *dst) {
     if (!g_texture || !g_have_picture) {
+        return;
+    }
+
+    /* Untouched settings take the path that existed before they did:
+     * one copy, and not a single call that would not otherwise be made.
+     * The two setters below are a few nanoseconds each, but "costs
+     * nothing when unused" should be true because there is nothing
+     * there, not because what is there happens to be small. */
+    if (g_picture_identity) {
+        SDL_RenderCopy(renderer, g_texture, NULL, dst);
         return;
     }
 
