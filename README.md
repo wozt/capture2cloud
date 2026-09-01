@@ -210,6 +210,10 @@ everything else has been running the whole time; this only adds somewhere
 to look. The speakers here come with it: they are opened on demand rather
 than only at startup, since a picture with no sound is half a capture.
 
+Closing the window closes them again -- a hidden window still making
+noise is a program you cannot find. Minimising does not: that is for
+getting it out of the way while still listening.
+
 Being open and being silent are two different things. Muting an open
 stream is instant and keeps the device alive; closing it is what headless
 does, and what a mute button should never do -- tearing a device down and

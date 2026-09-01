@@ -186,7 +186,7 @@ static int open_capture_window(void) {
      * here; the capture thread opens them, since it owns the stream.
      * Muting is left alone: it is a separate answer to a separate
      * question. */
-    audio_capture_set_local_output(g_audio, 1, g_settings.local_volume);
+    audio_capture_set_local_output(g_audio, 1);
 
     if (g_window) {
         SDL_ShowWindow(g_window);
@@ -300,7 +300,7 @@ static void on_settings(void *userdata, const AppSettings *want) {
          * tearing a device down and building it again to answer a
          * question about volume. */
         audio_capture_set_local_mute(g_audio, want->local_muted);
-        audio_capture_set_local_output(g_audio, 1, want->local_volume);
+        audio_capture_set_local_volume(g_audio, want->local_volume);
     }
 
     /* The rest are read where they are used -- the controller poll, the
@@ -628,8 +628,14 @@ int main(int argc, char **argv) {
                     /* The window's own close button. The program keeps
                      * running in the tray -- closing a monitor is not
                      * quitting a capture that other people are
-                     * watching. */
+                     * watching -- and the speakers here go with the
+                     * picture, since a closed window that is still
+                     * making noise is a program you cannot find.
+                     *
+                     * Minimising does not: that is for getting it out of
+                     * the way while still listening. */
                     SDL_HideWindow(g_window);
+                    audio_capture_set_local_output(g_audio, 0);
                 } else if ((event.type == SDL_MOUSEBUTTONDOWN && event.button.clicks == 2) ||
                            (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F11)) {
                     const Uint32 flags = SDL_GetWindowFlags(g_window);
