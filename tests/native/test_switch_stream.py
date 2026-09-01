@@ -256,6 +256,20 @@ group("the host counts us")
 try:
     n = urllib.request.urlopen(WEB + "/clients", timeout=3).read().decode()
     check("web /clients still answers", "/" in n, n)
+    # A console client counts as a viewer. It used to be invisible from
+    # the page, which said nobody was connected while somebody plainly
+    # was -- and the denominator is both servers' limits summed, since a
+    # count that could read 12/8 is worse than one whose bottom half
+    # moved.
+    here, cap = n.split("/")
+    watcher = connect("")
+    read_ack(watcher)
+    time.sleep(0.5)
+    after = urllib.request.urlopen(WEB + "/clients", timeout=3).read().decode()
+    check("a console client is counted as a viewer",
+          int(after.split("/")[0]) == int(here) + 1, f"{n} -> {after}")
+    check("the limit covers both servers", int(cap) > 8, cap)
+    watcher.close()
 except Exception as e:
     check("web /clients still answers", False, str(e))
 

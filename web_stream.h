@@ -44,6 +44,17 @@ int web_stream_get_port(WebStream *ws);
  * 0 when the work was started. */
 int web_stream_wake_console(WebStream *ws);
 
+/* How many non-browser clients are connected, and how many could be.
+ *
+ * The page's viewer count only ever counted browsers, so someone
+ * watching on the Switch was invisible from the page -- and "why does it
+ * say nobody is watching" has an answer that should not require reading
+ * the source. Supplied as a function because the native server is
+ * stopped and started when its port changes, so a pointer taken once
+ * would go stale. */
+void web_stream_set_native_counter(WebStream *ws, void (*count)(void *ctx, int *now, int *max),
+                                   void *ctx);
+
 int web_stream_may_control(WebStream *ws, const char *token);
 
 #endif

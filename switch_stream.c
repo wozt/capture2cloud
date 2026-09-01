@@ -357,6 +357,10 @@ void switch_stream_set_video_size(SwitchStream *s, uint16_t width, uint16_t heig
     SDL_UnlockMutex(s->mutex);
 }
 
+int switch_stream_max_clients(void) {
+    return SS_MAX_CLIENTS;
+}
+
 int switch_stream_client_count(SwitchStream *s) {
     if (!s) return 0;
     SDL_LockMutex(s->mutex);

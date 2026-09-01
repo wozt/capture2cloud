@@ -52,6 +52,10 @@ void switch_stream_announce_stream(SwitchStream *s, uint16_t width, uint16_t hei
  * encoding a second resolution for nobody. */
 int switch_stream_client_count(SwitchStream *s);
 
+/* How many could connect at once. A constant, but one the rest of the
+ * program should not have to know the name of. */
+int switch_stream_max_clients(void);
+
 /* Hands an encoded frame to every connected client. Non-blocking: a
  * client that cannot keep up loses the frame rather than stalling the
  * pipeline. */
