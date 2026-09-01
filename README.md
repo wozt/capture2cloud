@@ -201,6 +201,16 @@ deal of machinery to imitate one window out of two, fighting the window
 manager the whole way. Closing it now hides it rather than quitting:
 closing a monitor is not stopping a capture other people are watching.
 
+**Show capture** in the tray menu brings the video window back: after
+closing it by accident, after minimising it, or from headless, where
+there was none to begin with. The same path in all three cases, because
+those states look different and are not. Headless initialises SDL without
+video at all, so asking for a window there adds the subsystem first --
+everything else has been running the whole time; this only adds somewhere
+to look. The local speakers stay closed: that was decided when the
+program started and reopening them would mean restarting the audio
+thread.
+
 **serve to switch** turns the console's server on and off, separately
 from the web one because they are separate servers -- and a session with
 nobody on a Switch has no reason to hold a port open. `SWITCH_AUTOSTART`
