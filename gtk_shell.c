@@ -60,7 +60,7 @@ struct GtkShell {
 /* Every control that shows a value, so refreshing is a loop rather than
  * a list of assignments repeated in three places. */
 typedef struct {
-    GtkWidget *stream_enabled, *port, *switch_port, *resolution, *bitrate, *capture_format;
+    GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
     GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
@@ -98,6 +98,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     const gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
     SDL_LockMutex(shell->lock);
     if (w == g_c.stream_enabled)       shell->settings.stream_enabled = on;
+    else if (w == g_c.switch_enabled)  shell->settings.switch_enabled = on;
     else if (w == g_c.gamepad_enabled) shell->settings.gamepad_enabled = on;
     else if (w == g_c.invert_ry)       shell->settings.invert_ry = on;
     else if (w == g_c.muted)           shell->settings.local_muted = on;
@@ -213,6 +214,7 @@ static void load_controls(GtkShell *shell) {
     shell->loading = 1;
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.stream_enabled), s.stream_enabled);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.switch_port), s.switch_port);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.resolution),
                              s.browser_height == 1080 ? 0 : (s.browser_height == 720 ? 1 : 2));
@@ -270,6 +272,12 @@ static void build_settings_window(GtkShell *shell) {
                        gtk_spin_button_new_with_range(1, 65535, 1));
     g_signal_connect(g_c.port, "value-changed", G_CALLBACK(on_spin), shell);
 
+    g_c.switch_enabled = add_row(grid, row++, "serve to switch",
+                                 make_check(shell, "on"));
+    gtk_widget_set_tooltip_text(g_c.switch_enabled,
+        "Whether the Switch client's server is listening. Separate from the web "
+        "one because they are separate servers -- and a session with nobody on a "
+        "Switch has no reason to hold a port open.");
     g_c.switch_port = add_row(grid, row++, "console port",
                               gtk_spin_button_new_with_range(1, 65535, 1));
     gtk_widget_set_tooltip_text(g_c.switch_port,

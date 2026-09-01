@@ -53,6 +53,12 @@
 struct WebStream {
     GstWebrtcStream *webrtc;
 
+    /* Non-browser clients, asked for rather than held: the native server
+     * is stopped and started when its port changes, so a pointer taken
+     * once would go stale. */
+    void (*native_count)(void *ctx, int *now, int *max);
+    void *native_ctx;
+
     SDL_mutex *state_mutex;
     int running;
     int stop_requested;
@@ -454,6 +460,21 @@ static void handle_clients(WebStream *ws, int fd) {
     int max_clients = 0;
     int count = gst_webrtc_stream_get_client_count(ws->webrtc, &max_clients);
 
+    /* Everyone watching, not just everyone watching in a browser. A
+     * Switch client was invisible here, which made the page say nobody
+     * was connected while somebody plainly was.
+     *
+     * The limit is summed too. It would have been closer to what the
+     * page used to show to leave the denominator alone, but the two
+     * servers have separate limits and a count that could read 12/8 is
+     * worse than one whose bottom half moved. */
+    if (ws->native_count) {
+        int native_now = 0, native_max = 0;
+        ws->native_count(ws->native_ctx, &native_now, &native_max);
+        count += native_now;
+        max_clients += native_max;
+    }
+
     char body[32];
     int body_len = snprintf(body, sizeof(body), "%d/%d", count, max_clients);
     char header[200];
@@ -535,6 +556,15 @@ static void handle_offer(WebStream *ws, int fd, long content_length, const char 
  * wake path does once the picture comes back, exposed as a button
  * because the adapter occasionally needs it after the console has been
  * fiddled with in ways this program never sees. */
+void web_stream_set_native_counter(WebStream *ws, void (*count)(void *ctx, int *now, int *max),
+                                   void *ctx) {
+    if (!ws) {
+        return;
+    }
+    ws->native_count = count;
+    ws->native_ctx = ctx;
+}
+
 int web_stream_may_control(WebStream *ws, const char *token) {
     return request_may_control(ws, token);
 }

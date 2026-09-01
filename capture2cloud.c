@@ -156,6 +156,15 @@ static void start_or_report_web_stream(void) {
  * Nothing here checks a password. The person at this keyboard is at the
  * machine the console is plugged into; a login would guard a door they
  * are standing behind. */
+/* How many console clients are connected, for the page's viewer count.
+ * Read through the current server rather than a captured pointer: it is
+ * replaced whenever the port changes. */
+static void count_native_clients(void *ctx, int *now, int *max) {
+    (void)ctx;
+    *now = switch_stream_client_count(g_switch);
+    *max = g_switch ? switch_stream_max_clients() : 0;
+}
+
 static void on_settings(void *userdata, const AppSettings *want) {
     (void)userdata;
     AppSettings *have = &g_settings;
@@ -176,14 +185,22 @@ static void on_settings(void *userdata, const AppSettings *want) {
             web_stream_stop(g_web);
         }
     }
-    if (want->switch_port != have->switch_port && want->switch_port > 0) {
-        have->switch_port = want->switch_port;
+    if (want->switch_enabled != have->switch_enabled ||
+        (want->switch_port != have->switch_port && want->switch_port > 0)) {
+        have->switch_enabled = want->switch_enabled;
+        if (want->switch_port > 0) {
+            have->switch_port = want->switch_port;
+        }
         /* Torn down and started again: a listening socket cannot be
          * moved. Whoever was connected is dropped, which is the honest
          * outcome -- they were told to knock on a door that is no longer
          * there, and the console has to be pointed at the new one. */
         switch_stream_stop(g_switch);
-        g_switch = switch_stream_start(g_web, (uint16_t)want->switch_port);
+        g_switch = have->switch_enabled
+                       ? switch_stream_start(g_web, (uint16_t)have->switch_port)
+                       : NULL;
+        /* Told either way: a NULL output is what makes the encoder stop
+         * being fed rather than encoding for a server that is gone. */
         gst_webrtc_stream_set_switch_output(g_gst, g_switch);
     }
     if (want->browser_height != have->browser_height) {
@@ -394,7 +411,11 @@ int main(int argc, char **argv) {
      * failing to bind is not fatal -- the browser path is unaffected. */
     g_settings.switch_port =
         (int)config_get_int("SWITCH_PORT", C2S_DEFAULT_PORT, 1, 65535);
-    g_switch = switch_stream_start(g_web, (uint16_t)g_settings.switch_port);
+    g_settings.switch_enabled = (int)config_get_int("SWITCH_AUTOSTART", 1, 0, 1);
+    web_stream_set_native_counter(g_web, count_native_clients, NULL);
+    g_switch = g_settings.switch_enabled
+                   ? switch_stream_start(g_web, (uint16_t)g_settings.switch_port)
+                   : NULL;
     gst_webrtc_stream_set_switch_output(g_gst, g_switch);
 
     if (SDL_Init(sdl_flags) != 0) {

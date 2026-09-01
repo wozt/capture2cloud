@@ -201,6 +201,18 @@ deal of machinery to imitate one window out of two, fighting the window
 manager the whole way. Closing it now hides it rather than quitting:
 closing a monitor is not stopping a capture other people are watching.
 
+**serve to switch** turns the console's server on and off, separately
+from the web one because they are separate servers -- and a session with
+nobody on a Switch has no reason to hold a port open. `SWITCH_AUTOSTART`
+in the .env says which way it starts; 1 by default.
+
+The page's viewer count includes console clients. It only ever counted
+browsers, so someone watching on the Switch was invisible and the page
+said nobody was connected while somebody plainly was. The limit shown is
+both servers' summed: leaving the denominator at the browser's would have
+been closer to what it used to say, but a count that could read 12/8 is
+worse than one whose bottom half moved.
+
 The console's port is settable from the same window and defaults to
 5081. It is its own port because the two streams are two servers -- the
 browser's is HTTP, the console's a small binary protocol -- and moving
