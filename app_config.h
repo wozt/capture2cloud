@@ -40,6 +40,21 @@
  * what a test does. */
 void app_config_invalidate(void);
 
+/* Asks the program to stop and start itself again, keeping its pid,
+ * its arguments and its log.
+ *
+ * Sound has been seen to stop arriving with everything still claiming to
+ * work, and restarting the whole program is the one thing that has
+ * always brought it back. Rather than make that a trip to the machine,
+ * it is a button -- and rather than a script that would have to kill and
+ * relaunch from outside, the program replaces its own image once it has
+ * shut everything down in the order it already knows to use.
+ *
+ * Set from an HTTP thread or the native transport's; acted on by the
+ * main loop, which is the only thing allowed to tear the program down. */
+void app_request_restart(void);
+int  app_restart_requested(void);
+
 /* Whether the periodic, high-volume messages are printed at all.
  *
  * Off by default. The per-second adapter statistics, the capture's frame

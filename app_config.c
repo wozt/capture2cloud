@@ -181,6 +181,16 @@ void app_config_invalidate(void) {
     g_config_size = -1;
 }
 
+static volatile int g_restart_requested = 0;
+
+void app_request_restart(void) {
+    g_restart_requested = 1;
+}
+
+int app_restart_requested(void) {
+    return g_restart_requested;
+}
+
 int app_verbose(void) {
     static int cached = -1;
     if (cached < 0) {

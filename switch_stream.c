@@ -504,6 +504,12 @@ static void handle_messages(SwitchStream *s, int index) {
                     web_stream_wake_console(s->web);
                 }
                 break;
+            case C2S_MSG_RESTART:
+                if (c->may_control) {
+                    fprintf(stderr, "switch_stream: client %d asks for a restart\n", index);
+                    app_request_restart();
+                }
+                break;
             case C2S_MSG_RESET_DONGLE:
                 if (c->may_control) {
                     fprintf(stderr, "switch_stream: client %d asks for an adapter reset\n", index);

@@ -555,6 +555,22 @@ static void handle_gamepad_rate(int fd) {
     send_all(fd, body, (size_t)n);
 }
 
+/* Players only, like /wake: this takes the stream away from everyone
+ * watching, and puts the console's controller through a reset on the
+ * way. Refused here, server-side, rather than by hiding the button. */
+static void handle_restart(WebStream *ws, int fd, const char *token) {
+    if (!request_may_control(ws, token)) {
+        static const char response[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        send_all(fd, response, sizeof(response) - 1);
+        return;
+    }
+    fprintf(stderr, "web_stream: restart requested from the page\n");
+    /* Answered first, acted on after: the reply has to leave before the
+     * socket does, or the page never learns that its request arrived. */
+    send_204(fd);
+    app_request_restart();
+}
+
 static void handle_reset_dongle(WebStream *ws, int fd, const char *token) {
     if (!request_may_control(ws, token)) {
         static const char response[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -831,6 +847,8 @@ static int client_thread(void *arg) {
             handle_quality(ws, fd, content_length, token);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/reset-dongle") == 0) {
             handle_reset_dongle(ws, fd, token);
+        } else if (strcmp(method, "POST") == 0 && strcmp(path, "/restart") == 0) {
+            handle_restart(ws, fd, token);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/wake") == 0) {
             handle_wake(ws, fd, token);
         } else {

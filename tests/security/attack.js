@@ -58,9 +58,15 @@ const req = (method, path, headers = '', payload = '') =>
   group('controle d\'acces (sans jeton)');
   check('POST /wake refuse', status(await req('POST', '/wake')) === '403');
   check('POST /quality refuse', status(await req('POST', '/quality', '', '4000')) === '403');
+  /* Comme /wake, jamais complete avec un jeton valable : cela couperait
+     le flux de tout le monde et arreterait la suite au milieu. */
+  check('POST /restart refuse', status(await req('POST', '/restart')) === '403');
+  check('POST /reset-dongle refuse', status(await req('POST', '/reset-dongle')) === '403');
   for (const bogus of ['deadbeef', '0'.repeat(64), 'a'.repeat(200), '../../etc']) {
     const r = await req('POST', '/wake', `X-Player-Token: ${bogus}\r\n`);
     check(`jeton bidon (${bogus.slice(0, 10)}...) refuse`, status(r) === '403', status(r));
+    const rr = await req('POST', '/restart', `X-Player-Token: ${bogus}\r\n`);
+    check(`jeton bidon sur /restart refuse`, status(rr) === '403', status(rr));
   }
 
   group('injection d\'en-tete');

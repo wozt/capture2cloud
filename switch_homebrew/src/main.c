@@ -146,6 +146,7 @@ typedef enum {
     MENU_HOME,
     MENU_WAKE,
     MENU_RESET_DONGLE,
+    MENU_RESTART_HOST,
     MENU_MUTE,
     MENU_VOLUME_DOWN,
     MENU_VOLUME_UP,
@@ -183,7 +184,8 @@ static const MenuAction CAT_STICKS_ITEMS[] = {
 static const MenuAction CAT_PICTURE_ITEMS[] = {
     MENU_BRIGHTNESS, MENU_CONTRAST, MENU_SATURATION, MENU_HUE, MENU_PICTURE_RESET};
 static const MenuAction CAT_SOUND_ITEMS[] = {MENU_MUTE, MENU_VOLUME_DOWN, MENU_VOLUME_UP};
-static const MenuAction CAT_CONSOLE_ITEMS[] = {MENU_HOME, MENU_WAKE, MENU_RESET_DONGLE};
+static const MenuAction CAT_CONSOLE_ITEMS[] = {
+    MENU_HOME, MENU_WAKE, MENU_RESET_DONGLE, MENU_RESTART_HOST};
 static const MenuAction CAT_SYSTEM_ITEMS[] = {MENU_DIAGNOSTICS, MENU_INFO_LINE, MENU_QUIT};
 
 #define CAT(name, items) {name, items, (int)(sizeof(items) / sizeof((items)[0]))}
@@ -629,6 +631,12 @@ static void menu_label(int index, char *out, size_t out_size, char *detail, size
                      net_info()->may_control ? "fixes input lag after a wake"
                                              : "players only");
             break;
+        case MENU_RESTART_HOST:
+            snprintf(out, out_size, "Restart the host");
+            snprintf(detail, detail_size, "%s",
+                     net_info()->may_control ? "brings the sound back when it stops"
+                                             : "players only");
+            break;
         case MENU_MUTE:
             snprintf(out, out_size, audio_is_muted() ? "Unmute" : "Mute");
             break;
@@ -999,6 +1007,15 @@ static void menu_activate(int index) {
             net_send_reset_dongle();
             snprintf(g_login_message, sizeof(g_login_message),
                      n->may_control ? "resetting the adapter..." : "log in to reset the adapter");
+            break;
+        case MENU_RESTART_HOST:
+            /* The stream goes away and comes back on its own: the
+             * reconnect loop is already there for a host that was
+             * switched off, and this is the same thing for a few
+             * seconds. */
+            net_send_restart();
+            snprintf(g_login_message, sizeof(g_login_message),
+                     n->may_control ? "restarting the host..." : "log in to restart the host");
             break;
         case MENU_MUTE:
             audio_set_muted(!audio_is_muted());

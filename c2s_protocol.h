@@ -94,7 +94,10 @@ typedef enum {
      * poor joke. Both are players-only, as they are on the page. */
     C2S_MSG_KEYFRAME     = 22,
     C2S_MSG_WAKE         = 23,
-    C2S_MSG_RESET_DONGLE = 24
+    C2S_MSG_RESET_DONGLE = 24,
+    /* Restarts the host program in place. Players only, like the two
+     * above: it takes the stream away from everyone watching. */
+    C2S_MSG_RESTART      = 25
 } C2sMsgType;
 
 #define C2S_FLAG_KEYFRAME 0x01
