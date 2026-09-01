@@ -136,6 +136,11 @@ typedef enum {
     MENU_TOUCH_COLOUR,
     MENU_TOUCH_OPACITY,
     MENU_TOUCH_RESET,
+    MENU_BRIGHTNESS,
+    MENU_CONTRAST,
+    MENU_SATURATION,
+    MENU_HUE,
+    MENU_PICTURE_RESET,
     MENU_DIAGNOSTICS,
     MENU_INFO_LINE,
     MENU_HOME,
@@ -175,6 +180,8 @@ static const MenuAction CAT_TOUCH_ITEMS[] = {
 static const MenuAction CAT_STICKS_ITEMS[] = {
     MENU_LSTICK_DEAD, MENU_LSTICK_RANGE, MENU_LSTICK_DIAG,
     MENU_RSTICK_DEAD, MENU_RSTICK_RANGE, MENU_RSTICK_DIAG, MENU_PADTEST};
+static const MenuAction CAT_PICTURE_ITEMS[] = {
+    MENU_BRIGHTNESS, MENU_CONTRAST, MENU_SATURATION, MENU_HUE, MENU_PICTURE_RESET};
 static const MenuAction CAT_SOUND_ITEMS[] = {MENU_MUTE, MENU_VOLUME_DOWN, MENU_VOLUME_UP};
 static const MenuAction CAT_CONSOLE_ITEMS[] = {MENU_HOME, MENU_WAKE, MENU_RESET_DONGLE};
 static const MenuAction CAT_SYSTEM_ITEMS[] = {MENU_DIAGNOSTICS, MENU_INFO_LINE, MENU_QUIT};
@@ -183,6 +190,7 @@ static const MenuAction CAT_SYSTEM_ITEMS[] = {MENU_DIAGNOSTICS, MENU_INFO_LINE, 
 static const MenuCategory CATEGORIES[] = {
     CAT("connection", CAT_CONNECTION_ITEMS),
     CAT("stream",     CAT_STREAM_ITEMS),
+    CAT("picture",    CAT_PICTURE_ITEMS),
     CAT("touch pad",  CAT_TOUCH_ITEMS),
     CAT("controls",   CAT_STICKS_ITEMS),
     CAT("sound",      CAT_SOUND_ITEMS),
@@ -268,6 +276,7 @@ static void load_config(void) {
     int cfg_rdead = 2, cfg_rsat = 100, cfg_rdiag = 100;
     int cfg_touchpad = 0, cfg_colour = 0, cfg_opacity = 100;
     int cfg_version = 1;
+    int cfg_bright = 100, cfg_contrast = 100, cfg_sat = 100, cfg_hue = 0;
     FILE *f = fopen(CONFIG_PATH, "r");
     if (!f) {
         printf("no %s, using %s:%u\n", CONFIG_PATH, g_host, g_port);
@@ -289,6 +298,10 @@ static void load_config(void) {
         else if (strcmp(key, "touch_layout") == 0) vpad_layout_from_string(value);
         else if (strcmp(key, "touch_colour") == 0) cfg_colour = atoi(value);
         else if (strcmp(key, "touch_opacity") == 0) cfg_opacity = atoi(value);
+        else if (strcmp(key, "brightness") == 0) cfg_bright = atoi(value);
+        else if (strcmp(key, "contrast") == 0) cfg_contrast = atoi(value);
+        else if (strcmp(key, "saturation") == 0) cfg_sat = atoi(value);
+        else if (strcmp(key, "hue") == 0) cfg_hue = atoi(value);
         else if (strcmp(key, "info_line") == 0) g_show_info = atoi(value) != 0;
         else if (strcmp(key, "autologin") == 0) g_autologin = atoi(value) != 0;
         else if (strcmp(key, "diagnostics") == 0) g_show_diagnostics = atoi(value) != 0;
@@ -323,6 +336,7 @@ static void load_config(void) {
     if (g_saved_volume < 0) g_saved_volume = 0;
     if (g_saved_volume > 100) g_saved_volume = 100;
 
+    video_set_adjust(cfg_bright, cfg_contrast, cfg_sat, cfg_hue);
     vpad_set_enabled(cfg_touchpad);
     vpad_set_colour(cfg_colour < 0 ? 0 : cfg_colour % vpad_colour_count());
     vpad_set_opacity(cfg_opacity);
@@ -387,6 +401,11 @@ static void save_config(void) {
     fprintf(f, "autologin=%d\n", g_autologin);
     fprintf(f, "diagnostics=%d\n", g_show_diagnostics);
     fprintf(f, "info_line=%d\n", g_show_info);
+    {
+        int b = 0, c = 0, sat = 0, hue = 0;
+        video_get_adjust(&b, &c, &sat, &hue);
+        fprintf(f, "brightness=%d\ncontrast=%d\nsaturation=%d\nhue=%d\n", b, c, sat, hue);
+    }
     fprintf(f, "touchpad=%d\n", vpad_enabled());
     fprintf(f, "touch_colour=%d\n", vpad_colour());
     fprintf(f, "touch_opacity=%d\n", vpad_opacity());
@@ -559,6 +578,33 @@ static void menu_label(int index, char *out, size_t out_size, char *detail, size
                      g_show_info ? "warns when the controller is not being sent"
                                  : "nothing written over the picture");
             break;
+        case MENU_BRIGHTNESS:
+        case MENU_CONTRAST:
+        case MENU_SATURATION:
+        case MENU_HUE: {
+            int b = 0, c = 0, sat = 0, hue = 0;
+            video_get_adjust(&b, &c, &sat, &hue);
+            if (index == MENU_BRIGHTNESS) {
+                snprintf(out, out_size, "Brightness");
+                snprintf(detail, detail_size, "%d%%   (free)", b);
+            } else if (index == MENU_CONTRAST) {
+                snprintf(out, out_size, "Contrast");
+                snprintf(detail, detail_size, "%d%%   (free)", c);
+            } else if (index == MENU_SATURATION) {
+                snprintf(out, out_size, "Saturation");
+                snprintf(detail, detail_size, "%d%%%s", sat,
+                         (sat == 100 && hue == 0) ? "   (free)" : "   (costs a little)");
+            } else {
+                snprintf(out, out_size, "Hue");
+                snprintf(detail, detail_size, "%d deg%s", hue,
+                         (sat == 100 && hue == 0) ? "   (free)" : "   (costs a little)");
+            }
+            break;
+        }
+        case MENU_PICTURE_RESET:
+            snprintf(out, out_size, "Reset the picture");
+            snprintf(detail, detail_size, "back to untouched");
+            break;
         case MENU_DIAGNOSTICS:
             snprintf(out, out_size, g_show_diagnostics ? "Hide the diagnostics"
                                                        : "Show the diagnostics");
@@ -723,6 +769,9 @@ static void menu_activate(int index) {
                     index == MENU_MUTE || index == MENU_VOLUME_DOWN || index == MENU_VOLUME_UP ||
                     index == MENU_LOGIN || index == MENU_FORGET_PASSWORD ||
                     index == MENU_AUTOLOGIN || index == MENU_DIAGNOSTICS ||
+                    index == MENU_BRIGHTNESS || index == MENU_CONTRAST ||
+                    index == MENU_SATURATION || index == MENU_HUE ||
+                    index == MENU_PICTURE_RESET ||
                     index == MENU_TOUCHPAD || index == MENU_TOUCH_EDIT ||
                     index == MENU_TOUCH_COLOUR || index == MENU_TOUCH_OPACITY ||
                     index == MENU_TOUCH_RESET || index == MENU_INFO_LINE ||
@@ -897,6 +946,29 @@ static void menu_activate(int index) {
             break;
         case MENU_INFO_LINE:
             g_show_info = !g_show_info;
+            break;
+        case MENU_BRIGHTNESS:
+        case MENU_CONTRAST:
+        case MENU_SATURATION:
+        case MENU_HUE: {
+            int b = 0, c = 0, sat = 0, hue = 0;
+            video_get_adjust(&b, &c, &sat, &hue);
+            /* Cycled in steps, wrapping at the end of the range: there
+             * is no slider to drag on a screen driven by a d-pad, and
+             * wrapping is one press away from the other end. */
+            if (index == MENU_BRIGHTNESS)      b = (b >= 150) ? 50 : b + 10;
+            else if (index == MENU_CONTRAST)   c = (c >= 150) ? 50 : c + 10;
+            else if (index == MENU_SATURATION) sat = (sat >= 200) ? 0 : sat + 20;
+            else                               hue = (hue >= 150) ? -180 : hue + 30;
+            video_set_adjust(b, c, sat, hue);
+            /* Out of the way, since the point is to look at the
+             * picture. */
+            g_screen = SCREEN_STREAM;
+            break;
+        }
+        case MENU_PICTURE_RESET:
+            video_set_adjust(100, 100, 100, 0);
+            snprintf(g_login_message, sizeof(g_login_message), "picture reset");
             break;
         case MENU_DIAGNOSTICS:
             /* Hiding them stops the measuring as well. A panel nobody is

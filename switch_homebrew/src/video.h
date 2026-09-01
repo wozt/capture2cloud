@@ -34,6 +34,21 @@ int  video_decode(const uint8_t *data, uint32_t size);
 /* Draws the last decoded picture, scaled to fill `dst`. */
 void video_draw(SDL_Renderer *renderer, const SDL_Rect *dst);
 
+/* The four adjustments the browser page offers, and they cost very
+ * different things.
+ *
+ * Brightness and contrast are per-channel arithmetic, so the renderer
+ * does them and they are free. Saturation and hue mix colour channels
+ * into each other, which no blend mode can express -- but the picture is
+ * YUV, where both are one 2x2 matrix on the two chroma bytes. That is a
+ * quarter of the frame, both settings collapse into a single matrix so
+ * using both costs what using one costs, and the pass is skipped
+ * entirely while both are at their defaults.
+ *
+ * brightness/contrast 50..150, saturation 0..200, hue -180..180. */
+void video_set_adjust(int brightness, int contrast, int saturation, int hue);
+void video_get_adjust(int *brightness, int *contrast, int *saturation, int *hue);
+
 /* Frames decoded and frames the decoder refused, for the menu. A stream
  * that connects but shows nothing is otherwise indistinguishable from
  * one that never arrived. */

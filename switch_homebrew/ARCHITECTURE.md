@@ -106,6 +106,39 @@ The GPU encoders take NV12 and x264 takes I420, so the scaler that feeds
 the branch produces whichever the chosen encoder wants -- the conversion
 from the capture format happens either way, so this costs nothing.
 
+## Picture adjustments
+
+The same four the browser page offers, and they cost very different
+things -- so they are done in two different places.
+
+**Brightness and contrast are free.** They are per-channel arithmetic
+(`out = in * gain + offset`), which the renderer expresses directly: a
+colour modulation, plus a second pass adding the picture to itself when
+the gain is above one, plus a quad added or subtracted for the offset. At
+most three passes over a full-screen quad, which is nothing on this
+hardware.
+
+**Saturation and hue are not per-channel** -- they mix colour channels
+into each other, and no blend mode can express that. But the picture
+arrives as YUV, where both are one 2x2 matrix on the two chroma bytes and
+nothing else: a quarter of the frame's data, and the two settings
+collapse into a single matrix so using both costs exactly what using one
+costs. Measured:
+
+| resolution | chroma pass | share of a core |
+| --- | --- | --- |
+| 720p60 | 2.5 ms | ~15% |
+| 480p60 | 1.0 ms | ~6% |
+| 360p30 | 0.6 ms | ~2% |
+
+Worth having, not worth paying for when it is not wanted, so the pass is
+skipped entirely while both sit at their defaults -- and the menu says
+which of the four are free and which are not.
+
+Doing brightness and contrast the same way would have meant a pass over
+the luma plane too, twice the data, for something the renderer does for
+nothing.
+
 ## Nothing queues up
 
 Late frames have no value here, so they are thrown away rather than shown
