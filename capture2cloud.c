@@ -318,6 +318,14 @@ static void on_settings(void *userdata, const AppSettings *want) {
     have->brightness = want->brightness;
     have->contrast = want->contrast;
     have->vsync = want->vsync;
+
+    /* This one is not stored and applied, it is asked of the adapter:
+     * the value lives in the device, not here. Only sent when it moves,
+     * because the bridge writes to non-volatile memory. */
+    if (want->output_protocol != have->output_protocol && want->output_protocol >= 0) {
+        have->output_protocol = want->output_protocol;
+        gamepad_bridge_request_output_protocol(want->output_protocol);
+    }
 }
 
 static void on_action(void *userdata, GtkShellAction action) {
@@ -469,6 +477,23 @@ int main(int argc, char **argv) {
      * is plugged in/accessible, we just carry on without it -- this is
      * not a required feature for the rest of the app. */
     gamepad_bridge_init();
+
+    /* What the adapter should pretend to be to the console. Asked for
+     * once here; the bridge reads what the device actually holds and
+     * only writes when it differs, so a matching value costs nothing.
+     * An empty TITAN_OUTPUT_PROTOCOL leaves the adapter alone. */
+    {
+        char buf[32];
+        const char *want = config_get_str("TITAN_OUTPUT_PROTOCOL", buf, sizeof(buf), "");
+        int value = gamepad_protocol_from_name(want);
+        if (*want && value < 0) {
+            fprintf(stderr, "TITAN_OUTPUT_PROTOCOL: \"%s\" is not a known protocol, ignored\n", want);
+        }
+        g_settings.output_protocol = value;
+        if (value >= 0) {
+            gamepad_bridge_request_output_protocol(value);
+        }
+    }
 
     g_gst = gst_webrtc_stream_create((int)g_app.width, (int)g_app.height, WEB_STREAM_AUDIO_RATE,
                                       WEB_STREAM_AUDIO_CHANNELS);

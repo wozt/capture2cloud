@@ -1,6 +1,7 @@
 #include "gtk_shell.h"
 
 #include "app_config.h"
+#include "gamepad_bridge.h" /* the output-protocol names shown in the combo */
 
 #include <SDL2/SDL.h>
 #include <gtk/gtk.h>
@@ -61,12 +62,42 @@ struct GtkShell {
  * a list of assignments repeated in three places. */
 typedef struct {
     GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
-    GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry;
+    GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry, *output_protocol;
+    GtkWidget *adapter_sees;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
     GtkWidget *muted, *volume, *brightness, *contrast, *vsync;
     GtkWidget *status_label;
+
+    /* The replug dialog. Changing what the adapter emulates is not done
+     * when the write returns: the adapter has to be pulled out of the
+     * console and out of this machine and put back, and until it is, the
+     * pad is dead with nothing to show for it. So the window says so and
+     * then watches, rather than leaving someone to guess whether it took. */
+    GtkWidget *replug_dialog, *replug_label;
+    GtkWidget *replug_cancel, *replug_apply, *replug_close;
+    int replug_stage;      /* ReplugStage */
+    int replug_down_ticks; /* consecutive ticks with the link down */
+    int replug_pending;    /* the protocol being confirmed, -1 when none */
 } Controls;
+
+/* Where the replug is up to. The interesting one is WAIT_UNPLUG: the
+ * program drops the USB link itself right after the write, so seeing it
+ * down for an instant means nothing -- only seeing it STAY down means a
+ * hand actually pulled the cable. */
+typedef enum {
+    REPLUG_IDLE = 0,
+    REPLUG_CONFIRM,
+    REPLUG_WAIT_UNPLUG,
+    REPLUG_WAIT_BACK,
+    REPLUG_WAIT_CONSOLE,
+    REPLUG_DONE,
+} ReplugStage;
+
+/* At 200 ms a tick, a second and a half. The program's own reconnection
+ * after the write takes a fraction of that, so it cannot be mistaken for
+ * someone unplugging the adapter. */
+#define REPLUG_DOWN_TICKS 8
 
 static Controls g_c;
 
@@ -137,9 +168,113 @@ static void on_scale(GtkWidget *w, gpointer user_data) {
     publish(shell);
 }
 
+/* Asks before changing what the adapter emulates, then watches the
+ * replug it requires.
+ *
+ * Asking first, because the change is not a setting that can be tried
+ * and undone: it costs a trip to the machine with both cables, and
+ * picking the wrong row by accident should not start that. Watching
+ * after, because the write returning proves nothing -- until the adapter
+ * has been out and back the pad stays dead, and a dialog that said
+ * "done" at that point would be lying.
+ *
+ * Not modal: the adapter is handled while this is on screen, and the
+ * "adapter sees" line behind it is the thing worth being able to read.
+ */
+static void replug_show(GtkShell *shell, int wanted);
+
+static void replug_set_phase(int confirming) {
+    if (g_c.replug_cancel) gtk_widget_set_visible(g_c.replug_cancel, confirming);
+    if (g_c.replug_apply)  gtk_widget_set_visible(g_c.replug_apply, confirming);
+    if (g_c.replug_close)  gtk_widget_set_visible(g_c.replug_close, !confirming);
+}
+
+static void on_replug_response(GtkWidget *dialog, gint response, gpointer user_data) {
+    GtkShell *shell = user_data;
+
+    if (response == GTK_RESPONSE_ACCEPT && g_c.replug_pending >= 0) {
+        SDL_LockMutex(shell->lock);
+        shell->settings.output_protocol = g_c.replug_pending;
+        SDL_UnlockMutex(shell->lock);
+        publish(shell);
+        g_c.replug_stage = REPLUG_WAIT_UNPLUG;
+        g_c.replug_down_ticks = 0;
+        gtk_label_set_text(GTK_LABEL(g_c.replug_label),
+            "Unplug the adapter -- console side and this side.");
+        replug_set_phase(FALSE);
+        gtk_widget_set_sensitive(g_c.replug_close, FALSE);
+        gtk_widget_show_all(dialog);
+        replug_set_phase(FALSE);
+        return;
+    }
+
+    if (g_c.replug_stage == REPLUG_CONFIRM) {
+        /* Put the list back where it was. Guarded, or setting it would
+         * come straight back here as a fresh change. */
+        int current;
+        SDL_LockMutex(shell->lock);
+        current = shell->settings.output_protocol;
+        SDL_UnlockMutex(shell->lock);
+        shell->loading = 1;
+        if (current >= 0) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.output_protocol), current);
+        }
+        shell->loading = 0;
+    }
+    gtk_widget_hide(dialog);
+    g_c.replug_stage = REPLUG_IDLE;
+    g_c.replug_pending = -1;
+}
+
+static void replug_show(GtkShell *shell, int wanted) {
+    if (!g_c.replug_dialog) {
+        g_c.replug_dialog = gtk_dialog_new_with_buttons(
+            "Change what the adapter emulates", GTK_WINDOW(shell->settings_window),
+            GTK_DIALOG_DESTROY_WITH_PARENT,
+            "Cancel", GTK_RESPONSE_CANCEL, "Change", GTK_RESPONSE_ACCEPT,
+            "Close", GTK_RESPONSE_CLOSE, NULL);
+        gtk_window_set_default_size(GTK_WINDOW(g_c.replug_dialog), 400, -1);
+        g_c.replug_label = gtk_label_new("");
+        gtk_label_set_line_wrap(GTK_LABEL(g_c.replug_label), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(g_c.replug_label), 46);
+        gtk_label_set_xalign(GTK_LABEL(g_c.replug_label), 0.0);
+        gtk_widget_set_margin_start(g_c.replug_label, 14);
+        gtk_widget_set_margin_end(g_c.replug_label, 14);
+        gtk_widget_set_margin_top(g_c.replug_label, 12);
+        gtk_widget_set_margin_bottom(g_c.replug_label, 12);
+        gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(g_c.replug_dialog))),
+                          g_c.replug_label);
+        g_c.replug_cancel = gtk_dialog_get_widget_for_response(GTK_DIALOG(g_c.replug_dialog),
+                                                               GTK_RESPONSE_CANCEL);
+        g_c.replug_apply = gtk_dialog_get_widget_for_response(GTK_DIALOG(g_c.replug_dialog),
+                                                              GTK_RESPONSE_ACCEPT);
+        g_c.replug_close = gtk_dialog_get_widget_for_response(GTK_DIALOG(g_c.replug_dialog),
+                                                              GTK_RESPONSE_CLOSE);
+        /* Closing the window must hide it, not destroy it: it is reused
+         * on the next change, and reopening a destroyed widget crashes. */
+        g_signal_connect(g_c.replug_dialog, "response", G_CALLBACK(on_replug_response), shell);
+        g_signal_connect(g_c.replug_dialog, "delete-event", G_CALLBACK(gtk_widget_hide_on_delete), NULL);
+    }
+    g_c.replug_pending = wanted;
+    g_c.replug_stage = REPLUG_CONFIRM;
+
+    char text[320];
+    snprintf(text, sizeof(text),
+             "Make the adapter emulate %s?\n\n"
+             "You will then have to unplug it from the console and from this "
+             "machine and plug both back in -- it does not take effect until "
+             "you do.",
+             gamepad_protocol_label(wanted));
+    gtk_label_set_text(GTK_LABEL(g_c.replug_label), text);
+    gtk_widget_show_all(g_c.replug_dialog);
+    replug_set_phase(TRUE);
+    gtk_window_present(GTK_WINDOW(g_c.replug_dialog));
+}
+
 static void on_combo(GtkWidget *w, gpointer user_data) {
     GtkShell *shell = user_data;
     const int i = gtk_combo_box_get_active(GTK_COMBO_BOX(w));
+    int asked_protocol = -1;
     SDL_LockMutex(shell->lock);
     if (w == g_c.resolution) {
         static const int HEIGHTS[] = {1080, 720, 480};
@@ -148,8 +283,22 @@ static void on_combo(GtkWidget *w, gpointer user_data) {
         shell->settings.capture_mjpeg = (i == 1);
     } else if (w == g_c.gamepad_device) {
         shell->settings.gamepad_index = i - 1; /* the first row is "none" */
+    } else if (w == g_c.output_protocol) {
+        /* Deliberately NOT applied here. The rows are the protocol
+         * values in order, but picking one is a request, not a setting:
+         * it costs a trip to the machine with both cables, so it is
+         * confirmed first and applied from the dialog. */
+        if (i >= 0 && i != shell->settings.output_protocol) {
+            asked_protocol = i;
+        }
     }
     SDL_UnlockMutex(shell->lock);
+    if (asked_protocol >= 0) {
+        if (!shell->loading) {
+            replug_show(shell, asked_protocol);
+        }
+        return; /* nothing else moved */
+    }
     publish(shell);
 }
 
@@ -222,6 +371,9 @@ static void load_controls(GtkShell *shell) {
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.capture_format), s.capture_mjpeg ? 1 : 0);
 
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.gamepad_enabled), s.gamepad_enabled);
+    if (s.output_protocol >= 0) {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.output_protocol), s.output_protocol);
+    }
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.invert_ry), s.invert_ry);
     gtk_range_set_value(GTK_RANGE(g_c.lt_threshold), s.lt_threshold);
     gtk_range_set_value(GTK_RANGE(g_c.rt_threshold), s.rt_threshold);
@@ -249,6 +401,9 @@ static gboolean on_settings_delete(GtkWidget *w, GdkEvent *e, gpointer user_data
 }
 
 static void build_settings_window(GtkShell *shell) {
+    /* Zero is a real protocol value ("automatic"), so "none pending" has
+     * to be set rather than left to the static initialiser. */
+    g_c.replug_pending = -1;
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "Capture2Cloud settings");
     gtk_window_set_default_size(GTK_WINDOW(win), 520, 520);
@@ -319,6 +474,30 @@ static void build_settings_window(GtkShell *shell) {
     g_c.gamepad_device = gtk_combo_box_text_new();
     g_signal_connect(g_c.gamepad_device, "changed", G_CALLBACK(on_combo), shell);
     add_row(grid, row++, "controller", g_c.gamepad_device);
+    g_c.output_protocol = gtk_combo_box_text_new();
+    for (int i = 0; i < gamepad_protocol_count(); i++) {
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.output_protocol),
+                                       gamepad_protocol_label(i));
+    }
+    g_signal_connect(g_c.output_protocol, "changed", G_CALLBACK(on_combo), shell);
+    add_row(grid, row++, "adapter emulates", g_c.output_protocol);
+    /* What the adapter FOUND on its output port, which is the half that
+     * makes a mistake visible: set to a Switch pad with nothing
+     * answering reads very differently from set to an Xbox pad with a
+     * Switch in front of it. It also says when the change has not landed
+     * yet -- after one, the adapter has to be replugged into the console
+     * and until then this reads "nothing". */
+    g_c.adapter_sees = gtk_label_new("");
+    gtk_widget_set_halign(g_c.adapter_sees, GTK_ALIGN_START);
+    add_row(grid, row++, "adapter sees", g_c.adapter_sees);
+    gtk_widget_set_tooltip_text(g_c.output_protocol,
+        "Which controller the adapter pretends to be to the console. Its own "
+        "guess is not always right -- plugged straight into a Switch dock it "
+        "guessed Xbox 360 and every button was ignored. Stored in the adapter, "
+        "so it survives unplugging.\n\nAfter changing it, unplug the adapter from "
+        "the console and plug it back in: the change ends its conversation with the "
+        "console and nothing this machine can send reaches that side of it.");
+
     g_c.invert_ry = add_row(grid, row++, "right stick",
                             make_check(shell, "invert up/down"));
     g_c.lt_threshold = add_row(grid, row++, "LT threshold (%)", make_scale(shell, 0, 100, 5, "%"));
@@ -495,6 +674,67 @@ static gboolean on_tick(gpointer user_data) {
         SDL_UnlockMutex(shell->lock);
         gtk_label_set_text(GTK_LABEL(g_c.status_label), text);
         gtk_status_icon_set_tooltip_text(shell->icon, text);
+    }
+    /* The replug, watched rather than assumed. Each stage waits for a
+     * thing that actually happened, so the dialog cannot say "done"
+     * while the pad is still dead. */
+    if (g_c.replug_stage != REPLUG_IDLE && g_c.replug_dialog) {
+        int up = gamepad_bridge_link_up();
+        int found = gamepad_bridge_console();
+        const char *text = NULL;
+        switch (g_c.replug_stage) {
+            case REPLUG_WAIT_UNPLUG:
+                /* The program drops the link itself right after writing,
+                 * so a brief gap proves nothing -- only a sustained one
+                 * means a hand pulled the cable. */
+                g_c.replug_down_ticks = up ? 0 : g_c.replug_down_ticks + 1;
+                if (g_c.replug_down_ticks >= REPLUG_DOWN_TICKS) {
+                    g_c.replug_stage = REPLUG_WAIT_BACK;
+                    text = "Unplugged. Now plug both ends back in.";
+                }
+                break;
+            case REPLUG_WAIT_BACK:
+                if (up) {
+                    g_c.replug_stage = REPLUG_WAIT_CONSOLE;
+                    text = "Back on this machine. Waiting for the console...";
+                }
+                break;
+            case REPLUG_WAIT_CONSOLE:
+                if (found > 0) {
+                    g_c.replug_stage = REPLUG_DONE;
+                    text = "Done -- the console is answering the adapter.";
+                    if (g_c.replug_close) {
+                        gtk_widget_set_sensitive(g_c.replug_close, TRUE);
+                    }
+                } else if (!up) {
+                    /* It went away again mid-way. */
+                    g_c.replug_stage = REPLUG_WAIT_BACK;
+                    text = "It went away again. Plug it back in.";
+                }
+                break;
+            default:
+                break;
+        }
+        if (text) {
+            gtk_label_set_text(GTK_LABEL(g_c.replug_label), text);
+        }
+    }
+
+    if (g_c.adapter_sees) {
+        /* Read straight from the bridge every tick rather than pushed
+         * through the settings struct: it is not a setting, it is what
+         * the hardware is doing right now, and it changes on its own. */
+        static const char *const FOUND[] = {
+            "nothing -- replug the adapter into the console",
+            "a PlayStation 3", "an Xbox 360", "a PlayStation 4",
+            "an Xbox One", "a Switch",
+        };
+        int found = gamepad_bridge_console();
+        const char *text = (found >= 0 && found < (int)(sizeof FOUND / sizeof *FOUND))
+                               ? FOUND[found] : "no adapter";
+        if (strcmp(gtk_label_get_text(GTK_LABEL(g_c.adapter_sees)), text) != 0) {
+            gtk_label_set_text(GTK_LABEL(g_c.adapter_sees), text);
+        }
     }
     return G_SOURCE_CONTINUE;
 }
