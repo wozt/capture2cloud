@@ -1,0 +1,28 @@
+# Copy to sdmc:/switch/capture2switch.cfg on the console's SD card.
+#
+# Read at startup rather than compiled in: there is no keyboard here
+# worth typing an IP address on, and the host's address changes more
+# often than this program does.
+
+# The machine running capture2cloud.
+host=192.168.2.100
+
+# Native transport port. Matches SWITCH_PORT in the host's scripts/.env,
+# and defaults to 5081 on both sides.
+port=5081
+
+# The web server's port, where /login lives. Only used by the "Enter the
+# host password" menu entry, which fetches a token for you.
+web_port=5080
+
+# Session token. You do NOT need to set this by hand any more: the menu
+# has "Enter the host password", which opens the console's keyboard and
+# exchanges the password for a token itself.
+#
+# Kept here for the case where you would rather not type a password on a
+# console. Obtain one on the host with:
+#   curl -s -X POST --data-binary 'yourpassword' http://localhost:5080/login
+#
+# Tokens live only in the host's memory, so a restart there invalidates
+# this and it has to be fetched again.
+#token=

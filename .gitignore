@@ -1,0 +1,35 @@
+# Project-local ignores. They live here, not in the parent scripts/
+# repo, so the unrelated scripts alongside this project are unaffected --
+# and so the paths below are anchored to THIS directory. The previous
+# arrangement had "tests/browser/screenshots/" in scripts/.gitignore,
+# where the leading path made it anchor there and match nothing.
+
+# The compiled binary -- rebuilt by the launcher whenever a source is
+# newer, so there is never a reason to commit it.
+/capture2cloud
+*.o
+
+# Secrets: never commit real tokens/credentials (HA_TOKEN,
+# PLAYER_PASSWORD). Copy scripts/.env.example to scripts/.env and fill it
+# in locally instead.
+.env
+*.env
+!*.env.example
+
+# Node dependencies for the browser tests -- reinstall with
+# `npm install` here, browsers with `npx playwright install chromium`.
+node_modules/
+package-lock.json
+
+# Vendor tooling for the Titan One, installed locally.
+gtuner/
+
+# Output of the browser tests: regenerated on every run.
+tests/browser/screenshots/
+
+# Hand-made snapshots of a working version. They predate this being a
+# git repository and are kept on disk as a belt-and-braces copy, but
+# they have no place in the history: git already is the backup, and a
+# duplicate of every source file would double the noise in every diff
+# from here on.
+backup/
