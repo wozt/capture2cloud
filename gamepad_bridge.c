@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h> /* strcasecmp, for the protocol names */
 
 /* See gamepad_bridge.h for context and protocol sources. */
 
@@ -43,6 +44,24 @@ static const struct {
 #define GPPKG_UNKNOWN_F0 0xf0
 #define GPPKG_UNKNOWN_F1 0xf1
 
+/* Device configuration, read then written back one byte at a time.
+ *
+ * Not in GIMX and not in any public documentation: taken from a USB
+ * capture of GTuner Pro changing its "Output Protocol" setting, made on
+ * a Windows VM with the adapter passed through. Reading is 0x05 with an
+ * empty payload; the adapter answers 0x05 with eleven bytes. Writing is
+ * 0x06 carrying those same eleven bytes back.
+ *
+ * Byte 0 is the output protocol -- which controller the adapter pretends
+ * to be to the console. The other ten carry the rest of the device's
+ * options (backlight, response time, idle timeout...) and are read and
+ * written back untouched: eight captured writes differed in byte 0 and
+ * nowhere else, so there is no checksum to recompute and no value we
+ * have to invent. */
+#define GPPKG_READ_CONFIG  0x05
+#define GPPKG_WRITE_CONFIG 0x06
+#define TITAN_CONFIG_LEN   11
+
 /* Offset, within a received GPPKG_INPUT_REPORT, of the start of the
  * GCAPI_REPORT structure (controller, console, led[4], rumble[2],
  * battery_level, then the input[] array indexed like GAMEPAD_XB360_*) --
@@ -75,6 +94,22 @@ static volatile int g_link_up = 0;
  * continuously, and issuing a reset underneath it from another thread
  * would be a use-after-free waiting to happen. */
 static volatile int g_reset_requested = 0;
+
+/* The adapter's output protocol -- which controller it pretends to be to
+ * the console -- and the console it says it has found in front of it.
+ *
+ * Both are read from the device rather than assumed, because getting
+ * them wrong is invisible: an adapter left emulating an Xbox 360 pad on
+ * a Switch enumerates fine, reports no error, and simply ignores every
+ * button forever.
+ *
+ * -1 until the adapter has been asked. The request is acted on by the
+ * send thread for the same reason as the reset above: it owns the
+ * handle, and writing configuration from another thread while it is
+ * pushing reports would race on the same endpoint. */
+static volatile int g_output_protocol = -1;
+static volatile int g_console_detected = -1;
+static volatile int g_protocol_requested = -1;
 /* A HOME press asked for by a client, applied by the send thread. */
 static volatile int g_home_press_requested = 0;
 /* Milliseconds GUIDE is held. Short enough to be a tap, long enough that
@@ -174,6 +209,66 @@ double gamepad_bridge_report_rate(void) {
     return g_connected ? g_reports_per_sec : 0.0;
 }
 
+/* The values byte 0 of the device configuration takes. Their order is
+ * GTuner Pro's own "Output Protocol" list, confirmed one by one: each of
+ * the eight was selected in GTuner while a USB capture ran, and each
+ * wrote exactly the number below.
+ *
+ * "auto" lets the adapter guess from the console it is plugged into.
+ * That guess is not always right -- plugged straight into a Switch dock
+ * this adapter guessed Xbox 360 and the console ignored it entirely --
+ * which is the whole reason this setting is reachable from the app. */
+static const char *const PROTOCOL_NAME[] = {
+    "auto", "ps3", "xb360", "ps4", "xb1", "ps4rp", "switch", "ps5", "xbsx",
+};
+static const char *const PROTOCOL_LABEL[] = {
+    "automatic", "PlayStation 3", "Xbox 360", "PlayStation 4", "Xbox One",
+    "PS4 Remote Play", "Nintendo Switch", "PlayStation 5", "Xbox Series X|S",
+};
+#define PROTOCOL_COUNT ((int)(sizeof PROTOCOL_NAME / sizeof *PROTOCOL_NAME))
+
+const char *gamepad_protocol_name(int value) {
+    return (value >= 0 && value < PROTOCOL_COUNT) ? PROTOCOL_NAME[value] : "";
+}
+
+const char *gamepad_protocol_label(int value) {
+    return (value >= 0 && value < PROTOCOL_COUNT) ? PROTOCOL_LABEL[value] : "unknown";
+}
+
+int gamepad_protocol_from_name(const char *name) {
+    if (!name || !*name) {
+        return -1;
+    }
+    for (int i = 0; i < PROTOCOL_COUNT; i++) {
+        if (strcasecmp(name, PROTOCOL_NAME[i]) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int gamepad_protocol_count(void) {
+    return PROTOCOL_COUNT;
+}
+
+int gamepad_bridge_output_protocol(void) {
+    return g_output_protocol;
+}
+
+int gamepad_bridge_console(void) {
+    return g_console_detected;
+}
+
+int gamepad_bridge_link_up(void) {
+    return g_link_up;
+}
+
+void gamepad_bridge_request_output_protocol(int value) {
+    if (value >= 0 && value < PROTOCOL_COUNT) {
+        g_protocol_requested = value;
+    }
+}
+
 /* Sticks are signed and everything else runs 0..100, so they cannot be
  * combined the same way: the largest deflection wins for an axis, while
  * a button is pressed if anyone is pressing it. */
@@ -268,6 +363,111 @@ static int send_report(uint8_t type, const uint8_t *data, uint16_t length) {
     return ret;
 }
 
+/* Defined below, next to the reconnect path that shares it. */
+static void usb_close_device(void);
+
+/* Asks the adapter for its eleven configuration bytes.
+ *
+ * The answer arrives on the same interrupt endpoint as everything else,
+ * so reports that are not the answer are skipped rather than assumed
+ * absent -- in capture mode the adapter is also streaming input reports,
+ * and taking the first thing that arrives would read a controller state
+ * as a configuration. Returns 0 on success. */
+static int config_read(unsigned char cfg[TITAN_CONFIG_LEN]) {
+    if (!g_in_ep || send_report(GPPKG_READ_CONFIG, NULL, 0) != 0) {
+        return -1;
+    }
+    unsigned char buf[REPORT_SIZE];
+    for (int i = 0; i < 100; i++) {
+        int transferred = 0;
+        if (libusb_interrupt_transfer(g_handle, g_in_ep, buf, sizeof(buf), &transferred, 100) != 0) {
+            continue;
+        }
+        if (transferred >= 4 + TITAN_CONFIG_LEN && buf[0] == GPPKG_READ_CONFIG) {
+            memcpy(cfg, buf + 4, TITAN_CONFIG_LEN);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Applies a pending output-protocol change, and updates what we believe
+ * the adapter is set to.
+ *
+ * Only writes when the value actually differs. The setting lives in the
+ * device's own non-volatile memory, so re-writing the same value on
+ * every start would be wear for nothing -- and this is called on every
+ * connection, not only when someone asks for a change.
+ *
+ * Leaves capture mode around the write and re-enters it afterwards, the
+ * way GTuner does it: the adapter has to re-introduce itself to the
+ * console as a different controller, and doing that while it is also
+ * being fed output reports is not something the captured traffic ever
+ * shows. */
+static void config_apply_protocol(int wanted, int quiet) {
+    unsigned char cfg[TITAN_CONFIG_LEN];
+    if (config_read(cfg) != 0) {
+        if (!quiet) {
+            fprintf(stderr, "gamepad_bridge: could not read the adapter's configuration\n");
+        }
+        return;
+    }
+    g_output_protocol = cfg[0];
+    if (wanted < 0 || wanted == cfg[0]) {
+        return;
+    }
+
+    send_report(GPPKG_LEAVE_CAPTURE, NULL, 0);
+    SDL_Delay(50);
+    cfg[0] = (unsigned char)wanted;
+    int written = send_report(GPPKG_WRITE_CONFIG, cfg, TITAN_CONFIG_LEN);
+    SDL_Delay(300);
+
+    unsigned char back[TITAN_CONFIG_LEN];
+    if (written == 0 && config_read(back) == 0) {
+        g_output_protocol = back[0];
+        fprintf(stderr, "gamepad_bridge: output protocol now %s%s\n",
+                gamepad_protocol_label(back[0]),
+                back[0] == wanted ? "" : " (the adapter refused the change)");
+    } else {
+        fprintf(stderr, "gamepad_bridge: failed to set the output protocol\n");
+    }
+
+    /* Drop the link and let the loop build it again from nothing.
+     *
+     * The tempting thing here is to send ENTER_CAPTURE and carry on --
+     * that is what this did at first, and it is how the pad ends up
+     * silently dead. Capture mode does not always come back on a
+     * connection the write has just interrupted, and nothing complains:
+     * the reports keep being accepted, the adapter keeps answering, and
+     * not one button reaches the console. It looks exactly like the
+     * change having broken something, when the change worked.
+     *
+     * Closing the handle sends this round the reconnect path instead,
+     * which replays the whole startup sequence -- the one that is known
+     * to work, because it is the one every session begins with -- and
+     * says "reconnected, capture mode active" when it has. */
+    usb_close_device();
+    g_link_up = 0;
+
+    /* The other half of the problem, which no amount of USB work fixes.
+     *
+     * A change also ends the adapter's conversation with the CONSOLE,
+     * and the console does not start a new one -- it stops enumerating
+     * the adapter, which shows as gamepad_bridge_console() reading 0, no
+     * host at all on the output port. Writing the value again does not
+     * help, nor does resetting the USB link: what broke is the adapter's
+     * output port, and all we can reach is its PROG port to this
+     * machine. A capture of GTuner Pro making the same change shows it
+     * sends nothing else either, so there is no command being missed.
+     *
+     * When that happens the adapter has to be unplugged from the console
+     * and plugged back in, by hand. The settings window says so live,
+     * from what the adapter reports seeing. */
+    fprintf(stderr, "gamepad_bridge: protocol changed -- if the pad stays dead, unplug the "
+                    "adapter from the console and plug it back in\n");
+}
+
 /* Walks the device's USB descriptors to find its HID interface and the
  * addresses of its interrupt IN/OUT endpoints. */
 static int find_hid_endpoints(libusb_device *dev, int *interface_number, unsigned char *out_ep,
@@ -335,6 +535,13 @@ static void read_real_controller_state(void) {
         memset(g_real_state, 0, sizeof(g_real_state));
         return;
     }
+    /* Free of charge, from a report we are already reading: the console
+     * the adapter says it has found on its output port. 0 means nothing
+     * is plugged in there -- which is what it reported the moment the
+     * cable was pulled, and how this field was confirmed to be this one.
+     * Note this enumeration is NOT the one the configuration byte uses;
+     * it is the older GCAPI one, where the Switch shows up as 5. */
+    g_console_detected = buf[GCAPI_REPORT_OFFSET + 1];
     memcpy(g_real_state, buf + GCAPI_REPORT_INPUT_OFFSET, GAMEPAD_BRIDGE_STATE_COUNT);
 }
 
@@ -447,6 +654,22 @@ static int send_thread_main(void *arg) {
                 SDL_Delay(RECONNECT_RETRY_MS);
             }
             continue;
+        }
+
+        /* A protocol change asked for from the page, the settings window
+         * or the console client. Done here because this thread owns the
+         * USB handle; it writes to the adapter's own memory, so it only
+         * happens when the value really differs. */
+        if (g_protocol_requested >= 0) {
+            int wanted = g_protocol_requested;
+            g_protocol_requested = -1;
+            config_apply_protocol(wanted, 0);
+            if (!g_link_up) {
+                /* Rebuilt from scratch on the next pass. Going on to
+                 * send a report through a closed handle would only be
+                 * reported as an unplugged adapter. */
+                continue;
+            }
         }
 
         int8_t snapshot[GAMEPAD_BRIDGE_STATE_COUNT];
@@ -675,6 +898,20 @@ static int usb_open_and_claim(int quiet) {
     send_report(GPPKG_LEAVE_CAPTURE, NULL, 0);
     send_report(GPPKG_UNKNOWN_F1, NULL, 0);
     SDL_Delay(50);
+
+    /* What the adapter is currently pretending to be. Read here, out of
+     * capture mode, where the only reports coming back are answers to
+     * what we asked. A wrong value is otherwise silent: an adapter still
+     * emulating an Xbox 360 pad enumerates on a Switch perfectly and is
+     * then ignored button for button. */
+    {
+        unsigned char cfg[TITAN_CONFIG_LEN];
+        if (config_read(cfg) == 0) {
+            g_output_protocol = cfg[0];
+            open_log(quiet, "gamepad_bridge: output protocol is %s\n",
+                     gamepad_protocol_label(cfg[0]));
+        }
+    }
 
     if (send_report(GPPKG_ENTER_CAPTURE, NULL, 0) != 0) {
         open_log(quiet, "gamepad_bridge: failed to enter capture mode on %s\n", target_name);

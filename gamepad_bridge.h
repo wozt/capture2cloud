@@ -89,6 +89,44 @@ void gamepad_bridge_reset(void);
  * touch the outgoing state. */
 void gamepad_bridge_press_home(void);
 
+/*
+ * Which controller the adapter pretends to be to the console.
+ *
+ * The adapter can guess this on its own, and gets it wrong: plugged
+ * straight into a Switch dock it guessed Xbox 360, enumerated happily
+ * and had every button ignored. So it is settable, and the value is
+ * read back from the device rather than remembered.
+ *
+ * The numbering is GTuner Pro's own "Output Protocol" list, confirmed
+ * value by value against a USB capture: 0 auto, 1 ps3, 2 xb360, 3 ps4,
+ * 4 xb1, 5 ps4rp, 6 switch, 7 ps5, 8 xbsx.
+ */
+const char *gamepad_protocol_name(int value);   /* "switch", "" if unknown */
+const char *gamepad_protocol_label(int value);  /* "Nintendo Switch" */
+int gamepad_protocol_from_name(const char *name); /* -1 if not a known name */
+int gamepad_protocol_count(void);
+
+/* What the adapter is set to right now, or -1 before it has been asked. */
+int gamepad_bridge_output_protocol(void);
+
+/* The console the adapter reports on its output port, or -1 if unknown.
+ * A different enumeration from the one above -- this is the older GCAPI
+ * one (0 nothing plugged in, 1 ps3, 2 xb360, 3 ps4, 4 xb1, 5 switch) --
+ * and it says what the adapter FOUND, not what it is emulating. */
+int gamepad_bridge_console(void);
+
+/* Whether the USB link to the adapter is up right now. Distinct from
+ * "the bridge is running": the adapter can be unplugged and plugged back
+ * in without the rest of the program noticing, and watching this go down
+ * and up again is how the settings window knows a replug really
+ * happened. */
+int gamepad_bridge_link_up(void);
+
+/* Asks for a different output protocol. Applied by the send thread,
+ * which owns the USB handle, and only if it differs from what the device
+ * already holds: this writes to the adapter's non-volatile memory. */
+void gamepad_bridge_request_output_protocol(int value);
+
 /* Reports per second actually sent to the adapter, averaged over the
  * last few seconds. 0 when no adapter is connected.
  *
