@@ -87,6 +87,13 @@ struct AudioCapture {
     const char *source; /* points into source_buf, or NULL for the default */
     char source_buf[512];
     int local_playback;         /* LOCAL_PLAYBACK in the .env */
+    /* The speakers here, changed from the settings window while
+     * running. Muting stops what is queued to them; it never touches
+     * what the browser and the console receive. Read on the capture
+     * thread, written on GTK's -- an int either side of a change is one
+     * chunk of five milliseconds, so no lock earns its keep. */
+    volatile int local_muted;
+    volatile int local_volume;  /* 0..100, 25 = the source's own level */
     SDL_Thread *playback_thread;
     struct PlaybackRing ring;
 };
@@ -548,8 +555,23 @@ static int audio_thread(void *arg) {
             web_sample_frames = 0;
         }
 
-        if (ac->local_playback) {
-            playback_ring_push(&ac->ring, samples);
+        if (ac->local_playback && !ac->local_muted) {
+            /* The local volume is applied to a copy: `samples` has
+             * already gone to the browser and the console, and turning
+             * the speakers here down must not turn them down there. */
+            if (ac->local_volume != 25) {
+                int16_t local[64 * 2];
+                const int gain = ac->local_volume * 4; /* percent of the source */
+                for (size_t i = 0; i < chunk_frames * 2; i++) {
+                    int v = samples[i] * gain / 100;
+                    if (v > 32767) v = 32767;
+                    if (v < -32768) v = -32768;
+                    local[i] = (int16_t)v;
+                }
+                playback_ring_push(&ac->ring, local);
+            } else {
+                playback_ring_push(&ac->ring, samples);
+            }
         }
     }
 
@@ -578,7 +600,7 @@ static int audio_thread(void *arg) {
     return 0;
 }
 AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *running, WebStream *web,
-                                  GstWebrtcStream *gst) {
+                                  GstWebrtcStream *gst, int local_output) {
     AudioCapture *ac = calloc(1, sizeof(*ac));
     if (!ac) {
         return NULL;
@@ -589,7 +611,8 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
     /* On by default: the native window is a legitimate way to use this
      * (screen sharing over Discord, for one). Turn it off when only the
      * browser matters -- it saves a thread and a sound-card stream. */
-    ac->local_playback = (int)config_get_int("LOCAL_PLAYBACK", 1, 0, 1);
+    ac->local_playback = local_output && (int)config_get_int("LOCAL_PLAYBACK", 1, 0, 1);
+    ac->local_volume = 25; /* the source's own level; see the header */
     if (source && source[0]) {
         snprintf(ac->source_buf, sizeof(ac->source_buf), "%s", source);
         ac->source = ac->source_buf;
@@ -604,6 +627,14 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
         return NULL;
     }
     return ac;
+}
+
+void audio_capture_set_local_output(AudioCapture *ac, int enabled, int volume) {
+    if (!ac) {
+        return;
+    }
+    ac->local_muted = !enabled;
+    ac->local_volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
 }
 
 void audio_capture_stop(AudioCapture *ac) {
