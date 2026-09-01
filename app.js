@@ -163,6 +163,8 @@ menuGroups.forEach(function (group) {
 
 var wakeConsoleBtn = document.getElementById('wake-console');
 var resetDongleBtn = document.getElementById('reset-dongle');
+var restartServerBtn = document.getElementById('restart-server');
+var restartNote = document.getElementById('restart-note');
 var volumeSlider = document.getElementById('volume');
 var vv = document.getElementById('vv');
 var vsyncBox = document.getElementById('vsync');
@@ -733,6 +735,69 @@ var wakeConsoleTimer = null;
 /* The reset takes a few seconds by design (the adapter is held closed so
  * the console sees it actually go away), so the button says so rather
  * than looking like it did nothing. */
+/* --- restarting the server ------------------------------------------
+ *
+ * Sound has been seen to stop arriving with everything still claiming to
+ * work, and restarting the capture program is the one thing that has
+ * always brought it back. This does that without a trip to the machine.
+ *
+ * The page then waits and reloads itself. Two seconds is how long the
+ * shutdown takes -- the gamepad adapter has to be handed back before
+ * anything else -- but a fixed wait would reload into nothing on a slow
+ * start, so after those two seconds it asks the server whether it is
+ * back and only reloads once it answers. */
+var RESTART_SETTLE_MS = 2000;
+var RESTART_POLL_MS = 500;
+var RESTART_GIVE_UP_MS = 30000;
+
+function waitForServerThenReload(startedAt) {
+  if (Date.now() - startedAt > RESTART_GIVE_UP_MS) {
+    restartNote.textContent = 'the server has not come back -- reload by hand';
+    restartServerBtn.disabled = false;
+    restartServerBtn.textContent = 'restart server';
+    return;
+  }
+  /* no-store, or a cached answer would say the server is up while it is
+   * still starting. */
+  fetch('/clients', { cache: 'no-store' })
+    .then(function (r) {
+      if (!r.ok) throw new Error('not ready');
+      restartNote.textContent = 'back -- reloading';
+      location.reload();
+    })
+    .catch(function () {
+      setTimeout(function () { waitForServerThenReload(startedAt); }, RESTART_POLL_MS);
+    });
+}
+
+restartServerBtn.onclick = function () {
+  restartServerBtn.disabled = true;
+  restartServerBtn.textContent = 'restarting...';
+  restartNote.textContent = '';
+  playerFetch('/restart', { method: 'POST' })
+    .then(function (resp) {
+      if (!resp.ok) {
+        log(resp.status === 403 ? 'restart: log in to play first'
+                                : 'restart: server error ' + resp.status);
+        restartServerBtn.disabled = false;
+        restartServerBtn.textContent = 'restart server';
+        return;
+      }
+      restartNote.textContent = 'waiting for the server...';
+      var startedAt = Date.now();
+      setTimeout(function () { waitForServerThenReload(startedAt); }, RESTART_SETTLE_MS);
+    })
+    .catch(function (e) {
+      /* The socket dying IS the restart happening: the server answers
+       * before it goes, but a request in flight when it does looks like
+       * a network error. Waiting is the right response either way. */
+      log('restart: ' + e);
+      restartNote.textContent = 'waiting for the server...';
+      var startedAt = Date.now();
+      setTimeout(function () { waitForServerThenReload(startedAt); }, RESTART_SETTLE_MS);
+    });
+};
+
 resetDongleBtn.onclick = function () {
   resetDongleBtn.disabled = true;
   resetDongleBtn.textContent = 'resetting...';
@@ -833,7 +898,8 @@ function viewerHiddenControls() {
     /* The groups go too: everything inside every one of them is a
      * player control, so leaving the headings would offer a viewer five
      * menus that open onto nothing. */
-    bare: [wakeConsoleBtn, resetDongleBtn, rebindBtn, padTestBtn, vidFilterResetBtn, vgpResetBtn]
+    bare: [wakeConsoleBtn, resetDongleBtn, restartServerBtn, rebindBtn, padTestBtn,
+           vidFilterResetBtn, vgpResetBtn]
       .concat(menuGroups),
     /* Sitting inside a <label>: hide the label so its text goes too. */
     labelled: [gamepadSelect, vsyncBox, captureFormatSelect, resolutionSelect, fullscreenBox, quality,

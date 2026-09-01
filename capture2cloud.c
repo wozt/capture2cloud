@@ -464,6 +464,16 @@ int main(int argc, char **argv) {
     int browser_fed = -1, native_fed = -1;
 
     while (g_app.running) {
+        if (app_restart_requested()) {
+            /* Out through the ordinary shutdown, which knows the order
+             * that matters -- the adapter first, then the sockets and
+             * the device. Only once all of that is released does the
+             * program replace its own image, at the bottom of main. */
+            fprintf(stderr, "restart: shutting down to start again\n");
+            g_app.running = 0;
+            break;
+        }
+
         if (!g_headless) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -722,5 +732,22 @@ int main(int argc, char **argv) {
         gtk_shell_stop(g_shell);
     }
     video_capture_close(g_video);
+
+    if (app_restart_requested()) {
+        /* Replacing the image rather than spawning and exiting: the pid
+         * does not change, so the launcher's pid file stays true, and
+         * stdout and stderr still point at the same log. Everything this
+         * process held has just been closed above, so the new image
+         * finds the capture card, the adapter and the ports free.
+         *
+         * If it fails there is nothing sensible left to do -- the
+         * program has already given everything back -- so it says so and
+         * stops, which the launcher reports as an ordinary exit. */
+        fprintf(stderr, "restart: starting again\n");
+        fflush(stderr);
+        execv("/proc/self/exe", argv);
+        fprintf(stderr, "restart: could not start again (%s)\n", strerror(errno));
+        return 1;
+    }
     return 0;
 }

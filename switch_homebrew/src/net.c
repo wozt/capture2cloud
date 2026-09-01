@@ -505,6 +505,13 @@ void net_send_wake(void) {
     send_message(C2S_MSG_WAKE, 0, NULL, 0);
 }
 
+void net_send_restart(void) {
+    if (g_stage != LINK_UP || !g_info.may_control) {
+        return;
+    }
+    send_message(C2S_MSG_RESTART, 0, NULL, 0);
+}
+
 void net_send_reset_dongle(void) {
     if (g_stage != LINK_UP || !g_info.may_control) {
         return;

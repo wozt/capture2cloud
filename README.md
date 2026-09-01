@@ -232,6 +232,15 @@ the `changeme` default. Traffic is plain HTTP, so passwords and session
 tokens cross the network in clear unless a tunnel (Tailscale) or a TLS
 reverse proxy carries them.
 
+**restart server** in the *console* group stops and starts the capture
+program, keeping its pid, its arguments and its log. Sound has been seen
+to stop arriving with everything still claiming to work, and this is the
+one thing that has always brought it back -- so it is a button rather
+than a trip to the machine. The page waits for the server to answer
+again and reloads itself; measured, the whole thing takes under two
+seconds. Players only, refused server-side. The Switch client has the
+same entry, and reconnects on its own.
+
 Several players can be logged in at once, and their input is combined
 rather than fought over: a button is pressed if anyone is pressing it,
 and a stick takes the largest deflection anyone is giving it. Whoever

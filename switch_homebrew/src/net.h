@@ -77,6 +77,12 @@ void net_send_keyframe_request(void);
 void net_send_wake(void);
 void net_send_reset_dongle(void);
 
+/* Stops and starts the host program. Players only, and refused
+ * server-side for anyone else: it takes the stream away from everyone
+ * watching. The connection drops and comes back on its own -- the
+ * retry loop is already there for a host that was switched off. */
+void net_send_restart(void);
+
 /* Asks the host to encode with a different codec (C2S_CODEC_VP8 or
  * C2S_CODEC_H264). The change takes effect some frames later and is
  * announced back with C2S_MSG_STREAM_INFO, which is when the decoder is

@@ -749,6 +749,27 @@ group('per-stick deadzone and range', () => {
   check('an impossible pair still yields a sane value', v, 100);
 });
 
+group('restarting the server', () => {
+  // Refused to a viewer server-side; the button is hidden as well, but
+  // hiding is a convenience and the refusal is the guard.
+  const s = createSandbox(APP_JS);
+  s.setPlayerUi(false);
+  check('viewer: the restart button is hidden',
+    s.restartServerBtn.classList.contains('viewer-hidden'), true);
+  s.setPlayerUi(true);
+  check('player: it is there',
+    s.restartServerBtn.classList.contains('viewer-hidden'), false);
+
+  // The socket dying IS the restart happening -- the server answers and
+  // then goes -- so a failed request must lead to waiting, not to an
+  // error message and a button that has given up.
+  let asked = null;
+  s.fetch = (url, opts) => { asked = { url, opts }; return Promise.reject(new Error('gone')); };
+  s.restartServerBtn.onclick();
+  check('it asks the server to restart', asked && asked.url, '/restart');
+  check('and the request is a POST', asked && asked.opts.method, 'POST');
+});
+
 group('viewer/player UI state', () => {
   const s = createSandbox(APP_JS);
 

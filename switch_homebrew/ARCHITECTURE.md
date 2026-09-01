@@ -335,6 +335,13 @@ a panel nobody is looking at should not cost anything to fill in. The
 menu takes the whole screen while it is hidden. There is no keyboard here and no shell; re-picking all of
 it on every launch is a chore nobody should be asked to repeat.
 
+**Restart the host** stops and starts the capture program on the other
+end. Sound has been seen to stop arriving there with everything still
+claiming to work, and restarting it is the one thing that has always
+brought it back. The stream goes away and comes back on its own: the
+reconnect loop is already there for a host that was switched off, and
+this is the same thing for a couple of seconds.
+
 The menu also carries **Wake the console** and **Reset the adapter**, the
 two buttons the page has; both are players-only and refused server-side
 for anyone else. There is no browser on this console, and needing one to
