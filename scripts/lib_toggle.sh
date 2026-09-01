@@ -20,6 +20,7 @@ C2C_SOURCES=(
     "$C2C_DIR/video_capture.c"
     "$C2C_DIR/audio_capture.c"
     "$C2C_DIR/switch_stream.c"
+    "$C2C_DIR/local_pad.c"
 )
 C2C_HEADERS=(
     "$C2C_DIR/gtk_shell.h"
@@ -31,6 +32,8 @@ C2C_HEADERS=(
     "$C2C_DIR/audio_capture.h"
     "$C2C_DIR/switch_stream.h"
     "$C2C_DIR/c2s_protocol.h"
+    "$C2C_DIR/app_settings.h"
+    "$C2C_DIR/local_pad.h"
 )
 C2C_BIN="$C2C_DIR/capture2cloud"
 C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0"
@@ -115,7 +118,12 @@ c2c_pid_is_ours() {
 # Modes: headless | windowed | any.
 c2c_find_running() {
     local want="$1" pid args
-    for pid in $(pgrep -x "$(basename "$C2C_BIN")" 2>/dev/null); do
+    # Matched on the command line, not on the process name. The name is
+    # not ours to rely on: a process that has re-executed itself can come
+    # back under a different one, and this reported nothing running while
+    # the capture card was still held.
+    for pid in $(pgrep -f "$C2C_BIN" 2>/dev/null); do
+        [ "$pid" = "$$" ] && continue
         c2c_pid_is_ours "$pid" || continue
         args="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
         case "$want" in

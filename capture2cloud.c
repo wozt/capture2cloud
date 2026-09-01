@@ -19,7 +19,9 @@
 #include "gamepad_bridge.h"
 #include "app_config.h"
 #include "audio_capture.h"
+#include "app_settings.h"
 #include "gtk_shell.h"
+#include "local_pad.h"
 #include "video_capture.h"
 #include "gst_webrtc.h"
 #include "web_stream.h"
@@ -79,6 +81,11 @@ static VideoCapture *g_video = NULL;
 static WebStream *g_web = NULL;
 static GstWebrtcStream *g_gst = NULL;
 static GtkShell *g_shell = NULL;
+static AudioCapture *g_audio = NULL;
+
+/* What the local interface can change, and what is actually in force.
+ * The settings window sends its whole set; on_settings() compares. */
+static AppSettings g_settings = APP_SETTINGS_DEFAULTS;
 static SwitchStream *g_switch = NULL;
 static int g_web_port = WEB_STREAM_DEFAULT_PORT; /* overridden from the .env at startup */
 
@@ -124,42 +131,103 @@ static void start_or_report_web_stream(void) {
     char err[256];
     if (web_stream_start(g_web, g_web_port, err, sizeof(err)) != 0) {
         fprintf(stderr, "web stream: failed to start on port %d: %s\n", g_web_port, err);
+        g_settings.stream_enabled = 0;
         if (g_shell) {
             gtk_shell_show_error(g_shell, err);
-            gtk_shell_set_stream_status(g_shell, 0, g_web_port);
+            gtk_shell_update(g_shell, &g_settings);
         }
     } else {
         fprintf(stderr, "web stream: listening on port %d\n", g_web_port);
+        g_settings.stream_enabled = 1;
         if (g_shell) {
-            gtk_shell_set_stream_status(g_shell, 1, g_web_port);
+            gtk_shell_update(g_shell, &g_settings);
         }
     }
 }
 
-static void on_menu_toggle_stream(void *userdata, int enable) {
+/* Everything the settings window can change, applied in one place.
+ *
+ * The interface hands over the whole set rather than one field at a
+ * time, so this compares against what is already in force and acts only
+ * on what differs. One place to look for "what happens when I move
+ * that", instead of a callback per control.
+ *
+ * Nothing here checks a password. The person at this keyboard is at the
+ * machine the console is plugged into; a login would guard a door they
+ * are standing behind. */
+static void on_settings(void *userdata, const AppSettings *want) {
     (void)userdata;
-    if (enable) {
-        start_or_report_web_stream();
-    } else {
-        web_stream_stop(g_web);
-        if (g_shell) {
-            gtk_shell_set_stream_status(g_shell, 0, g_web_port);
+    AppSettings *have = &g_settings;
+
+    if (want->web_port != have->web_port && want->web_port > 0) {
+        have->web_port = want->web_port;
+        g_web_port = want->web_port;
+        if (web_stream_is_running(g_web)) {
+            web_stream_stop(g_web);
+            start_or_report_web_stream();
         }
     }
-}
-
-static void on_menu_set_port(void *userdata, int port) {
-    (void)userdata;
-    g_web_port = port;
-    if (web_stream_is_running(g_web)) {
-        web_stream_stop(g_web);
-        start_or_report_web_stream();
+    if (want->stream_enabled != have->stream_enabled) {
+        have->stream_enabled = want->stream_enabled;
+        if (want->stream_enabled) {
+            start_or_report_web_stream();
+        } else {
+            web_stream_stop(g_web);
+        }
     }
+    if (want->browser_height != have->browser_height) {
+        have->browser_height = want->browser_height;
+        const int w = want->browser_height * 16 / 9;
+        gst_webrtc_stream_set_browser_resolution(g_gst, w & ~1, want->browser_height);
+    }
+    if (want->bitrate_mbps != have->bitrate_mbps) {
+        have->bitrate_mbps = want->bitrate_mbps;
+        gst_webrtc_stream_set_video_bitrate(g_gst, want->bitrate_mbps * 1000);
+    }
+    if (want->capture_mjpeg != have->capture_mjpeg) {
+        have->capture_mjpeg = want->capture_mjpeg;
+        video_capture_request_format(want->capture_mjpeg ? VIDEO_FORMAT_MJPEG
+                                                         : VIDEO_FORMAT_YUYV);
+    }
+    if (want->local_muted != have->local_muted || want->local_volume != have->local_volume) {
+        have->local_muted = want->local_muted;
+        have->local_volume = want->local_volume;
+        audio_capture_set_local_output(g_audio, !want->local_muted, want->local_volume);
+    }
+
+    /* The rest are read where they are used -- the controller poll, the
+     * drawing -- so storing them is applying them. */
+    have->gamepad_enabled = want->gamepad_enabled;
+    have->gamepad_index = want->gamepad_index;
+    have->invert_ry = want->invert_ry;
+    have->lt_threshold = want->lt_threshold;
+    have->rt_threshold = want->rt_threshold;
+    for (int i = 0; i < 2; i++) {
+        have->stick_deadzone[i] = want->stick_deadzone[i];
+        have->stick_range[i] = want->stick_range[i];
+        have->stick_diagonal[i] = want->stick_diagonal[i];
+    }
+    have->brightness = want->brightness;
+    have->contrast = want->contrast;
+    have->vsync = want->vsync;
 }
 
-static void on_menu_quit(void *userdata) {
+static void on_action(void *userdata, GtkShellAction action) {
     (void)userdata;
-    g_app.running = 0;
+    switch (action) {
+        case GTK_SHELL_ACTION_WAKE_CONSOLE:
+            web_stream_wake_console(g_web);
+            break;
+        case GTK_SHELL_ACTION_RESET_DONGLE:
+            gamepad_bridge_reset();
+            break;
+        case GTK_SHELL_ACTION_RESTART:
+            app_request_restart();
+            break;
+        case GTK_SHELL_ACTION_QUIT:
+            g_app.running = 0;
+            break;
+    }
 }
 
 /* Closes the capture and arms the reopen path in the main loop. Reported
@@ -171,13 +239,6 @@ static void video_capture_lost(void) {
     fprintf(stderr, "video_capture: device lost, waiting for it to come back\n");
     video_capture_close(g_video);
     g_video = NULL;
-}
-
-static void sync_dock(GtkShell *shell, SDL_Window *window) {
-    int x, y, w, h;
-    SDL_GetWindowPosition(window, &x, &y);
-    SDL_GetWindowSize(window, &w, &h);
-    gtk_shell_dock_above(shell, x, y, w, h);
 }
 
 /* The capture's own description of a frame, in the terms swscale uses. */
@@ -351,7 +412,12 @@ int main(int argc, char **argv) {
      * Alt+right-click-drag (resize) still work without a border. */
     window = SDL_CreateWindow(APP_NAME, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                           (int)g_app.width, (int)g_app.height,
-                                          SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS);
+                                          /* Decorated, like any other window: close,
+                                           * minimise and maximise come from the window
+                                           * manager. It was borderless so a GTK bar could
+                                           * pretend to be its title bar, which meant
+                                           * reimplementing all three badly. */
+                                          SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
         SDL_Quit();
@@ -361,20 +427,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    unsigned long video_xid = 0;
-    SDL_SysWMinfo wminfo;
-    SDL_VERSION(&wminfo.version);
-    if (SDL_GetWindowWMInfo(window, &wminfo) && wminfo.subsystem == SDL_SYSWM_X11) {
-        video_xid = (unsigned long)wminfo.info.x11.window;
-    }
+    /* A controller plugged in here can drive the console, which until
+     * now needed a browser open on the machine the console is next
+     * to. */
+    local_pad_init();
 
     GtkShellCallbacks shell_callbacks = {
-        .on_toggle_stream = on_menu_toggle_stream,
-        .on_set_port = on_menu_set_port,
-        .on_quit = on_menu_quit,
+        .on_settings = on_settings,
+        .on_action = on_action,
         .userdata = NULL,
     };
-    g_shell = gtk_shell_start(g_web_port, video_xid, &shell_callbacks);
+    g_settings.web_port = g_web_port;
+    g_settings.capture_mjpeg = (video_capture_format(g_video) == VIDEO_FORMAT_MJPEG);
+    g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
     if (!g_shell) {
         fprintf(stderr, "gtk_shell_start: failed\n");
         SDL_DestroyWindow(window);
@@ -422,17 +487,6 @@ int main(int argc, char **argv) {
      * subsampling comes from the JPEG, not from the format that was
      * requested. */
     texture = NULL;
-    if (!texture) {
-        fprintf(stderr, "SDL_CreateTexture: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        gtk_shell_stop(g_shell);
-        web_stream_destroy(g_web);
-        gst_webrtc_stream_destroy(g_gst);
-        video_capture_close(g_video);
-        return 1;
-    }
     } /* !g_headless */
 
     if (g_headless && web_autostart) {
@@ -443,13 +497,14 @@ int main(int argc, char **argv) {
     char audio_source_buf[512];
     const char *audio_source =
         config_get_str("AUDIO_SOURCE", audio_source_buf, sizeof(audio_source_buf), DEFAULT_AUDIO_SOURCE);
-    AudioCapture *audio = audio_capture_start(audio_source, &g_app.running, g_web, g_gst);
+    /* No speakers in headless mode: the stream is unaffected, since the
+     * local output only ever fed a monitor for whoever is sitting
+     * here. */
+    AudioCapture *audio =
+        audio_capture_start(audio_source, &g_app.running, g_web, g_gst, !g_headless);
+    g_audio = audio;
     if (!audio) {
         fprintf(stderr, "audio capture unavailable, continuing without sound\n");
-    }
-
-    if (!g_headless) {
-        sync_dock(g_shell, window);
     }
 
     /* Drives the wait-for-the-card-to-come-back path below. */
@@ -475,67 +530,27 @@ int main(int argc, char **argv) {
         }
 
         if (!g_headless) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) {
-                g_app.running = 0;
-            } else if (event.type == SDL_MOUSEBUTTONDOWN && event.button.clicks == 2) {
-                Uint32 flags = SDL_GetWindowFlags(window);
-                Uint32 fullscreen = flags & SDL_WINDOW_FULLSCREEN_DESKTOP;
-                SDL_SetWindowFullscreen(window, fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-                if (fullscreen) {
-                    sync_dock(g_shell, window);
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) {
+                    /* The window's own close button. The program keeps
+                     * running in the tray -- closing a monitor is not
+                     * quitting a capture that other people are
+                     * watching. */
+                    SDL_HideWindow(window);
+                } else if ((event.type == SDL_MOUSEBUTTONDOWN && event.button.clicks == 2) ||
+                           (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F11)) {
+                    const Uint32 flags = SDL_GetWindowFlags(window);
+                    SDL_SetWindowFullscreen(
+                        window, (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) ? 0
+                                                                       : SDL_WINDOW_FULLSCREEN_DESKTOP);
                 }
-            } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F11) {
-                Uint32 flags = SDL_GetWindowFlags(window);
-                Uint32 fullscreen = flags & SDL_WINDOW_FULLSCREEN_DESKTOP;
-                SDL_SetWindowFullscreen(window, fullscreen ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-                if (fullscreen) {
-                    sync_dock(g_shell, window);
-                }
-            } else if (event.type == SDL_WINDOWEVENT &&
-                       (event.window.event == SDL_WINDOWEVENT_MOVED ||
-                        event.window.event == SDL_WINDOWEVENT_RESIZED ||
-                        event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)) {
-                Uint32 flags = SDL_GetWindowFlags(window);
-                if (!(flags & SDL_WINDOW_FULLSCREEN_DESKTOP)) {
-                    sync_dock(g_shell, window);
-                }
-            } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-                /* "Always on top" only while the video has focus: avoids
-                 * staying stuck on top of another app once we've switched
-                 * away. */
-                gtk_shell_set_keep_above(g_shell, 1);
-            } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-                gtk_shell_set_keep_above(g_shell, 0);
-            } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_MINIMIZED) {
-                gtk_shell_set_keep_above(g_shell, 0);
-                gtk_shell_set_iconified(g_shell, 1);
-            } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESTORED) {
-                gtk_shell_set_iconified(g_shell, 0);
-                sync_dock(g_shell, window);
             }
-        }
 
-        /* The control window may have requested a layout change (a direct
-         * move by the user, or toggling pseudo-fullscreen via the
-         * maximize button): apply it. */
-        int layout_x, layout_y, layout_w, layout_h;
-        if (gtk_shell_poll_layout(g_shell, &layout_x, &layout_y, &layout_w, &layout_h)) {
-            SDL_SetWindowPosition(window, layout_x, layout_y);
-            if (layout_w > 0 && layout_h > 0) {
-                SDL_SetWindowSize(window, layout_w, layout_h);
-            }
-        }
-
-        int iconify_request;
-        if (gtk_shell_poll_iconify(g_shell, &iconify_request)) {
-            if (iconify_request) {
-                SDL_MinimizeWindow(window);
-            } else {
-                SDL_RestoreWindow(window);
-            }
-        }
+            /* A controller here drives the console, on the same terms as
+             * a browser or the console client: one more source into the
+             * merge, so several hands combine rather than fight. */
+            local_pad_poll(&g_settings);
         } /* !g_headless */
 
         /* A format switch asked for from the page. Handled here because
@@ -721,6 +736,7 @@ int main(int argc, char **argv) {
     g_switch = NULL;
 
     audio_capture_stop(audio);
+    g_audio = NULL;
     web_stream_destroy(g_web);
     gst_webrtc_stream_destroy(g_gst);
 
@@ -745,6 +761,24 @@ int main(int argc, char **argv) {
          * stops, which the launcher reports as an ordinary exit. */
         fprintf(stderr, "restart: starting again\n");
         fflush(stderr);
+
+        /* argv[0] rather than /proc/self/exe, and that is not a detail.
+         *
+         * Executing /proc/self/exe works, but the kernel names the new
+         * process after the path it was given -- so the program came
+         * back called "exe", and the launcher, which finds it by name,
+         * could no longer see it. It then reported nothing running while
+         * the capture card was still held, and the next start failed
+         * with "device is busy".
+         *
+         * The launcher always invokes this with a full path, so argv[0]
+         * is the real one and the name survives. /proc/self/exe remains
+         * as the fallback for an invocation that came from somewhere
+         * else -- being alive under the wrong name beats not coming
+         * back. */
+        if (argv[0] && strchr(argv[0], '/')) {
+            execv(argv[0], argv);
+        }
         execv("/proc/self/exe", argv);
         fprintf(stderr, "restart: could not start again (%s)\n", strerror(errno));
         return 1;

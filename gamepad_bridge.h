@@ -62,6 +62,9 @@ int gamepad_bridge_init(void);
  * colliding. */
 #define GAMEPAD_SOURCE_BROWSER(i) (0x100u + (unsigned)(i))
 #define GAMEPAD_SOURCE_NATIVE(i)  (0x200u + (unsigned)(i))
+/* A controller plugged into this machine. One, because there is one
+ * person at this keyboard. */
+#define GAMEPAD_SOURCE_LOCAL      0x300u
 
 /* Sends a new gamepad state for one source (array of
  * GAMEPAD_BRIDGE_STATE_COUNT values, indexed by the GAMEPAD_XB360_*

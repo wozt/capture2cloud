@@ -31,8 +31,27 @@ typedef struct AudioCapture AudioCapture;
  * Returns NULL if the thread could not be started. Failing to open the
  * audio device is NOT an error here: the thread reports it and exits,
  * leaving video working -- audio is not worth aborting the app for. */
+/* The speakers on THIS machine: whether they get anything, and how
+ * loud. What the browser and the console receive is untouched either
+ * way -- this is a monitor, not the stream.
+ *
+ * `volume` is 0 to 100, where 25 is the source's own level and 100 is
+ * four times it: the same scale as the page and the console client, so a
+ * number means the same thing wherever it is read.
+ *
+ * In headless mode the local output is never opened at all: nobody is
+ * sitting at a machine with no screen, and a PulseAudio stream nobody
+ * listens to still costs a thread and a device. */
+void audio_capture_set_local_output(AudioCapture *ac, int enabled, int volume);
+
+/* `local_output` opens the speakers on this machine. Pass 0 in headless
+ * mode: nobody is sitting at a machine with no screen, and the stream is
+ * unaffected either way -- this only ever fed a monitor. Not opening it
+ * at all is better than opening it and throwing the samples away, which
+ * still costs a thread, a PulseAudio stream and a device that shows up
+ * in the mixer. */
 AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *running, WebStream *web,
-                                  GstWebrtcStream *gst);
+                                  GstWebrtcStream *gst, int local_output);
 
 /* Waits for the thread to finish. The caller must have cleared the
  * `running` flag first, otherwise this blocks forever. */

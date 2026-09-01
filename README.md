@@ -187,6 +187,28 @@ Without a password set, control is open to anyone who opens the page --
 including a cross-origin POST from any site the user visits, which can
 reach `/wake` and power-cycle the console. Set `PLAYER_PASSWORD`.
 
+On the machine itself there is an icon in the notification area. Right
+click gives *Settings*, *Send controller input* and *Quit*; the settings
+window mirrors the page's controls, grouped the same way. Nothing there
+asks for a password: the person at that keyboard is at the machine the
+console is plugged into, and a login would guard a door they are standing
+behind.
+
+The video window is an ordinary window with its own decorations. It used
+to be borderless with a GTK menu bar glued above it, following its moves,
+mirroring its minimise and faking a fullscreen by moving both -- a great
+deal of machinery to imitate one window out of two, fighting the window
+manager the whole way. Closing it now hides it rather than quitting:
+closing a monitor is not stopping a capture other people are watching.
+
+A controller plugged into this machine can drive the console directly,
+which until now needed a browser open on the machine the console is next
+to. It is one more source into the same merge the browser and the console
+client use, so several hands combine rather than fight. Off in headless
+mode, where the local speakers are not opened either -- nobody is sitting
+at a machine with no screen, and the stream is unaffected since that
+output only ever fed a monitor.
+
 The control bar is one line: mute, volume, and who you are. Everything
 else lives in a group -- *stream*, *picture*, *controls*, *touch pad*,
 *console* -- that opens over the video, one at a time. The volume slider
