@@ -311,6 +311,13 @@ barely louder than it: a stream that arrives quiet stayed quiet. Stored
 positions from the old scale are converted rather than misread, which is
 what the config file's `version` is for.
 
+The host's address and port are typed on the console's own keyboard, the
+port on a number pad. They were only editable by taking the SD card out
+and opening a text file, which is a poor way to move a stream to another
+port. Changing either reconnects straight away: changing where to knock
+and then having to remember to knock is a step nobody wants for its own
+sake.
+
 Everything chosen in the menu -- profile, bitrate, codec, volume, mute --
 -- and the stick limits, whether the diagnostics are shown, and the host
 password -- is written back to `sdmc:/switch/capture2switch.cfg` as it is

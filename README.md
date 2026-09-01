@@ -201,6 +201,13 @@ deal of machinery to imitate one window out of two, fighting the window
 manager the whole way. Closing it now hides it rather than quitting:
 closing a monitor is not stopping a capture other people are watching.
 
+The console's port is settable from the same window and defaults to
+5081. It is its own port because the two streams are two servers -- the
+browser's is HTTP, the console's a small binary protocol -- and moving
+one has no reason to move the other. Changing it disconnects whatever is
+connected, since a listening socket cannot be moved, so it has to be
+changed on the console as well; the client has a field for it.
+
 The tray icon is there in headless mode too: headless means no video
 window, not no desk. The launcher passes a display through when there is
 one, and over ssh or from a unit file the program says once that it has

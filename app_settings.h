@@ -24,6 +24,11 @@ typedef struct {
     /* --- the server's, shared by everyone watching --- */
     int stream_enabled;     /* whether the web server is serving at all */
     int web_port;
+    /* The port the console client connects to. Its own, because the two
+     * streams are two servers: the browser's is HTTP and this one is a
+     * small binary protocol, and moving one has no reason to move the
+     * other. */
+    int switch_port;
     int browser_height;     /* 1080, 720 or 480 -- what the browser gets */
     int bitrate_mbps;       /* the browser encoder's target */
     int capture_mjpeg;      /* 1 = MJPEG from the card, 0 = raw YUYV */
@@ -51,7 +56,8 @@ typedef struct {
  * in. */
 #define APP_SETTINGS_DEFAULTS                                                  \
     {                                                                          \
-        .stream_enabled = 0, .web_port = 5080, .browser_height = 1080,         \
+        .stream_enabled = 0, .web_port = 5080, .switch_port = 5081,             \
+        .browser_height = 1080,         \
         .bitrate_mbps = 12, .capture_mjpeg = 0, .gamepad_enabled = 1,          \
         .gamepad_index = -1, .invert_ry = 0, .lt_threshold = 30,               \
         .rt_threshold = 30, .stick_deadzone = {5, 5}, .stick_range = {100, 100},\
