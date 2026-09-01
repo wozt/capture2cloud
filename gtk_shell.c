@@ -409,6 +409,11 @@ static void on_menu_gamepad(GtkCheckMenuItem *item, gpointer user_data) {
     load_controls(shell);
 }
 
+static void on_menu_show_capture(GtkMenuItem *item, gpointer user_data) {
+    (void)item;
+    act(user_data, GTK_SHELL_ACTION_SHOW_CAPTURE);
+}
+
 static void on_menu_quit(GtkMenuItem *item, gpointer user_data) {
     (void)item;
     act(user_data, GTK_SHELL_ACTION_QUIT);
@@ -419,6 +424,13 @@ static void on_icon_popup(GtkStatusIcon *icon, guint button, guint activate_time
     GtkShell *shell = user_data;
 
     GtkWidget *menu = gtk_menu_new();
+
+    GtkWidget *show = gtk_menu_item_new_with_label("Show capture");
+    gtk_widget_set_tooltip_text(show,
+        "Brings the video window back -- after closing it by accident, or from "
+        "headless, where there was none to begin with.");
+    g_signal_connect(show, "activate", G_CALLBACK(on_menu_show_capture), shell);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), show);
 
     GtkWidget *settings = gtk_menu_item_new_with_label("Settings...");
     g_signal_connect(settings, "activate", G_CALLBACK(on_menu_settings), shell);

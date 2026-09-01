@@ -84,6 +84,12 @@ static GstWebrtcStream *g_gst = NULL;
 static GtkShell *g_shell = NULL;
 static AudioCapture *g_audio = NULL;
 
+/* The video window, and the ask to bring it back. Owned by the main
+ * loop; the tray only ever raises the flag. */
+static SDL_Window *g_window = NULL;
+static SDL_Renderer *g_renderer = NULL;
+static volatile int g_show_window_requested = 0;
+
 /* What the local interface can change, and what is actually in force.
  * The settings window sends its whole set; on_settings() compares. */
 static AppSettings g_settings = APP_SETTINGS_DEFAULTS;
@@ -165,6 +171,66 @@ static void count_native_clients(void *ctx, int *now, int *max) {
     *max = g_switch ? switch_stream_max_clients() : 0;
 }
 
+/* Opens the video window, or brings it back if it is already there.
+ *
+ * The same path at startup and later, because "show capture" has to work
+ * from three states that look different and are not: never opened
+ * (headless), closed by its own button, and minimised. Called only from
+ * the main loop -- SDL's window calls belong on the thread that
+ * initialised video, and the tray runs on its own. */
+static int open_capture_window(void) {
+    if (g_window) {
+        SDL_ShowWindow(g_window);
+        SDL_RestoreWindow(g_window);
+        SDL_RaiseWindow(g_window);
+        return 0;
+    }
+
+    /* Video was never initialised in headless mode, so it is initialised
+     * now. Everything else -- the capture, the encoders, the servers --
+     * has been running all along; this only adds somewhere to look. */
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "show capture: no video (%s)\n", SDL_GetError());
+        return -1;
+    }
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
+    g_window = SDL_CreateWindow(APP_NAME, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                (int)g_app.width, (int)g_app.height,
+                                /* Decorated, like any other window: close, minimise
+                                 * and maximise come from the window manager. It was
+                                 * borderless so a GTK bar could pretend to be its
+                                 * title bar, which meant reimplementing all three
+                                 * badly. */
+                                SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    if (!g_window) {
+        fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    g_renderer = SDL_CreateRenderer(g_window, -1,
+                                    SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!g_renderer) {
+        /* Falling back without vsync means the local window WILL tear --
+         * worth saying out loud rather than leaving it to be discovered
+         * by looking at the picture. */
+        fprintf(stderr, "SDL: vsync unavailable (%s), falling back -- the local window may tear\n",
+                SDL_GetError());
+        g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
+    }
+    if (!g_renderer) {
+        fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
+        SDL_DestroyWindow(g_window);
+        g_window = NULL;
+        return -1;
+    }
+    SDL_RendererInfo info;
+    if (SDL_GetRendererInfo(g_renderer, &info) == 0) {
+        fprintf(stderr, "SDL: renderer '%s', vsync %s\n", info.name,
+                (info.flags & SDL_RENDERER_PRESENTVSYNC) ? "ON" : "OFF");
+    }
+    return 0;
+}
+
 static void on_settings(void *userdata, const AppSettings *want) {
     (void)userdata;
     AppSettings *have = &g_settings;
@@ -243,6 +309,10 @@ static void on_settings(void *userdata, const AppSettings *want) {
 static void on_action(void *userdata, GtkShellAction action) {
     (void)userdata;
     switch (action) {
+        case GTK_SHELL_ACTION_SHOW_CAPTURE:
+            /* Only a request: the window belongs to the main loop. */
+            g_show_window_requested = 1;
+            break;
         case GTK_SHELL_ACTION_WAKE_CONSOLE:
             web_stream_wake_console(g_web);
             break;
@@ -426,8 +496,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    SDL_Window *window = NULL;
-    SDL_Renderer *renderer = NULL;
     SDL_Texture *texture = NULL;
     /* What `texture` was created for. The capture format can change while
      * running, and a texture built for one layout fed the other renders
@@ -458,53 +526,7 @@ int main(int argc, char **argv) {
     g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
 
 
-    if (!g_headless) {
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
-
-    /* Borderless: the GTK control window docks right above it (see
-     * gtk_shell_dock_above below), giving the illusion of a single window
-     * with its own menu bar. Under KWin, Alt+drag (move) and
-     * Alt+right-click-drag (resize) still work without a border. */
-    window = SDL_CreateWindow(APP_NAME, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                          (int)g_app.width, (int)g_app.height,
-                                          /* Decorated, like any other window: close,
-                                           * minimise and maximise come from the window
-                                           * manager. It was borderless so a GTK bar could
-                                           * pretend to be its title bar, which meant
-                                           * reimplementing all three badly. */
-                                          SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
-    if (!window) {
-        fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
-        SDL_Quit();
-        web_stream_destroy(g_web);
-        gst_webrtc_stream_destroy(g_gst);
-        video_capture_close(g_video);
-        return 1;
-    }
-
-    if (web_autostart) {
-        start_or_report_web_stream();
-    }
-
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!renderer) {
-        /* Falling back without vsync means the local window WILL tear --
-         * worth saying out loud rather than leaving it to be discovered
-         * by looking at the picture. */
-        fprintf(stderr, "SDL: vsync unavailable (%s), falling back -- the local window may tear\n",
-                SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    }
-    if (renderer) {
-        SDL_RendererInfo info;
-        if (SDL_GetRendererInfo(renderer, &info) == 0) {
-            fprintf(stderr, "SDL: renderer '%s', vsync %s\n", info.name,
-                    (info.flags & SDL_RENDERER_PRESENTVSYNC) ? "ON" : "OFF");
-        }
-    }
-    if (!renderer) {
-        fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
+    if (!g_headless && open_capture_window() != 0) {
         SDL_Quit();
         gtk_shell_stop(g_shell);
         web_stream_destroy(g_web);
@@ -512,14 +534,13 @@ int main(int argc, char **argv) {
         video_capture_close(g_video);
         return 1;
     }
-
-    /* The texture is built on the first frame instead, once what the
-     * capture actually produces is known. Asking the card was never
-     * quite the same question: MJPEG now arrives as planes whose
-     * subsampling comes from the JPEG, not from the format that was
-     * requested. */
-    texture = NULL;
-    } /* !g_headless */
+    if (!g_headless && web_autostart) {
+        start_or_report_web_stream();
+    }
+    /* The texture is built on the first frame, once what the capture
+     * actually produces is known. Asking the card was never quite the
+     * same question: MJPEG arrives as planes whose subsampling comes
+     * from the JPEG, not from the format that was requested. */
 
     if (g_headless && web_autostart) {
         /* Windowed mode starts it earlier, alongside the control bar. */
@@ -581,7 +602,12 @@ int main(int argc, char **argv) {
             break;
         }
 
-        if (!g_headless) {
+        if (g_show_window_requested) {
+            g_show_window_requested = 0;
+            open_capture_window();
+        }
+
+        if (g_window) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_QUIT) {
@@ -589,17 +615,17 @@ int main(int argc, char **argv) {
                      * running in the tray -- closing a monitor is not
                      * quitting a capture that other people are
                      * watching. */
-                    SDL_HideWindow(window);
+                    SDL_HideWindow(g_window);
                 } else if ((event.type == SDL_MOUSEBUTTONDOWN && event.button.clicks == 2) ||
                            (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F11)) {
-                    const Uint32 flags = SDL_GetWindowFlags(window);
+                    const Uint32 flags = SDL_GetWindowFlags(g_window);
                     SDL_SetWindowFullscreen(
-                        window, (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) ? 0
+                        g_window, (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) ? 0
                                                                        : SDL_WINDOW_FULLSCREEN_DESKTOP);
                 }
             }
 
-        } /* !g_headless */
+        } /* g_window */
 
         /* A format switch asked for from the page. Handled here because
          * this loop owns the mapped buffers: closing the device from the
@@ -759,8 +785,8 @@ int main(int argc, char **argv) {
                 gamepad_bridge_reset();
             }
 
-            if (!g_headless && renderer) {
-                show_frame(renderer, &texture, &texture_pixel, &frame, (int)g_app.width,
+            if (g_renderer) {
+                show_frame(g_renderer, &texture, &texture_pixel, &frame, (int)g_app.width,
                            (int)g_app.height);
             }
         }
@@ -790,8 +816,8 @@ int main(int argc, char **argv) {
     gst_webrtc_stream_destroy(g_gst);
 
     if (texture) SDL_DestroyTexture(texture);
-    if (renderer) SDL_DestroyRenderer(renderer);
-    if (window) SDL_DestroyWindow(window);
+    if (g_renderer) SDL_DestroyRenderer(g_renderer);
+    if (g_window) SDL_DestroyWindow(g_window);
     SDL_Quit();
     if (g_shell) {
         gtk_shell_stop(g_shell);
