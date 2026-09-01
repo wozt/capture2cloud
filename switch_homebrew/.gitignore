@@ -1,0 +1,8 @@
+# Build output. The .nro is what goes on the SD card; it is rebuilt from
+# source by `make`, so there is no reason to commit it.
+build/
+*.nro
+*.nso
+*.nacp
+*.elf
+*.map
