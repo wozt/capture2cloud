@@ -52,8 +52,9 @@ typedef struct AudioCapture AudioCapture;
  * In headless mode the local output is never opened at all: nobody is
  * sitting at a machine with no screen, and a PulseAudio stream nobody
  * listens to still costs a thread and a device. */
-void audio_capture_set_local_output(AudioCapture *ac, int enabled, int volume);
+void audio_capture_set_local_output(AudioCapture *ac, int enabled);
 void audio_capture_set_local_mute(AudioCapture *ac, int muted);
+void audio_capture_set_local_volume(AudioCapture *ac, int volume);
 
 /* `local_output` opens the speakers on this machine. Pass 0 in headless
  * mode: nobody is sitting at a machine with no screen, and the stream is

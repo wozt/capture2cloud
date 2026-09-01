@@ -713,7 +713,7 @@ static void local_playback_close(AudioCapture *ac) {
     }
 }
 
-void audio_capture_set_local_output(AudioCapture *ac, int enabled, int volume) {
+void audio_capture_set_local_output(AudioCapture *ac, int enabled) {
     if (!ac) {
         return;
     }
@@ -721,7 +721,17 @@ void audio_capture_set_local_output(AudioCapture *ac, int enabled, int volume) {
      * opening a PulseAudio stream from whichever thread happened to
      * click a menu is how two threads end up owning one device. */
     ac->local_wanted = enabled ? 1 : 0;
-    ac->local_volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
+}
+
+void audio_capture_set_local_volume(AudioCapture *ac, int volume) {
+    /* Separate from the two above, so that moving a slider cannot
+     * decide whether the speakers exist. Every setting arrives as one
+     * whole set, and a volume change used to carry "and open them"
+     * along with it -- which would have brought the sound back after
+     * the window was closed, because someone moved the bitrate. */
+    if (ac) {
+        ac->local_volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
+    }
 }
 
 void audio_capture_set_local_mute(AudioCapture *ac, int muted) {
