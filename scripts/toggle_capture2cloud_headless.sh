@@ -55,7 +55,15 @@ c2c_load_env
 c2c_check_devices || exit 1
 c2c_build_if_needed || exit 1
 
-# Deliberately no DISPLAY: the point of this mode is not needing one.
+# DISPLAY is passed through when there is one, and simply absent when
+# there is not.
+#
+# It used to be dropped on purpose -- the point of this mode being that
+# it needs no display -- which is true of the CAPTURE and false of the
+# tray icon. Headless means no video window, not no desk: someone running
+# it this way still wants somewhere to change the bitrate and something
+# to quit with. Over ssh or from a unit file there is no DISPLAY to pass,
+# the program says so once and carries on without a tray.
 setsid "$C2C_BIN" --headless "$CAPTURE_VIDEO" >"$LOG_FILE" 2>&1 &
 
 PID=$!

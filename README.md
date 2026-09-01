@@ -201,6 +201,11 @@ deal of machinery to imitate one window out of two, fighting the window
 manager the whole way. Closing it now hides it rather than quitting:
 closing a monitor is not stopping a capture other people are watching.
 
+The tray icon is there in headless mode too: headless means no video
+window, not no desk. The launcher passes a display through when there is
+one, and over ssh or from a unit file the program says once that it has
+no tray and carries on capturing.
+
 A controller plugged into this machine can drive the console directly,
 which until now needed a browser open on the machine the console is next
 to. It is one more source into the same merge the browser and the console

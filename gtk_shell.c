@@ -4,6 +4,7 @@
 
 #include <SDL2/SDL.h>
 #include <gtk/gtk.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,9 +46,15 @@ struct GtkShell {
      * threads, could ping-pong. */
     int loading;
 
+    /* The controllers the program can see. Copied in under the lock and
+     * rebuilt into the list on the GTK thread. */
+    char controllers[8][96];
+    int controller_count;
+
     volatile int running;
     volatile int settings_dirty; /* the program changed something */
     volatile int status_dirty;
+    volatile int controllers_dirty;
 };
 
 /* Every control that shows a value, so refreshing is a loop rather than
@@ -211,7 +218,6 @@ static void load_controls(GtkShell *shell) {
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.capture_format), s.capture_mjpeg ? 1 : 0);
 
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.gamepad_enabled), s.gamepad_enabled);
-    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.gamepad_device), s.gamepad_index + 1);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.invert_ry), s.invert_ry);
     gtk_range_set_value(GTK_RANGE(g_c.lt_threshold), s.lt_threshold);
     gtk_range_set_value(GTK_RANGE(g_c.rt_threshold), s.rt_threshold);
@@ -430,6 +436,8 @@ static void on_icon_activate(GtkStatusIcon *icon, gpointer user_data) {
 
 /* --- the loop -------------------------------------------------------- */
 
+static void reload_controllers(GtkShell *shell);
+
 /* Picks up what the program changed behind the interface's back. A
  * timeout rather than an idle callback so it costs nothing while
  * nothing is happening. */
@@ -438,6 +446,10 @@ static gboolean on_tick(gpointer user_data) {
     if (!shell->running) {
         gtk_main_quit();
         return G_SOURCE_REMOVE;
+    }
+    if (shell->controllers_dirty) {
+        shell->controllers_dirty = 0;
+        reload_controllers(shell);
     }
     if (shell->settings_dirty) {
         shell->settings_dirty = 0;
@@ -455,10 +467,41 @@ static gboolean on_tick(gpointer user_data) {
     return G_SOURCE_CONTINUE;
 }
 
+static gboolean on_check_embedded(gpointer user_data) {
+    GtkShell *shell = user_data;
+    if (gtk_status_icon_is_embedded(shell->icon)) {
+        fprintf(stderr, "gtk_shell: tray icon shown\n");
+    } else {
+        fprintf(stderr, "gtk_shell: the desktop has no system tray -- no icon. "
+                        "Settings are still reachable from the web page.\n");
+    }
+    return G_SOURCE_REMOVE;
+}
+
 static int gtk_thread_main(void *arg) {
     GtkShell *shell = arg;
 
-    gtk_init(NULL, NULL);
+    /* Checked rather than assumed: headless is also how this runs over
+     * ssh and from a systemd unit, where there is no display at all. The
+     * tray is a convenience; not having one is not a reason to refuse to
+     * capture. */
+    if (!gtk_init_check(NULL, NULL)) {
+        fprintf(stderr, "gtk_shell: no display, running without a tray icon\n");
+        shell->running = 0;
+        return 0;
+    }
+    /* Numbers on the wire stay machine-readable.
+     *
+     * gtk_init sets the locale from the environment, which on this
+     * machine is French -- and from that moment printf("%.1f") writes
+     * "9,9". That reached an HTTP endpoint and broke a client parsing
+     * it. The interface keeps the locale for everything it shows a
+     * person; only the numeric part goes back to C, which is what any
+     * program that formats numbers for another program has to do.
+     *
+     * Set here rather than in main because this is what changed it. */
+    setlocale(LC_NUMERIC, "C");
+
     build_settings_window(shell);
 
     /* A stock icon: shipping one would mean an asset to install and a
@@ -468,6 +511,15 @@ static int gtk_thread_main(void *arg) {
     gtk_status_icon_set_tooltip_text(shell->icon, "Capture2Cloud");
     g_signal_connect(shell->icon, "popup-menu", G_CALLBACK(on_icon_popup), shell);
     g_signal_connect(shell->icon, "activate", G_CALLBACK(on_icon_activate), shell);
+
+    /* Whether the tray actually took it, said out loud once.
+     *
+     * Embedding is asynchronous and can simply not happen -- a desktop
+     * with no system tray, a session where nothing owns the XEmbed
+     * selection. The icon then exists and is nowhere, which from the
+     * outside is indistinguishable from the program having failed to
+     * start it. One line settles that. */
+    g_timeout_add_seconds(2, on_check_embedded, shell);
 
     g_timeout_add(200, on_tick, shell);
     gtk_main();
@@ -560,17 +612,54 @@ void gtk_shell_stop(GtkShell *shell) {
     free(shell);
 }
 
-/* The controllers SDL can see, for the dropdown. Rebuilt on demand
- * rather than watched: a controller plugged in while the window is open
- * appears the next time it is opened, which is soon enough for something
- * done once. */
 void gtk_shell_set_controllers(GtkShell *shell, const char *const *names, int count) {
-    if (!shell || !g_c.gamepad_device) {
+    if (!shell) {
         return;
     }
+    if (count > 8) {
+        count = 8;
+    }
+    SDL_LockMutex(shell->lock);
+    int changed = (count != shell->controller_count);
+    for (int i = 0; i < count; i++) {
+        if (strncmp(shell->controllers[i], names[i], sizeof(shell->controllers[i])) != 0) {
+            changed = 1;
+        }
+        snprintf(shell->controllers[i], sizeof(shell->controllers[i]), "%s", names[i]);
+    }
+    shell->controller_count = count;
+    SDL_UnlockMutex(shell->lock);
+    /* Only when it actually differs: rebuilding the list resets the
+     * selection, and doing that every second would make the control
+     * impossible to use. */
+    if (changed) {
+        shell->controllers_dirty = 1;
+    }
+}
+
+/* Caller is on the GTK thread. */
+static void reload_controllers(GtkShell *shell) {
+    if (!g_c.gamepad_device) {
+        return;
+    }
+    char names[8][96];
+    int count, chosen;
+    SDL_LockMutex(shell->lock);
+    count = shell->controller_count;
+    memcpy(names, shell->controllers, sizeof(names));
+    chosen = shell->settings.gamepad_index;
+    SDL_UnlockMutex(shell->lock);
+
+    shell->loading = 1;
     gtk_combo_box_text_remove_all(GTK_COMBO_BOX_TEXT(g_c.gamepad_device));
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.gamepad_device), "none");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.gamepad_device),
+                                   count ? "none" : "none detected");
     for (int i = 0; i < count; i++) {
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.gamepad_device), names[i]);
     }
+    if (chosen >= count) {
+        chosen = -1;
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.gamepad_device), chosen + 1);
+    shell->loading = 0;
 }
