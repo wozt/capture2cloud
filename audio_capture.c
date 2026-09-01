@@ -96,6 +96,12 @@ struct AudioCapture {
      * what the browser and the console receive. Read on the capture
      * thread, written on GTK's -- an int either side of a change is one
      * chunk of five milliseconds, so no lock earns its keep. */
+    /* Asked for from elsewhere, acted on by the capture thread. Two
+     * different things: `wanted` is whether the speakers exist at all,
+     * which is what "show capture" turns on in a session that started
+     * headless; `muted` is a stream that is open and silent, which is
+     * instant and keeps the device alive. */
+    volatile int local_wanted;
     volatile int local_muted;
     volatile int local_volume;  /* 0..100, 25 = the source's own level */
     SDL_Thread *playback_thread;
@@ -104,6 +110,17 @@ struct AudioCapture {
 
 /* Consumes the ring at the speakers' own pace. Blocking here is fine --
  * that is the entire point of moving it off the capture thread. */
+/* Opens the speakers here and the thread that feeds them.
+ *
+ * Split out of the capture's setup so it can happen later as well.
+ * Headless opens nothing, and "show capture" then brings the picture
+ * back -- and used to bring the picture back and nothing else, because
+ * the only chance to open the speakers had gone by half an hour
+ * earlier. Failing is not fatal: the capture, and therefore the stream,
+ * carries on without them. */
+static int local_playback_open(AudioCapture *ac);
+static void local_playback_close(AudioCapture *ac);
+
 static int playback_thread_main(void *arg) {
     struct PlaybackRing *r = arg;
     int16_t *chunk = malloc(r->chunk_samples * sizeof(int16_t));
@@ -429,7 +446,6 @@ static int audio_thread(void *arg) {
     play_attr.minreq = (uint32_t)chunk_bytes;
     play_attr.fragsize = (uint32_t)-1;
 
-    int error = 0;
     PaRecord rec;
     /* Room for a good fraction of a second, so a scheduling hiccup on
      * this side costs latency rather than a hole in the sound. */
@@ -438,30 +454,15 @@ static int audio_thread(void *arg) {
         return 1;
     }
 
-    /* Local playback is optional and, when on, lives on its own thread
-     * (see PlaybackRing above). Failing to open it must not take the
-     * capture -- and therefore the stream -- down with it. */
-    if (ac->local_playback) {
-        ac->ring.chunk_samples = chunk_frames * 2;
-        ac->ring.data = malloc(PLAYBACK_RING_CHUNKS * ac->ring.chunk_samples * sizeof(int16_t));
-        ac->ring.mutex = SDL_CreateMutex();
-        ac->ring.cond = SDL_CreateCond();
-        ac->ring.spec = ss;
-        ac->ring.attr = play_attr;
-        ac->ring.play =
-            pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, NULL, "Capture audio", &ss, NULL, &play_attr, &error);
-        if (!ac->ring.data || !ac->ring.mutex || !ac->ring.cond || !ac->ring.play) {
-            fprintf(stderr, "audio_capture: local playback unavailable (%s), continuing without it\n",
-                    pa_strerror(error));
-            ac->local_playback = 0;
-        } else {
-            ac->ring.running = 1;
-            ac->playback_thread = SDL_CreateThread(playback_thread_main, "audio-playback", &ac->ring);
-            if (!ac->playback_thread) {
-                ac->ring.running = 0;
-                ac->local_playback = 0;
-            }
-        }
+    ac->ring.chunk_samples = chunk_frames * 2;
+    ac->ring.spec = ss;
+    ac->ring.attr = play_attr;
+    /* Both: allowed by the .env, and asked for right now. Opening on
+     * the first alone meant headless opened the speakers and the loop
+     * closed them again a chunk later -- a device appearing in the mixer
+     * for five milliseconds. */
+    if (ac->local_playback && ac->local_wanted) {
+        local_playback_open(ac);
     }
 
     int16_t samples[64 * 2];
@@ -576,7 +577,16 @@ static int audio_thread(void *arg) {
             web_sample_frames = 0;
         }
 
-        if (ac->local_playback) {
+        /* Opened and closed here rather than where it is asked for: the
+         * capture thread owns the stream. */
+        if (ac->local_playback && ac->local_wanted && !ac->ring.play) {
+            local_playback_open(ac);
+        } else if (ac->ring.play && !ac->local_wanted) {
+            local_playback_close(ac);
+            fprintf(stderr, "audio_capture: local speakers off\n");
+        }
+
+        if (ac->ring.play) {
             /* Muting pushes SILENCE rather than pushing nothing.
              *
              * Stopping the writes was the obvious way and left the
@@ -610,22 +620,7 @@ static int audio_thread(void *arg) {
         }
     }
 
-    /* Stop the playback thread before tearing its stream down. */
-    if (ac->ring.mutex) {
-        SDL_LockMutex(ac->ring.mutex);
-        ac->ring.running = 0;
-        SDL_CondSignal(ac->ring.cond);
-        SDL_UnlockMutex(ac->ring.mutex);
-    }
-    if (ac->playback_thread) {
-        SDL_WaitThread(ac->playback_thread, NULL);
-        ac->playback_thread = NULL;
-    }
-    if (ac->ring.play) {
-        pa_simple_drain(ac->ring.play, &error);
-        pa_simple_free(ac->ring.play);
-        ac->ring.play = NULL;
-    }
+    local_playback_close(ac);
     if (ac->ring.mutex) SDL_DestroyMutex(ac->ring.mutex);
     if (ac->ring.cond) SDL_DestroyCond(ac->ring.cond);
     free(ac->ring.data);
@@ -646,7 +641,11 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
     /* On by default: the native window is a legitimate way to use this
      * (screen sharing over Discord, for one). Turn it off when only the
      * browser matters -- it saves a thread and a sound-card stream. */
-    ac->local_playback = local_output && (int)config_get_int("LOCAL_PLAYBACK", 1, 0, 1);
+    /* `local_playback` is whether they are ALLOWED at all -- the .env's
+     * say, decided once. `local_wanted` is whether they are on right
+     * now, which headless starts with off and "show capture" turns on. */
+    ac->local_playback = (int)config_get_int("LOCAL_PLAYBACK", 1, 0, 1);
+    ac->local_wanted = local_output;
     ac->local_volume = 25; /* the source's own level; see the header */
     if (source && source[0]) {
         snprintf(ac->source_buf, sizeof(ac->source_buf), "%s", source);
@@ -664,12 +663,71 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
     return ac;
 }
 
+static int local_playback_open(AudioCapture *ac) {
+    if (ac->ring.play) {
+        return 0;
+    }
+    int error = 0;
+    if (!ac->ring.mutex) ac->ring.mutex = SDL_CreateMutex();
+    if (!ac->ring.cond) ac->ring.cond = SDL_CreateCond();
+    if (!ac->ring.data) {
+        ac->ring.data = malloc(PLAYBACK_RING_CHUNKS * ac->ring.chunk_samples * sizeof(int16_t));
+    }
+    ac->ring.head = ac->ring.tail = ac->ring.count = 0;
+    ac->ring.play = pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, NULL, "Capture audio",
+                                  &ac->ring.spec, NULL, &ac->ring.attr, &error);
+    if (!ac->ring.data || !ac->ring.mutex || !ac->ring.cond || !ac->ring.play) {
+        fprintf(stderr, "audio_capture: local playback unavailable (%s), continuing without it\n",
+                pa_strerror(error));
+        local_playback_close(ac);
+        return -1;
+    }
+    ac->ring.running = 1;
+    ac->playback_thread = SDL_CreateThread(playback_thread_main, "audio-playback", &ac->ring);
+    if (!ac->playback_thread) {
+        local_playback_close(ac);
+        return -1;
+    }
+    fprintf(stderr, "audio_capture: local speakers on\n");
+    return 0;
+}
+
+static void local_playback_close(AudioCapture *ac) {
+    /* The thread first, then its stream: freeing a stream something is
+     * writing to is the one ordering that cannot be recovered from. */
+    if (ac->ring.mutex) {
+        SDL_LockMutex(ac->ring.mutex);
+        ac->ring.running = 0;
+        SDL_CondSignal(ac->ring.cond);
+        SDL_UnlockMutex(ac->ring.mutex);
+    }
+    if (ac->playback_thread) {
+        SDL_WaitThread(ac->playback_thread, NULL);
+        ac->playback_thread = NULL;
+    }
+    if (ac->ring.play) {
+        int error = 0;
+        pa_simple_free(ac->ring.play);
+        ac->ring.play = NULL;
+        (void)error;
+    }
+}
+
 void audio_capture_set_local_output(AudioCapture *ac, int enabled, int volume) {
     if (!ac) {
         return;
     }
-    ac->local_muted = !enabled;
+    /* Only asked for here. The capture thread owns the stream, and
+     * opening a PulseAudio stream from whichever thread happened to
+     * click a menu is how two threads end up owning one device. */
+    ac->local_wanted = enabled ? 1 : 0;
     ac->local_volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
+}
+
+void audio_capture_set_local_mute(AudioCapture *ac, int muted) {
+    if (ac) {
+        ac->local_muted = muted ? 1 : 0;
+    }
 }
 
 void audio_capture_stop(AudioCapture *ac) {
