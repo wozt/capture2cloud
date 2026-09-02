@@ -70,7 +70,33 @@ static const struct {
  * capture) -- left as-is for now, priority being the latency of the
  * virtual state, which does not depend on it. */
 #define GCAPI_REPORT_OFFSET 7
-#define GCAPI_REPORT_INPUT_OFFSET (GCAPI_REPORT_OFFSET + 9) /* +controller+console+led[4]+rumble[2]+battery */
+
+/* Where the 21 input values start inside a received input report.
+ *
+ * Found by measurement, not by adding up the fields: with a controller
+ * plugged into the adapter and every button, trigger and stick worked in
+ * turn, exactly 21 consecutive bytes moved, at 18 to 38. Their ranges
+ * confirm the mapping on their own -- buttons and triggers 0..100, the
+ * four stick bytes the full signed range, and the only two that never
+ * moved were the two stick clicks, which were the only inputs not
+ * pressed.
+ *
+ * It used to be +9, from adding up the documented fields
+ * (controller, console, led[4], rumble[2], battery). That is two short,
+ * and being two short is what made the passthrough unusable: slot 1,
+ * BACK, read byte 17, which holds a constant 10. The console therefore
+ * saw "back" held down forever and the merge was turned off. */
+#define GCAPI_REPORT_INPUT_OFFSET (GCAPI_REPORT_OFFSET + 11)
+
+/* How long a controller state is trusted after the last good report.
+ *
+ * The read below uses a very short timeout so it cannot slow the send
+ * loop, which means it comes back empty most passes -- the adapter does
+ * not have a new report every time we ask. Zeroing on every miss would
+ * make a held button flicker off between reports; keeping it forever is
+ * how a single bad read latches a button down for good. So it is kept,
+ * but only for a moment. */
+#define REAL_PAD_STALE_MS 200
 
 #define REPORT_SIZE 64 /* actual size on the wire: header(4) + data(60) */
 #define REPORT_DATA_SIZE (REPORT_SIZE - 4)
@@ -135,8 +161,20 @@ static volatile int g_home_press_requested = 0;
  * reopened -- rather than just re-enumerating. Three seconds, since two
  * was the shortest unplug observed to work. */
 #define RESET_HOLD_MS 3000
-/* How often the send loop reports its own throughput. */
+/* How often the send loop PRINTS its own throughput. Five seconds
+ * because that is a sensible pace for a log line, not because anything
+ * needs measuring that slowly. */
 #define SEND_STATS_INTERVAL_MS 5000
+/* How often the rate reported by gamepad_bridge_report_rate() -- and so
+ * by GET /gamepad-rate -- is recomputed.
+ *
+ * Kept separate from the line above, which it used to share. Sharing
+ * meant the only way to see that input had started arriving was to wait
+ * out a five-second window, and the test that checks a viewer's input is
+ * refused had to wait out several of them: it alone accounted for 106 of
+ * the 113 seconds a full test run took. One second is still ten
+ * keepalives, so the figure is no noisier for being current. */
+#define RATE_WINDOW_MS 1000
 /* Longest silence before an unchanged report goes out anyway, so the
  * adapter never concludes we stopped talking to it. Well under any
  * plausible timeout, and far above the input rate that matters. */
@@ -515,6 +553,7 @@ static int find_hid_endpoints(libusb_device *dev, int *interface_number, unsigne
  * Very short timeout: this is a complement to the virtual stream, no
  * question of slowing down sending if nothing is available right away. */
 static void read_real_controller_state(void) {
+    static Uint32 last_good_ms = 0;
     if (!g_in_ep) {
         return;
     }
@@ -527,14 +566,19 @@ static void read_real_controller_state(void) {
      * read latch a button as permanently pressed until the next good read
      * (this is currently moot since the merge that consumes g_real_state
      * is disabled above, but keep this correct for when it's re-enabled). */
-    if (ret != 0 || transferred < GCAPI_REPORT_INPUT_OFFSET + GAMEPAD_BRIDGE_STATE_COUNT) {
-        memset(g_real_state, 0, sizeof(g_real_state));
+    /* Nothing this pass is the normal case, not an error: the adapter
+     * simply had no new report ready within the three milliseconds we
+     * are willing to wait. The previous state stands until it goes
+     * stale, so a held button stays held instead of stuttering. */
+    if (ret != 0 || transferred < GCAPI_REPORT_INPUT_OFFSET + GAMEPAD_BRIDGE_STATE_COUNT ||
+        buf[0] != GPPKG_INPUT_REPORT) {
+        if (last_good_ms && SDL_GetTicks() - last_good_ms > REAL_PAD_STALE_MS) {
+            memset(g_real_state, 0, sizeof(g_real_state));
+            last_good_ms = 0;
+        }
         return;
     }
-    if (buf[0] != GPPKG_INPUT_REPORT) {
-        memset(g_real_state, 0, sizeof(g_real_state));
-        return;
-    }
+    last_good_ms = SDL_GetTicks();
     /* Free of charge, from a report we are already reading: the console
      * the adapter says it has found on its output port. 0 means nothing
      * is plugged in there -- which is what it reported the moment the
@@ -606,9 +650,11 @@ static int send_thread_main(void *arg) {
     Uint32 home_until_ms = 0;
 
     unsigned long stat_reports = 0;
+    unsigned long rate_reports = 0;
     double stat_transfer_ms = 0;
     double stat_worst_ms = 0;
     Uint32 stat_since = SDL_GetTicks();
+    Uint32 rate_since = stat_since;
     /* Continuous loop, with no artificial wait whatsoever: each pass
      * re-reads the most recent state, sends it, then immediately re-reads
      * the real controller for the next pass. The only time that elapses
@@ -677,24 +723,27 @@ static int send_thread_main(void *arg) {
         memcpy(snapshot, g_latest_state, sizeof(snapshot));
         SDL_UnlockMutex(g_state_mutex);
 
-        /* Real-controller merge temporarily disabled: g_real_state is
-         * populated by read_real_controller_state() using an unverified
-         * byte offset (GCAPI_REPORT_INPUT_OFFSET, see above), and on top
-         * of that a garbage byte read once is never cleared afterwards
-         * (read_real_controller_state() silently keeps the previous value
-         * whenever a report read fails/times out or the report layout
-         * doesn't match). A single bad read at the wrong offset can
-         * therefore make one button look permanently held down forever
-         * after -- this is exactly what was making "Select" look stuck
-         * pressed. Until the real offset is verified (see README goals),
-         * only the virtual/browser state drives the output. We still call
-         * read_real_controller_state() below to keep this loop's timing
-         * identical (same number/order of USB transfers) to the version
-         * whose latency was confirmed "perfect" -- do not remove that
-         * call, only re-enable using its result once the offset is fixed. */
+        /* A controller plugged into the adapter's own input port counts
+         * as one more player, merged the same way the remote ones are:
+         * a button is pressed if anyone presses it, and the largest
+         * deflection wins for a stick. Someone sitting at the console
+         * can therefore play alongside whoever is on the page.
+         *
+         * This was off for a long time, and for a good reason at the
+         * time: it was reading two bytes short of where the values
+         * actually are, so "back" read a constant 10 and the console saw
+         * it held down forever. The offset is now measured rather than
+         * derived -- see GCAPI_REPORT_INPUT_OFFSET. */
         uint8_t output[GCAPI_OUTPUT_TOTAL] = {0};
         for (int i = 0; i < GAMEPAD_BRIDGE_STATE_COUNT && i < GCAPI_OUTPUT_TOTAL; i++) {
-            output[i] = (uint8_t)clamp_i8((int)snapshot[i]);
+            int v = snapshot[i];
+            int real = g_real_state[i];
+            if (is_axis(i)) {
+                if (abs(real) > abs(v)) v = real;
+            } else if (real > v) {
+                v = real;
+            }
+            output[i] = (uint8_t)clamp_i8(v);
         }
 
         /* A HOME press asked for by a client. Overlaid on whatever else
@@ -748,9 +797,15 @@ static int send_thread_main(void *arg) {
          * you play -- which no amount of resetting the USB link would
          * fix. This is the number that says whether that is happening. */
         stat_reports++;
+        rate_reports++;
         stat_transfer_ms += transfer_ms;
         if (transfer_ms > stat_worst_ms) stat_worst_ms = transfer_ms;
         Uint32 now_ms = SDL_GetTicks();
+        if (now_ms - rate_since >= RATE_WINDOW_MS) {
+            g_reports_per_sec = rate_reports * 1000.0 / (now_ms - rate_since);
+            rate_reports = 0;
+            rate_since = now_ms;
+        }
         if (now_ms - stat_since >= SEND_STATS_INTERVAL_MS) {
             double secs = (now_ms - stat_since) / 1000.0;
             /* Nothing here writes anything on its own.
@@ -760,7 +815,6 @@ static int send_thread_main(void *arg) {
              * few seconds for as long as the program runs is a file
              * growing forever to report that nothing happened. Behind
              * VERBOSE, like every other periodic line. */
-            g_reports_per_sec = stat_reports / secs;
             if (app_verbose()) {
                 fprintf(stderr, "gamepad_bridge: %.0f reports/s, transfer avg %.2f ms / worst %.2f ms\n",
                         stat_reports / secs, stat_reports ? stat_transfer_ms / stat_reports : 0.0,
