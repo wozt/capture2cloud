@@ -83,6 +83,18 @@ struct PlaybackRing {
     pa_buffer_attr attr;
 };
 
+/* The top of the volume slider, as a multiple of the source's own level.
+ *
+ * Eight, so a stream that arrives quiet can still be made loud. The
+ * displayed scale stays 0-100, which puts the source's own level at
+ * 12.5 -- not a whole number, so the default is 13 and sits four percent
+ * above the source. Nobody can hear four percent, and it keeps the
+ * slider honest at both ends.
+ *
+ * The same eight is used by the page and by the console client, so a
+ * given position sounds the same wherever the sound is coming out. */
+#define LOCAL_VOLUME_MAX_GAIN 8
+
 struct AudioCapture {
     SDL_Thread *thread;
     volatile sig_atomic_t *running;
@@ -103,7 +115,7 @@ struct AudioCapture {
      * instant and keeps the device alive. */
     volatile int local_wanted;
     volatile int local_muted;
-    volatile int local_volume;  /* 0..100, 25 = the source's own level */
+    volatile int local_volume;  /* 0..100, 13 = about the source's own level */
     SDL_Thread *playback_thread;
     struct PlaybackRing ring;
 };
@@ -605,8 +617,8 @@ static int audio_thread(void *arg) {
             if (ac->local_muted) {
                 memset(local, 0, chunk_frames * 2 * sizeof(int16_t));
                 playback_ring_push(&ac->ring, local);
-            } else if (ac->local_volume != 25) {
-                const int gain = ac->local_volume * 4; /* percent of the source */
+            } else if (ac->local_volume * LOCAL_VOLUME_MAX_GAIN != 100) {
+                const int gain = ac->local_volume * LOCAL_VOLUME_MAX_GAIN; /* percent of the source */
                 for (size_t i = 0; i < chunk_frames * 2; i++) {
                     int v = samples[i] * gain / 100;
                     if (v > 32767) v = 32767;
@@ -646,7 +658,7 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
      * now, which headless starts with off and "show capture" turns on. */
     ac->local_playback = (int)config_get_int("LOCAL_PLAYBACK", 1, 0, 1);
     ac->local_wanted = local_output;
-    ac->local_volume = 25; /* the source's own level; see the header */
+    ac->local_volume = 13; /* about the source's own level; see the header */
     if (source && source[0]) {
         snprintf(ac->source_buf, sizeof(ac->source_buf), "%s", source);
         ac->source = ac->source_buf;

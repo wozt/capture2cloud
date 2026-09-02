@@ -25,7 +25,7 @@
 
 /* Bumped when the MEANING of a stored value changes, so the old one can
  * be converted rather than misread. */
-#define CONFIG_VERSION 2
+#define CONFIG_VERSION 3
 
 #define CONFIG_PATH "sdmc:/switch/capture2switch.cfg"
 
@@ -267,7 +267,7 @@ static int next_in(const int *values, int count, int current) {
 
 /* Read from the config file before the audio module exists, and applied
  * once it does. */
-static int g_saved_volume = 25; /* the stream's own level; see audio.h */
+static int g_saved_volume = 13; /* about the stream's own level; see audio.h */
 static int g_saved_muted = 0;
 
 /* --- configuration --------------------------------------------------- */
@@ -336,6 +336,12 @@ static void load_config(void) {
      * have jumped to four times what they had chosen. */
     if (cfg_version < 2) {
         g_saved_volume /= 4;
+    }
+    /* Version 2's scale topped out at four times the stream's own level;
+     * it now tops out at eight, so the same position is twice as loud.
+     * Halved, or everyone's sound would double on the next launch. */
+    if (cfg_version < 3) {
+        g_saved_volume /= 2;
     }
     if (g_saved_volume < 0) g_saved_volume = 0;
     if (g_saved_volume > 100) g_saved_volume = 100;

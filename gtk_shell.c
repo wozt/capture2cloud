@@ -529,7 +529,7 @@ static void build_settings_window(GtkShell *shell) {
         "receive is untouched.");
     g_c.volume = add_row(grid, row++, "volume (%)", make_scale(shell, 0, 100, 5, "%"));
     gtk_widget_set_tooltip_text(g_c.volume,
-        "0 to 100, where 25 is the source's own level and 100 is four times it -- "
+        "0 to 100, where about 13 is the source's own level and 100 is eight times it -- "
         "the same scale as the page and the console client.");
     g_c.brightness = add_row(grid, row++, "brightness (%)", make_scale(shell, 50, 150, 5, "%"));
     g_c.contrast = add_row(grid, row++, "contrast (%)", make_scale(shell, 50, 150, 5, "%"));
