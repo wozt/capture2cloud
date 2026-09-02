@@ -125,9 +125,10 @@ Then build and run:
 gcc -O2 -Wall -Wextra -o capture2cloud \
   capture2cloud.c video_capture.c audio_capture.c gtk_shell.c \
   web_stream.c gst_webrtc.c gamepad_bridge.c app_config.c \
-  $(pkg-config --cflags --libs sdl2 libpulse-simple libjpeg gtk+-3.0 \
+  switch_stream.c local_pad.c \
+  $(pkg-config --cflags --libs sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 \
     x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 \
-    gstreamer-sdp-1.0 libswscale libusb-1.0) -lm
+    gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0) -lm
 
 ./capture2cloud                # local window + GTK control bar
 ./capture2cloud --headless     # no window; the web page is the interface
