@@ -27,7 +27,7 @@ var STORAGE_KEY = 'capture2cloud_settings';
  *                    of a flat field->keycode map, so mouse buttons and
  *                    wheel can be bound alongside keys
  */
-var SETTINGS_VERSION = 3;
+var SETTINGS_VERSION = 4;
 
 function migrateSettings(stored) {
   if (!stored || typeof stored !== 'object') return {};
@@ -68,6 +68,12 @@ function migrateSettings(stored) {
    * on the next page load. */
   if (version < 3 && typeof stored.volume === 'number') {
     stored.volume = Math.round(Math.min(400, Math.max(0, stored.volume)) / 4);
+  }
+  /* 3 -> 4: the top of the slider went from four times the stream's own
+   * level to eight, so the same position is now twice as loud. Halved,
+   * or everyone's sound would double the next time the page loads. */
+  if (version < 4 && typeof stored.volume === 'number') {
+    stored.volume = Math.round(Math.min(100, Math.max(0, stored.volume)) / 2);
   }
 
   stored.settingsVersion = SETTINGS_VERSION;
@@ -220,7 +226,7 @@ document.addEventListener('mousemove', function (e) {
 /* --- sound: one slider from 0 to 100, mute, persisted per browser.
  *
  * The slider reads 0-100%, and 100% is the loudest this can go, which is
- * four times the stream's own level. It used to be labelled 0-400%,
+ * eight times the stream's own level. It used to be labelled 0-400%,
  * which is accurate and useless: nobody thinks of volume as a number
  * above a hundred, and the top three quarters of the scale all read as
  * "louder than everything else on this machine" anyway.
@@ -234,7 +240,7 @@ document.addEventListener('mousemove', function (e) {
  * running context and audio arriving normally. */
 /* Where the natural level sits on the 0-100 scale: a quarter of the way
  * up, because the top is four times it. */
-var VOLUME_MAX_GAIN = 4;
+var VOLUME_MAX_GAIN = 8;
 var audioCtx = null;
 var gainNode = null;
 

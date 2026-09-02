@@ -18,17 +18,21 @@ static SDL_AudioDeviceID g_device = 0;
 static int g_rate = 48000;
 static int g_channels = 2;
 static int g_muted = 0;
-/* The volume slider's position, 0 to 100, where 100 is four times the
+/* The volume slider's position, 0 to 100, where 100 is eight times the
  * stream's own level.
  *
  * It used to run 0 to 200 and mean literally that, so the top of the
  * range was twice the source and barely louder than it -- a stream that
  * arrives quiet stayed quiet. Same scheme as the browser page now: the
  * scale reads 0-100 because nobody thinks of volume as a number above a
- * hundred, and the loudest it goes is four times the source. The
- * stream's own level sits at a quarter of the way up. */
-#define VOLUME_MAX_GAIN 4
-static int g_volume_percent = 25;
+ * hundred, and the loudest it goes is eight times the source.
+ *
+ * That puts the stream's own level at 12.5, which is not a whole number,
+ * so the default is 13 -- four percent above the source, which nobody
+ * can hear. The same eight is used by the page and by the host's own
+ * speakers, so a given position sounds the same wherever it plays. */
+#define VOLUME_MAX_GAIN 8
+static int g_volume_percent = 13;
 
 static unsigned long g_decoded = 0, g_failed = 0, g_dropped = 0;
 
@@ -112,7 +116,12 @@ void audio_decode(const uint8_t *data, uint32_t size) {
     }
 
     int samples = frames * g_channels;
-    if (g_volume_percent != 100 / VOLUME_MAX_GAIN) {
+    /* Compared as a gain rather than as a slider position: with a top of
+     * eight there is no whole position that means exactly unity, so this
+     * is now almost always true and the samples are almost always
+     * scaled. That is an integer multiply and divide per sample, which
+     * at 48 kHz stereo is nothing next to decoding the stream itself. */
+    if (g_volume_percent * VOLUME_MAX_GAIN != 100) {
         for (int i = 0; i < samples; i++) {
             /* Clipped rather than wrapped: above the source's own level
              * a loud passage has nowhere to go, and wrapping would turn

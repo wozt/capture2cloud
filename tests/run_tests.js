@@ -506,12 +506,12 @@ group('mute silences the output', () => {
   // range was delegated to it a suspended context meant a slider at zero
   // with the sound still playing.
   const s = createSandbox(APP_JS);
-  s.volumeSlider.value = '50'; // half the scale = twice the stream's level
+  s.volumeSlider.value = '50'; // half the scale = four times the stream's level
   s.ensureAudioGraph();
   check('amplification graph exists', s.gainNode !== null, true);
 
   s.applyVolume();
-  check('amplified by the gain', s.gainNode.gain.value, 2);
+  check('amplified by the gain', s.gainNode.gain.value, 4);
   check('element carries full signal into it', s.video.volume, 1);
 
   s.muteBtn.onclick();
@@ -520,7 +520,7 @@ group('mute silences the output', () => {
   check('element silenced, which no suspended context can undo', s.video.volume, 0);
 
   s.muteBtn.onclick();
-  check('unmute restores the level', s.gainNode.gain.value, 2);
+  check('unmute restores the level', s.gainNode.gain.value, 4);
   check('unmute restores the element', s.video.volume, 1);
 
   // Zero must be silent whether or not the graph was ever engaged, and
@@ -536,8 +536,8 @@ group('mute silences the output', () => {
   // And below the natural level the graph must attenuate, not sit at 1.
   s.volumeSlider.value = '10';
   s.applyVolume();
-  check('quiet setting attenuates the graph', Math.round(s.gainNode.gain.value * 100) / 100, 0.4);
-  check('quiet setting attenuates the element', Math.round(s.video.volume * 100) / 100, 0.4);
+  check('quiet setting attenuates the graph', Math.round(s.gainNode.gain.value * 100) / 100, 0.8);
+  check('quiet setting attenuates the element', Math.round(s.video.volume * 100) / 100, 0.8);
   check('element unmuted', s.video.muted, false);
 });
 
@@ -647,10 +647,12 @@ group('settings schema migration', () => {
   const legacy = createSandbox(APP_JS, {
     'capture2cloud_settings': JSON.stringify({ volume: 250, qualityMbps: 30, vsync: true })
   });
-  // The volume scale changed from 0-400 to 0-100 for the same range of
-  // loudness, so a stored position is rescaled rather than carried over
-  // -- otherwise everyone's sound jumps to maximum on the next load.
-  check('legacy volume rescaled to the new range', legacy.settings.volume, 63);
+  // The volume scale has been rescaled twice, and a stored position goes
+  // through both steps rather than being carried over -- otherwise
+  // everyone's sound jumps on the next load. First 0-400 became 0-100
+  // for the same loudness (250 -> 63), then the top of the scale went
+  // from four times the stream's level to eight (63 -> 32).
+  check('legacy volume rescaled through both changes', legacy.settings.volume, 32);
   check('legacy quality preserved', legacy.settings.qualityMbps, 30);
   check('legacy blob stamped with current version', legacy.settings.settingsVersion, legacy.SETTINGS_VERSION);
 
@@ -663,8 +665,14 @@ group('settings schema migration', () => {
   check('future-version key not carried over', future.settings.weirdFutureKey, undefined);
 
   // Current-version storage passes through untouched.
+  // Asks the code what the current version is rather than repeating the
+  // number here. Hardcoding it meant this test failed the moment the
+  // version was bumped -- reporting a migration bug that did not exist,
+  // and hiding whatever it was actually meant to catch.
   const current = createSandbox(APP_JS, {
-    'capture2cloud_settings': JSON.stringify({ settingsVersion: 3, volume: 60 })
+    'capture2cloud_settings': JSON.stringify({
+      settingsVersion: legacy.SETTINGS_VERSION, volume: 60
+    })
   });
   check('current-version storage preserved', current.settings.volume, 60);
 
