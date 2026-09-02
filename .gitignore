@@ -33,3 +33,7 @@ tests/browser/screenshots/
 # duplicate of every source file would double the noise in every diff
 # from here on.
 backup/
+
+# Compiled C tests, kept between runs so a suite does not recompile them
+# every time -- gcc taking cores is what made the live stream stutter.
+tests/.build/
