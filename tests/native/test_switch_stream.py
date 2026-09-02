@@ -202,7 +202,19 @@ def peak_rate(sock, seconds, drive):
 
     # Let the adapter's own averaging window settle on the state before
     # this call, or it describes the previous group rather than this one.
-    keepalive_sleep(5.5)
+    #
+    # The host recomputes its rate once a second, so that -- not a round
+    # number -- is what these durations have to clear. A second and a
+    # half of settling and three of measuring puts at least two whole
+    # windows inside the driving period whichever way the boundaries
+    # fall, and two samples afterwards catch the one that closes just
+    # after it.
+    #
+    # They used to be 5.5, 11 and 6, because the host only recomputed the
+    # figure every five seconds. That was a pace chosen for a log line,
+    # and this suite was paying for it: it alone took 106 of the 113
+    # seconds a full run cost. The window is now its own setting.
+    keepalive_sleep(1.5)
     before = rate()
 
     t_end = time.time() + seconds
@@ -222,7 +234,7 @@ def peak_rate(sock, seconds, drive):
     # as well as during, since the adapter averages over several seconds
     # and the window covering this call may only close afterwards.
     peak = before
-    for _ in range(6):
+    for _ in range(2):
         peak = max(peak, rate())
         keepalive_sleep(1.0)
     return peak
@@ -234,9 +246,9 @@ read_ack(viewer)
 # too -- a browser with a real controller plugged into it, which is the
 # normal state here -- and a baseline measured only before would be read
 # as the viewer's input the moment that other source got busier.
-base_before = peak_rate(viewer, 11.0, drive=False)
-driven = peak_rate(viewer, 11.0, drive=True)
-base_after = peak_rate(viewer, 11.0, drive=False)
+base_before = peak_rate(viewer, 3.0, drive=False)
+driven = peak_rate(viewer, 3.0, drive=True)
+base_after = peak_rate(viewer, 3.0, drive=False)
 base = max(base_before, base_after)
 check(f"a viewer driving the pad adds nothing (idle {base_before}/{base_after}, driving {driven})",
       driven <= base + 20,
@@ -246,8 +258,8 @@ viewer.close()
 player = connect(tok)
 ackp = read_ack(player)
 check("re-connected as a player", ackp["may_control"] == 1)
-pbase = peak_rate(player, 11.0, drive=False)
-pdriven = peak_rate(player, 11.0, drive=True)
+pbase = peak_rate(player, 3.0, drive=False)
+pdriven = peak_rate(player, 3.0, drive=True)
 check(f"a player driving the pad does raise it (baseline {pbase}/s, driving {pdriven}/s)",
       pdriven > pbase + 10, f"{pdriven}/s vs {pbase}/s -- player input never arrived")
 player.close()
