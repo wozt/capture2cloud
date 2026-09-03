@@ -40,6 +40,48 @@ class VideoDecoder(
     val isReady: Boolean get() = codec != null
 
     /**
+     * What is actually decoding, and whether it is silicon.
+     *
+     * Worth surfacing rather than assuming: asking for a decoder by mime
+     * type gets whatever the device offers first, which for VP8 is
+     * frequently the software one. A stream that struggles at a size the
+     * hardware would have taken in its stride is not a mystery once this
+     * is on screen.
+     */
+    var codecName: String = ""
+        private set
+    var codecIsHardware: Boolean = false
+        private set
+
+    companion object {
+        /**
+         * Whether this device can decode `mime` in silicon.
+         *
+         * Worth asking before offering a codec rather than after
+         * watching it fail: a phone with no hardware VP8 decoder gets
+         * Google's software one, which on this hardware shows artefacts
+         * at 720p and gives up entirely at 1080p60, reporting err -14
+         * and releasing itself. That is a property of the device and it
+         * can be read, rather than discovered the hard way.
+         */
+        fun hasHardwareDecoder(mime: String): Boolean {
+            val list = android.media.MediaCodecList(
+                android.media.MediaCodecList.REGULAR_CODECS)
+            for (info in list.codecInfos) {
+                if (info.isEncoder) continue
+                if (!info.supportedTypes.any { it.equals(mime, ignoreCase = true) }) continue
+                val hardware =
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
+                        info.isHardwareAccelerated
+                    else !info.name.startsWith("OMX.google.") &&
+                         !info.name.startsWith("c2.android.")
+                if (hardware) return true
+            }
+            return false
+        }
+    }
+
+    /**
      * Notes what the host is sending. For VP8 the decoder is built right
      * away; for H.264 it waits for the first keyframe.
      *
@@ -83,6 +125,11 @@ class VideoDecoder(
             c.start()
             codec = c
             candidate = null
+            codecName = c.codecInfo.name
+            codecIsHardware =
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
+                    c.codecInfo.isHardwareAccelerated
+                else !codecName.startsWith("OMX.google.") && !codecName.startsWith("c2.android.")
             awaitingKeyframe = false
             startedAt = System.nanoTime()
             true
@@ -164,6 +211,23 @@ class VideoDecoder(
      * the next keyframe, and the second is the decoder saying it is busy,
      * which dropping a frame answers better than queueing one does.
      */
+    /**
+     * Asks for a keyframe, at most once a second.
+     *
+     * Every dropped frame wants one, and a decoder that is behind drops
+     * several a second: asking each time floods the host with requests
+     * and fills the stream with keyframes, which are the largest frames
+     * there are, which makes it further behind.
+     */
+    private var lastKeyframeRequest = 0L
+
+    private fun requestKeyframeSparingly() {
+        val now = System.currentTimeMillis()
+        if (now - lastKeyframeRequest < 1000) return
+        lastKeyframeRequest = now
+        onNeedKeyframe()
+    }
+
     fun decode(frame: ByteBuffer, isKeyframe: Boolean): Boolean {
         /* No decoder yet means H.264 waiting for its parameter sets. The
          * first keyframe carries them; anything before it is of no use
@@ -181,30 +245,53 @@ class VideoDecoder(
             awaitingKeyframe = false
         }
         try {
-            val index = c.dequeueInputBuffer(0)
-            if (index < 0) return false
-            val buffer = c.getInputBuffer(index) ?: return false
-            buffer.clear()
-            if (buffer.remaining() < frame.remaining()) {
-                /* Bigger than any input buffer the decoder offers. Not
-                 * something to squeeze in: ask for a fresh keyframe and
-                 * start again from there. */
-                c.queueInputBuffer(index, 0, 0, 0, 0)
-                awaitingKeyframe = true
-                onNeedKeyframe()
+            /* Output first, then input.
+             *
+             * A decoder that is not drained runs out of input buffers,
+             * and then nothing can be queued at all: the picture stops
+             * with no error anywhere. Draining first also means the
+             * buffer asked for below is one this call just freed, which
+             * is why the wait after it can be short.
+             */
+            drain(c)
+
+            val index = c.dequeueInputBuffer(4000)
+            if (index < 0) {
+                /* Busy for the moment. The frame is lost, and a
+                 * predictive codec will show that until the next
+                 * keyframe -- so ask for one, but do not stop decoding
+                 * in the meantime. Refusing everything until a keyframe
+                 * arrives turns a few artefacts into five seconds of
+                 * nothing, which is how the picture disappeared. */
+                requestKeyframeSparingly()
                 return false
             }
-            val size = frame.remaining()
-            buffer.put(frame)
+            val buffer = c.getInputBuffer(index)
+            /* Once taken, always given back: an abandoned input buffer
+             * is gone for good, and a few of those leave the decoder
+             * with none. */
+            val remaining = frame.remaining()
+            val size = if (buffer != null) {
+                val n = minOf(buffer.capacity(), remaining)
+                buffer.clear()
+                val slice = frame.duplicate()
+                slice.limit(slice.position() + n)
+                buffer.put(slice)
+                n
+            } else 0
             val us = (System.nanoTime() - startedAt) / 1000
             c.queueInputBuffer(index, 0, size, us,
                                if (isKeyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-            drain(c)
+            if (size < remaining) requestKeyframeSparingly()
             return true
         } catch (e: IllegalStateException) {
-            /* The decoder gave up -- a malformed stream, or the device
-             * taking its hardware back. Rebuilt by the caller on the next
-             * stream-info message; until then, nothing is shown. */
+            /* The decoder gave up. That is not always a broken stream:
+             * the software VP8 decoder on some phones simply fails at
+             * 720p and above, reports err -14 and releases itself. The
+             * codec is dropped here and the caller builds another,
+             * because staying black for ever is the one response that
+             * helps nobody. */
+            Log.w("Capture2Cloud", "decoder stopped, will rebuild", e)
             stop()
             return false
         }

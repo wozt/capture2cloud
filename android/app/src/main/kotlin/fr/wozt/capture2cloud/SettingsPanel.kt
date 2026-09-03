@@ -221,11 +221,26 @@ class SettingsPanel(
         choice("fps", listOf("60" to 60, "30" to 30), settings.fps) {
             settings.fps = it; actions.onStreamShapeChanged()
         }
-        choice("codec", listOf("H.264" to Protocol.CODEC_H264, "VP8" to Protocol.CODEC_VP8),
+        /* Says which of the two this device decodes in silicon. Not a
+         * detail: the software VP8 decoder on many phones shows
+         * artefacts at 720p and gives up at 1080p60, and finding that
+         * out by watching it fail is a poor way to learn it. */
+        val h264hw = VideoDecoder.hasHardwareDecoder("video/avc")
+        val vp8hw = VideoDecoder.hasHardwareDecoder("video/x-vnd.on2.vp8")
+        choice("codec",
+               listOf("H.264 ${if (h264hw) "hw" else "sw"}" to Protocol.CODEC_H264,
+                      "VP8 ${if (vp8hw) "hw" else "sw"}" to Protocol.CODEC_VP8),
                settings.codec) {
             settings.codec = it
             if (it == Protocol.CODEC_H264 && settings.height > 720) settings.height = 720
             actions.onStreamShapeChanged()
+        }
+        if (!vp8hw && settings.codec == Protocol.CODEC_VP8) {
+            body.addView(TextView(context).apply {
+                text = "no hardware VP8 here: expect artefacts above 480p"
+                textSize = 11f
+                setTextColor(0xFFFFB454.toInt())
+            })
         }
         slider("bitrate", 1, 50, settings.bitrateMbps, "M") {
             settings.bitrateMbps = it; actions.onStreamShapeChanged()
