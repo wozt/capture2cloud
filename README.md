@@ -336,6 +336,22 @@ detection at all. Refused server-side, not merely hidden — gamepad input,
 `/wake` and `/quality` all check the session. The bitrate in particular is
 shared: one encoder feeds every client, so it is not a viewer's to change.
 
+### Settings several people share
+
+One capture card, one encoder, one adapter — so the resolution, the
+frame rate, the bitrate, the codec and the capture format are the
+connection's, not any one client's. A client that joins is **told** what
+everyone is already watching and moves its own controls to match, rather
+than pushing what it had saved: starting a client used to change the
+picture for people already connected, silently. Changing one of these on
+purpose still changes it for everyone, and every other client's sliders
+and dropdowns follow within a second or two.
+
+Volume, the picture adjustments, the virtual pad and the stick shaping
+are nobody else's business and are never sent anywhere. The full split,
+and why it falls where it does, is in
+[SHARED_SETTINGS.md](SHARED_SETTINGS.md).
+
 ### Remote access
 
 Only the page and the initial handshake go over HTTP; the actual media
