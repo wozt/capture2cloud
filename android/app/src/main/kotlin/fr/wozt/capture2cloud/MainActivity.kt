@@ -151,6 +151,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
          * The bars come back the same way they went. */
         val taps = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDoubleTap(e: MotionEvent): Boolean {
+                /* Not near a control. A thumb that misses a button lands
+                 * right beside it, and hiding the system bars is a poor
+                 * thing to get for a missed press. */
+                if (pad.isNearControl(e.x, e.y)) return false
                 immersive = !immersive
                 applyImmersive()
                 return true
