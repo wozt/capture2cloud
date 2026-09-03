@@ -49,10 +49,19 @@ class DirectClient(
     )
 
     private companion object {
-        /* Roughly two 720p frames. Past this the socket is holding
-         * pictures older than the one being drawn, and catching up is
-         * worth more than showing them. */
-        const val BACKLOG_BYTES = 96 * 1024
+        /* How much of a backlog is worth throwing away, in milliseconds
+         * of video.
+         *
+         * Measured in time and not in bytes, which was the mistake: a
+         * socket carrying 12 Mb/s routinely holds a hundred kilobytes or
+         * more, so a byte threshold was true almost every frame and
+         * nearly everything was being discarded -- the stream looked
+         * like keyframes only, which is exactly the "never quite becomes
+         * smooth" it was meant to cure. Two hundred milliseconds is
+         * about twelve frames: comfortably more than any normal buffer
+         * and comfortably less than a delay anyone would tolerate.
+         */
+        const val BACKLOG_MS = 200
     }
 
     /* Set when the reader should throw video away until it is caught up.
@@ -199,7 +208,13 @@ class DirectClient(
                      * it is not the network being slow, it is us being
                      * conscientious about frames that stopped mattering. */
                     val key = (flags and Protocol.FLAG_KEYFRAME) != 0
-                    val behind = input.available() > BACKLOG_BYTES
+                    /* Bytes waiting, converted to time using the rate
+                     * they are arriving at. Below a floor the estimate
+                     * is not worth trusting and nothing is thrown away. */
+                    val waiting = input.available()
+                    val perSecond = bytesPerSecond()
+                    val behind = perSecond > 50_000 &&
+                                 waiting * 1000L / perSecond > BACKLOG_MS
                     if (flushing) {
                         /* Caught up once the socket is drained AND a
                          * keyframe has come round: stopping at the first
@@ -268,6 +283,34 @@ class DirectClient(
         state.copyInto(lastPad)
         lastPadSentAt = now
         send(Protocol.MSG_INPUT, state)
+    }
+
+    /**
+     * A rolling estimate of how fast video is arriving, in bytes per
+     * second. Used to read a byte backlog as a delay.
+     */
+    private var rateWindowStart = 0L
+    private var rateBaseBytes = 0L
+    private var rateEstimate = 0L
+
+    /**
+     * How fast video is arriving, in bytes per second, over the last
+     * second or so. Used to read a byte backlog as a delay.
+     */
+    private fun bytesPerSecond(): Long {
+        val now = System.currentTimeMillis()
+        if (rateWindowStart == 0L) {
+            rateWindowStart = now
+            rateBaseBytes = videoBytes
+            return 0
+        }
+        val elapsed = now - rateWindowStart
+        if (elapsed >= 1000) {
+            rateEstimate = (videoBytes - rateBaseBytes) * 1000 / elapsed
+            rateWindowStart = now
+            rateBaseBytes = videoBytes
+        }
+        return rateEstimate
     }
 
     /** Throw away buffered video until caught up at a keyframe. */

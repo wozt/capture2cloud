@@ -37,16 +37,20 @@ class Diagnostics(private val context: Context) {
     private var lastAt = 0L
 
     fun sample(client: DirectClient?, link: String, stream: String,
-               audio: String, skipped: Long): Snapshot {
+               audio: String, skipped: Long, shownFrames: Long): Snapshot {
         val now = System.currentTimeMillis()
         val elapsed = (now - lastAt).coerceAtLeast(1)
         val v = client?.videoBytes ?: 0
         val a = client?.audioBytes ?: 0
-        val f = client?.videoFrames ?: 0
+        val f = shownFrames
 
         /* First call, or a reconnection which resets the counters: report
          * nothing rather than a number computed from a negative delta. */
-        val fresh = lastAt == 0L || v < lastVideo
+        /* Also fresh when the frame count went backwards: the decoder
+         * is rebuilt on a resume and starts counting again while the
+         * byte total keeps climbing, which produced a frame rate of
+         * minus two hundred on the first sample afterwards. */
+        val fresh = lastAt == 0L || v < lastVideo || f < lastFrames
         val videoKbps = if (fresh) 0 else ((v - lastVideo) * 8 / elapsed).toInt()
         val audioKbps = if (fresh) 0 else ((a - lastAudio) * 8 / elapsed).toInt()
         val fps = if (fresh) 0 else ((f - lastFrames) * 1000 / elapsed).toInt()

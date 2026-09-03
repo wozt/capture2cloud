@@ -36,6 +36,9 @@ import kotlin.concurrent.thread
  * congestion control are latency spent solving a problem that is not
  * there.
  */
+private const val BITRATE_FLOOR = 1500
+private const val BITRATE_MAX = 20000
+
 class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private lateinit var settings: Settings
@@ -75,6 +78,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
      * is why the controls "took a while to come back": they had been
      * hidden by a message about a connection that no longer existed. */
     private var generation = 0
+    private var lastLate = 0L
+    private var autoCeilingKbps = BITRATE_MAX
+    @Volatile private var foreground = true
+    private var bitrateBeforePause = 0
     private var lastVideoAttempt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -210,10 +217,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     a.packetsIn > 0 -> " (fed, none out)"
                     else -> " (nothing queued)"
                 }
-                val snapshot = diagnostics.sample(client, link, stream, audioState, skipped)
+                val snapshot = diagnostics.sample(client, link, stream, audioState, skipped, video?.shown ?: 0)
                 lastStats = snapshot
                 val text = diagnostics.line(snapshot)
                 statsLine.text = text
+                /* Also to the log, always: the line on screen shows the
+                 * present moment, and questions about how something
+                 * recovers are questions about a sequence of moments. */
                 /* The transient line clears itself once there is a
                  * picture: it is for saying what went wrong, not for
                  * sitting on the screen afterwards. */
@@ -253,22 +263,58 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
      */
     private fun steerBitrate(snapshot: Diagnostics.Snapshot) {
         if (!settings.bitrateIsAuto || client == null) return
+        /* Not while there is no window. Nothing is being displayed, so
+         * every reading says the stream is failing -- and the loop, left
+         * running, spent a minute in the background winding a perfectly
+         * good eight megabits down to its floor, which is what the
+         * picture then came back at. */
+        if (!foreground) return
+
+        /* Two signals, and they mean different things.
+         *
+         * Frames the decoder refused are the loud one: the phone could
+         * not keep up at all. Frames thrown away as late are the quiet
+         * one, and for a long time the only one that ever fired -- the
+         * decoder never runs short of buffers, it simply falls behind,
+         * so a controller watching refusals alone saw a clean run at
+         * every rate and climbed until the picture broke. That is what
+         * made a stream that was smooth at eight megabits come back from
+         * the background at twelve and stutter.
+         *
+         * Lateness alone is no better as a trigger: used that way it
+         * collapsed to the floor, because the lateness left over from a
+         * resume does not answer to the bitrate and the loop kept
+         * paying for it. So lateness does not lower the rate directly --
+         * it lowers the CEILING, and the rate is simply not allowed
+         * above what has been seen to work. */
         val dropped = video?.dropped ?: 0
         val newlyDropped = (dropped - lastDropped).coerceAtLeast(0)
         lastDropped = dropped
+        val late = skipped
+        val newlyLate = (late - lastLate).coerceAtLeast(0)
+        lastLate = late
 
         val before = autoBitrateKbps
         if (newlyDropped > 2) {
-            /* Losing frames: back off hard and start the patience over. */
-            autoBitrateKbps = (autoBitrateKbps * 3 / 4).coerceAtLeast(1500)
+            autoBitrateKbps = (autoBitrateKbps * 3 / 4).coerceAtLeast(BITRATE_FLOOR)
+            autoCeilingKbps = autoBitrateKbps
             goodSeconds = 0
-        } else if (newlyDropped == 0L && snapshot.fps > 0) {
+        } else if (newlyLate > 5) {
+            /* Behind at this rate. Remember it as too much and settle
+             * just under it, rather than chasing the rate downwards. */
+            autoCeilingKbps = (autoBitrateKbps * 9 / 10).coerceAtLeast(BITRATE_FLOOR)
+            autoBitrateKbps = autoBitrateKbps.coerceAtMost(autoCeilingKbps)
+            goodSeconds = 0
+        } else if (newlyLate == 0L && snapshot.fps > 0) {
             goodSeconds++
-            /* Five clean seconds before asking for more, so a moment of
-             * calm is not mistaken for a better link. */
             if (goodSeconds >= 5) {
                 goodSeconds = 0
-                autoBitrateKbps = (autoBitrateKbps * 11 / 10).coerceAtMost(20000)
+                /* Clean for a while: try a little more, and let the
+                 * ceiling itself drift up slowly so a link that really
+                 * did get better is not held down by one bad minute. */
+                autoCeilingKbps = (autoCeilingKbps * 21 / 20).coerceAtMost(BITRATE_MAX)
+                autoBitrateKbps = (autoBitrateKbps * 11 / 10)
+                    .coerceAtMost(minOf(autoCeilingKbps, BITRATE_MAX))
             }
         }
         if (kotlin.math.abs(autoBitrateKbps - before) * 100 / before >= 10) {
@@ -864,11 +910,33 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     override fun onPause() {
         super.onPause()
         audio?.muted = true
+        foreground = false
+        if (settings.bitrateIsAuto) bitrateBeforePause = autoBitrateKbps
+        /* Only while there is something to keep alive: a notification
+         * for an app that is not connected to anything would be a lie. */
+        if (client != null) StreamService.start(this)
     }
 
     override fun onResume() {
         super.onResume()
+        StreamService.stop(this)
         audio?.muted = settings.muted
+        /* A ceiling learned while the window was gone describes a
+         * situation that no longer exists. Coming back with it still in
+         * force is how the picture returned at one megabit and stayed
+         * there. */
+        autoCeilingKbps = BITRATE_MAX
+        goodSeconds = 0
+        lastLate = skipped
+        lastDropped = video?.dropped ?: 0
+        /* Back to what was working before, rather than climbing there
+         * ten percent at a time from the floor. */
+        if (settings.bitrateIsAuto && bitrateBeforePause > 0) {
+            autoBitrateKbps = bitrateBeforePause
+            client?.sendProfile(settings.height * 16 / 9, settings.height,
+                                settings.fps, autoBitrateKbps)
+        }
+        foreground = true
         /* Whatever piled up while away is not worth watching. */
         client?.flushBacklog()
         client?.requestKeyframe()
@@ -876,6 +944,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        StreamService.stop(this)
         client?.close()
         video?.stop()
         audio?.stop()

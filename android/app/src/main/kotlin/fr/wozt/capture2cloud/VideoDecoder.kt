@@ -5,6 +5,8 @@ import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Hardware video decoding, straight onto the surface the picture is shown
@@ -38,6 +40,30 @@ class VideoDecoder(
 
     /** True once there is somewhere for frames to go. */
     val isReady: Boolean get() = codec != null
+
+    private class Pending(val bytes: ByteArray, val key: Boolean)
+
+    /**
+     * A short queue, and a thread of its own to empty it.
+     *
+     * This exists because of one measurement. Handing frames straight to
+     * the decoder from the socket reader looks simple and costs nothing
+     * -- until releaseOutputBuffer blocks, which it does whenever the
+     * TextureView is not yet consuming what it is given, as happens for
+     * a moment every time the window comes back. The reader was then
+     * held for hundreds of milliseconds at a stretch, a hundred and
+     * fifty kilobytes piled up in the socket behind it, and the backlog
+     * that piled up was read as "the link is behind" -- so frames were
+     * thrown away, the bitrate was wound down, and none of it touched
+     * the actual cause, which was the display taking its time.
+     *
+     * Nine frames is about a seventh of a second at sixty. Deep enough
+     * to ride out a stall in rendering, shallow enough that riding one
+     * out never becomes latency worth watching.
+     */
+    private val queue = ArrayBlockingQueue<Pending>(9)
+    @Volatile private var pumping = false
+    private var pump: Thread? = null
 
     /**
      * What is actually decoding, and whether it is silicon.
@@ -216,6 +242,10 @@ class VideoDecoder(
 
     fun stop() {
         loggedFailure = false
+        pumping = false
+        pump?.interrupt()
+        pump = null
+        queue.clear()
         codec?.let {
             try { it.stop() } catch (_: Exception) {}
             try { it.release() } catch (_: Exception) {}
@@ -247,9 +277,65 @@ class VideoDecoder(
     @Volatile var dropped = 0L
         private set
 
+    /**
+     * Frames actually handed to the surface.
+     *
+     * The rate that matters, and not the one that was being reported:
+     * counting frames as they ARRIVE says the network is fine while the
+     * screen shows a slideshow, which is precisely the state that needed
+     * noticing.
+     */
+    @Volatile var shown = 0L
+        private set
+
     /** Public, so a caller that skipped a frame can ask for a fresh
      *  start without reaching into the rate limiter itself. */
     fun requestKeyframe() = requestKeyframeSparingly()
+
+    /**
+     * Takes a frame from the network thread and returns immediately.
+     *
+     * The bytes are copied because the caller reuses its buffer for the
+     * next frame the moment this returns -- which is the whole point.
+     */
+    fun decode(frame: ByteBuffer, isKeyframe: Boolean): Boolean {
+        val bytes = ByteArray(frame.remaining())
+        frame.duplicate().get(bytes)
+        startPump()
+        if (!queue.offer(Pending(bytes, isKeyframe))) {
+            /* Full: the decoder is genuinely behind. A keyframe is worth
+             * making room for, since everything after it depends on it;
+             * anything else is worth less than the delay it would add. */
+            if (isKeyframe) {
+                queue.poll()
+                queue.offer(Pending(bytes, true))
+            } else {
+                dropped++
+                requestKeyframeSparingly()
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun startPump() {
+        if (pumping) return
+        pumping = true
+        pump = Thread({
+            while (pumping) {
+                val next = try {
+                    queue.poll(50, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    null
+                } ?: continue
+                try {
+                    decodeNow(ByteBuffer.wrap(next.bytes), next.key)
+                } catch (e: Exception) {
+                    Log.w("VideoDecoder", "decode failed: ${'$'}e")
+                }
+            }
+        }, "video-decode").apply { isDaemon = true; start() }
+    }
 
     private fun requestKeyframeSparingly() {
         val now = System.currentTimeMillis()
@@ -258,7 +344,7 @@ class VideoDecoder(
         onNeedKeyframe()
     }
 
-    fun decode(frame: ByteBuffer, isKeyframe: Boolean): Boolean {
+    private fun decodeNow(frame: ByteBuffer, isKeyframe: Boolean): Boolean {
         /* No decoder yet means H.264 waiting for its parameter sets. The
          * first keyframe carries them; anything before it is of no use
          * to a decoder that does not exist. */
@@ -340,6 +426,7 @@ class VideoDecoder(
             /* true: hand it to the surface. The decoder is configured
              * with one, so there is no pixel copy on this path at all. */
             c.releaseOutputBuffer(out, true)
+            shown++
         }
     }
 }
