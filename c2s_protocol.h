@@ -97,7 +97,23 @@ typedef enum {
     C2S_MSG_RESET_DONGLE = 24,
     /* Restarts the host program in place. Players only, like the two
      * above: it takes the stream away from everyone watching. */
-    C2S_MSG_RESTART      = 25
+    C2S_MSG_RESTART      = 25,
+    /* server -> client: C2sShared, the settings that are not this
+     * client's alone to keep.
+     *
+     * One encoder feeds every native client, so the resolution, the
+     * frame rate, the bitrate and the codec belong to the connection as
+     * a whole rather than to whoever asked last. A client that arrives
+     * with its own saved values and pushes them changes the picture for
+     * everyone already watching, which is a strange thing to do to
+     * someone -- so it is told what the stream is instead, and moves its
+     * own controls to match.
+     *
+     * Sent once after the handshake and again on every change. Distinct
+     * from STREAM_INFO, which says "re-initialise your decoder now" and
+     * must stay exactly that: this one moves sliders and changes no
+     * pictures. */
+    C2S_MSG_SHARED       = 26
 } C2sMsgType;
 
 #define C2S_FLAG_KEYFRAME 0x01
@@ -131,6 +147,24 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved[3];
 } C2sStreamInfo;
 
+/* The settings one native client cannot change without changing them
+ * for all of them. Everything absent from this struct -- volume, the
+ * picture adjustments, the virtual pad, the stick shaping -- is the
+ * client's own business and is never sent anywhere.
+ *
+ * capture_mjpeg is the odd one out: it belongs to the capture card, so
+ * it is shared with the browsers too and not merely between native
+ * clients. */
+typedef struct __attribute__((packed)) {
+    uint16_t width;
+    uint16_t height;
+    uint16_t fps;
+    uint16_t bitrate_kbps;
+    uint8_t  video_codec;   /* C2sCodec */
+    uint8_t  capture_mjpeg; /* 1 = MJPEG from the card, 0 = raw YUYV */
+    uint8_t  reserved[2];
+} C2sShared;
+
 /*
  * The controller state carried by C2S_MSG_INPUT.
  *
@@ -150,6 +184,7 @@ _Static_assert(sizeof(C2sHello) == 8, "C2sHello must stay 8 bytes on the wire");
 _Static_assert(sizeof(C2sHelloAck) == 20, "C2sHelloAck must stay 20 bytes on the wire");
 _Static_assert(sizeof(C2sStreamInfo) == 8, "C2sStreamInfo must stay 8 bytes on the wire");
 _Static_assert(sizeof(C2sProfile) == 8, "C2sProfile must stay 8 bytes on the wire");
+_Static_assert(sizeof(C2sShared) == 12, "C2sShared must stay 12 bytes on the wire");
 _Static_assert(sizeof(C2sFrameHeader) == 8, "C2sFrameHeader must stay 8 bytes on the wire");
 
 #endif

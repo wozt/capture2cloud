@@ -50,9 +50,15 @@ void video_capture_watch_for_change(void) {}
 const char *video_format_name(VideoFormat f) {
     return f == VIDEO_FORMAT_YUYV ? "yuyv" : "mjpeg";
 }
+static int stub_bitrate_kbps = 12000;
 void gst_webrtc_stream_set_video_bitrate(GstWebrtcStream *g, int bitrate_kbps) {
     (void)g;
-    (void)bitrate_kbps;
+    stub_bitrate_kbps = bitrate_kbps;
+}
+/* /shared reports it, so the stub has to have one to report. */
+int gst_webrtc_stream_get_video_bitrate(GstWebrtcStream *g) {
+    (void)g;
+    return stub_bitrate_kbps;
 }
 int gst_webrtc_stream_get_client_count(GstWebrtcStream *g, int *max_clients) {
     (void)g;

@@ -875,14 +875,16 @@ group('capture format choice is remembered', () => {
   check('and persisted',
     JSON.parse(s.localStorage.getItem('capture2cloud_settings')).captureFormat, 'mjpeg');
 
-  // A fresh page with that stored choice asks the server for it again.
+  // A fresh page with that stored choice must NOT push it. There is one
+  // capture device: loading a page used to reconfigure the card for
+  // everyone already watching, to whatever this browser had saved.
   const s2 = createSandbox(APP_JS,
     { 'capture2cloud_settings': JSON.stringify({ settingsVersion: 2, captureFormat: 'mjpeg' }) },
     { 'capture2cloud_player_token': 'cafebabe' });
   s2.fetchCalls.length = 0;
   s2.setPlayerUi(true);
-  check('restoring reads the live format first',
-    !!s2.fetchCalls.find((c) => c.url === '/capture-format' && !c.options.method), true);
+  check('a player pushes nothing on load',
+    !!s2.fetchCalls.find((c) => c.url === '/capture-format' && c.options.method === 'POST'), false);
 
   // A viewer must never push a format: it is one shared device.
   const v = createSandbox(APP_JS,
@@ -891,6 +893,39 @@ group('capture format choice is remembered', () => {
   v.setPlayerUi(false);
   check('a viewer pushes nothing',
     !!v.fetchCalls.find((c) => c.url === '/capture-format' && c.options.method === 'POST'), false);
+});
+
+group('shared settings are followed, not imposed', () => {
+  // Everything here exists because one encoder and one capture card
+  // serve every client: a page that pushes its own saved values on load
+  // changes the picture for people who were already watching.
+  const s = createSandbox(APP_JS,
+    { 'capture2cloud_settings': JSON.stringify({ settingsVersion: 4, qualityMbps: 40 }) },
+    { 'capture2cloud_player_token': 'cafebabe' });
+  s.setPlayerUi(true);
+  check('the saved bitrate is not posted on load',
+    !!s.fetchCalls.find((c) => c.url === '/quality' && c.options.method === 'POST'), false);
+  check('the shared state is asked for',
+    !!s.fetchCalls.find((c) => c.url === '/shared'), true);
+
+  // What the host says wins over what this page had saved.
+  s.applyShared({ height: 720, bitrate_kbps: 6000, capture: 'mjpeg' });
+  check('the resolution follows', s.resolutionSelect.value, '720');
+  check('the bitrate follows', s.quality.value, '6');
+  check('the label follows', s.qv.textContent, '6 Mbps');
+  check('the capture format follows', s.captureFormatSelect.value, 'mjpeg');
+
+  // ...and following it must not bounce back, or two open pages would
+  // correct each other for ever.
+  check('following posts nothing',
+    !!s.fetchCalls.find((c) => c.options && c.options.method === 'POST'), false);
+
+  // A setting the user is still holding is not yanked back by a reply
+  // that was already in flight.
+  s.quality.value = '20';
+  s.sendQuality();
+  s.applyShared({ height: 480, bitrate_kbps: 2000, capture: 'yuyv' });
+  check('a just-touched control is left alone', s.quality.value, '20');
 });
 
 group('player token storage', () => {

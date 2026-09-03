@@ -706,6 +706,35 @@ static void handle_capture_format_get(int fd) {
     send_all(fd, body, strlen(body));
 }
 
+/* Everything a page shares with every other page, in one reply.
+ *
+ * Open to viewers as well as players: knowing what the stream IS gives
+ * nothing away that watching it does not, and a viewer whose controls
+ * show a resolution nobody is on is worse than no controls at all.
+ *
+ * Polled rather than pushed because this transport has no channel to
+ * push down -- the page holds no socket to the host but the WebRTC one,
+ * and putting settings through that would tie them to a stream that may
+ * not be up yet. Two seconds is far below the rate at which anybody
+ * changes a setting by hand.
+ */
+static void handle_shared_get(WebStream *ws, int fd) {
+    int w = 0, h = 0;
+    gst_webrtc_stream_get_browser_resolution(ws->webrtc, &w, &h);
+    char body[192];
+    int n = snprintf(body, sizeof(body),
+                     "{\"height\":%d,\"bitrate_kbps\":%d,\"capture\":\"%s\"}",
+                     (h == 480 || h == 720) ? h : 1080,
+                     gst_webrtc_stream_get_video_bitrate(ws->webrtc),
+                     video_format_name(video_capture_active_format()));
+    char header[192];
+    int hn = snprintf(header, sizeof(header),
+                      "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
+                      "Cache-Control: no-store\r\nConnection: close\r\n\r\n", n);
+    send_all(fd, header, (size_t)hn);
+    send_all(fd, body, (size_t)n);
+}
+
 /* Players only. There is ONE shared encoder feeding every client, so the
  * bitrate is global: a viewer lowering it would degrade the picture for
  * the person actually playing. Enforced here and not merely by hiding
@@ -861,6 +890,8 @@ static int client_thread(void *arg) {
             handle_resolution_get(ws, fd);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/resolution") == 0) {
             handle_resolution(ws, fd, content_length, token);
+        } else if (strcmp(method, "GET") == 0 && strcmp(path, "/shared") == 0) {
+            handle_shared_get(ws, fd);
         } else if (strcmp(method, "GET") == 0 && strcmp(path, "/capture-format") == 0) {
             handle_capture_format_get(fd);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/capture-format") == 0) {

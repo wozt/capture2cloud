@@ -521,6 +521,7 @@ function refreshResolution() {
 refreshResolution();
 
 resolutionSelect.onchange = function (e) {
+  noteSharedTouched();
   var wanted = e.target.value;
   saveSettings({ resolution: wanted });
   playerFetch('/resolution', { method: 'POST', body: wanted })
@@ -543,32 +544,20 @@ function refreshCaptureFormat() {
 }
 refreshCaptureFormat();
 
-/* Restores the saved choice once, on becoming a player.
+/* Deliberately no longer restores the saved format on becoming a player.
  *
- * Note this is a GLOBAL setting -- there is one capture device -- so
- * what is stored per browser is "the format I want the machine to be
- * on", and the last player to load the page wins. That is fine with one
- * player; with several, CAPTURE_FORMAT in the .env is the place to pin
- * it, since it applies at startup and belongs to the machine. */
-var captureFormatRestored = false;
-
-function restoreCaptureFormat() {
-  if (captureFormatRestored || !playerControlsEnabled) return;
-  captureFormatRestored = true;
-  var saved = settings.captureFormat;
-  if (saved !== 'yuyv' && saved !== 'mjpeg') return;
-  fetch('/capture-format')
-    .then(function (r) { return r.text(); })
-    .then(function (active) {
-      if (active.trim() === saved) return; /* already there, don't churn the device */
-      playerFetch('/capture-format', { method: 'POST', body: saved })
-        .then(function () { setTimeout(refreshCaptureFormat, 1500); })
-        .catch(function () {});
-    })
-    .catch(function () {});
-}
+ * There is one capture device, so this is a GLOBAL setting, and pushing
+ * a stored preference at load meant that opening the page reconfigured
+ * the card for everyone already watching -- to whatever this browser
+ * happened to have saved. The dropdown follows what the machine is
+ * actually on (see pollShared below); changing it by hand is still a
+ * deliberate act and still applies to everyone. CAPTURE_FORMAT in the
+ * .env remains the place to pin a default, since it belongs to the
+ * machine rather than to a browser. */
+function restoreCaptureFormat() {}
 
 captureFormatSelect.onchange = function (e) {
+  noteSharedTouched();
   var wanted = e.target.value;
   saveSettings({ captureFormat: wanted });
   playerFetch('/capture-format', { method: 'POST', body: wanted })
@@ -579,6 +568,51 @@ captureFormatSelect.onchange = function (e) {
     })
     .catch(function (err) { log('capture format: ' + err); });
 };
+
+/* The settings this page does not own alone.
+ *
+ * One encoder and one capture card serve everybody, so another player
+ * changing the resolution, the bitrate or the capture format changes
+ * what THIS page is receiving -- and controls that go on showing the
+ * old value are worse than no controls, because they look authoritative.
+ *
+ * Values are written straight to the elements and never through their
+ * onchange handlers, which post to the host: a value posted back after
+ * being read is how two open pages start correcting each other twice a
+ * second, for ever. */
+/* When this page last changed one of these by hand. A reply that was
+ * already in flight must not undo a slider the user is still holding,
+ * and the capture device takes a second and a half to reopen. */
+var sharedTouchedAt = 0;
+function noteSharedTouched() { sharedTouchedAt = Date.now(); }
+
+function applyShared(sh) {
+  if (Date.now() - sharedTouchedAt < 3000) return;
+  if (sh.height === 1080 || sh.height === 720 || sh.height === 480) {
+    resolutionSelect.value = String(sh.height);
+  }
+  if (sh.capture === 'yuyv' || sh.capture === 'mjpeg') {
+    captureFormatSelect.value = sh.capture;
+  }
+  if (typeof sh.bitrate_kbps === 'number' && sh.bitrate_kbps > 0) {
+    var mbps = Math.round(sh.bitrate_kbps / 1000);
+    if (String(mbps) !== quality.value) {
+      quality.value = String(mbps);
+      /* Setting .value fires no event, so the label beside it would go
+       * on showing the old number. */
+      qv.textContent = quality.value + ' Mbps';
+    }
+  }
+}
+
+function pollShared() {
+  fetch('/shared')
+    .then(function (r) { return r.json(); })
+    .then(applyShared)
+    .catch(function () {});
+}
+pollShared();
+setInterval(pollShared, 2000);
 
 vsyncBox.onchange = function (e) {
   setVsync(e.target.checked);
@@ -675,6 +709,7 @@ quality.value = settings.qualityMbps != null ? settings.qualityMbps : 12;
 var qualityTimer = null;
 function sendQuality() {
   qv.textContent = quality.value + ' Mbps';
+  noteSharedTouched();
   saveSettings({ qualityMbps: Number(quality.value) });
   /* The bitrate is global -- one shared encoder feeds every client -- so
    * the server refuses this from a viewer. Don't ask: the slider is
@@ -691,7 +726,11 @@ function sendQuality() {
   }, 150);
 }
 quality.oninput = sendQuality;
-sendQuality();
+/* The label only. Calling sendQuality() here used to POST the saved
+ * bitrate on every page load, so opening the page changed the encoder
+ * for everyone already watching -- and did it again on each reload.
+ * pollShared corrects the slider to what the encoder is really on. */
+qv.textContent = quality.value + ' Mbps';
 
 /* --- advanced video adjustments (brightness/contrast/saturation/hue),
  * applied via the CSS `filter` property directly on <video>/<canvas> --

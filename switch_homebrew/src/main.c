@@ -717,13 +717,14 @@ static void start_decoders_if_needed(void) {
         audio_set_muted(g_saved_muted);
         printf("decoders ready: %ux%u codec %u, %u Hz x%u\n", n->width, n->height,
                n->video_codec, n->audio_rate, n->audio_channels);
-        /* Ask for what this console can decode, rather than accepting
-         * whatever the host happens to default to. */
-        net_send_profile(PROFILES[g_profile].w, PROFILES[g_profile].h,
-                         PROFILES[g_profile].fps, current_bitrate());
-        if (n->video_codec != g_codec) {
-            net_send_codec(g_codec);
-        }
+        /* Nothing is asked for here any more.
+         *
+         * Asking on connection meant that starting this client changed
+         * the stream for everyone already watching it, to whatever was
+         * in this console's config file. One encoder feeds every native
+         * client: arriving is not a vote. The host announces the shared
+         * settings instead (C2S_MSG_SHARED) and the menu moves to them;
+         * changing one by hand afterwards still changes it for all. */
     } else {
         printf("decoders failed to start\n");
     }
@@ -774,6 +775,48 @@ static void adapt_profile(void) {
         net_send_codec(g_codec);
     }
     g_measured_fps = achieved;
+}
+
+/* Moves this console's menu to the settings the host says everyone is
+ * sharing.
+ *
+ * The entries here are indices into fixed tables rather than free
+ * numbers, so "adopt" means picking the closest one -- which is honest:
+ * the menu then shows the nearest thing it can express to what is
+ * actually being received, instead of a value nobody is watching.
+ *
+ * Applied to the variables directly and never by way of the menu's own
+ * actions, which send the value back to the host: a value echoed back
+ * is one two clients can bounce between them indefinitely. */
+static void adopt_shared(const C2sShared *sh) {
+    if (!sh) return;
+
+    if (sh->video_codec == VIDEO_CODEC_VP8 || sh->video_codec == VIDEO_CODEC_H264) {
+        g_codec = sh->video_codec;
+    }
+
+    if (sh->width > 0 && sh->height > 0 && sh->fps > 0) {
+        int best = -1, best_cost = 0;
+        for (int i = 0; i < PROFILE_COUNT; i++) {
+            /* Height first, frame rate second: a 720p menu entry
+             * describes a 720p stream better than a 480p one does,
+             * whatever the rate says. */
+            int cost = abs(PROFILES[i].h - (int)sh->height) * 10
+                     + abs(PROFILES[i].fps - (int)sh->fps);
+            if (best < 0 || cost < best_cost) { best = i; best_cost = cost; }
+        }
+        if (best >= 0) g_profile = best;
+    }
+
+    if (sh->bitrate_kbps > 0) {
+        int best = 0, best_cost = -1;
+        for (int i = 0; i < BITRATE_COUNT; i++) {
+            if (BITRATES[i] == 0) continue; /* "whatever the profile says" */
+            int cost = abs(BITRATES[i] - (int)sh->bitrate_kbps);
+            if (best_cost < 0 || cost < best_cost) { best = i; best_cost = cost; }
+        }
+        g_bitrate_index = best;
+    }
 }
 
 static void stop_decoders(void) {
@@ -1693,6 +1736,10 @@ int main(int argc, char **argv) {
                 g_audio_frames++;
                 if (g_show_diagnostics) g_window_bytes += payload_size;
                 if (g_decoders_ready) audio_decode(payload, payload_size);
+            } else if (msg == C2S_MSG_SHARED && payload_size == sizeof(C2sShared)) {
+                C2sShared sh;
+                memcpy(&sh, payload, sizeof(sh));
+                adopt_shared(&sh);
             } else if (msg == C2S_MSG_STREAM_INFO && payload_size == sizeof(C2sStreamInfo)) {
                 /* The host saying what it is sending now. Rebuilding the
                  * decoder here rather than when the change was requested

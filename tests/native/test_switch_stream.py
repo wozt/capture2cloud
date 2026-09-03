@@ -20,6 +20,7 @@ MAGIC = 0x57533243
 VERSION = 1
 PAD_SLOTS = 21
 MSG_VIDEO, MSG_AUDIO, MSG_INPUT, MSG_PING, MSG_HOME = 1, 2, 16, 17, 18
+MSG_PROFILE, MSG_STREAM_INFO, MSG_SHARED = 19, 21, 26
 
 passed = failed = 0
 def check(name, ok, detail=""):
@@ -284,6 +285,52 @@ try:
     watcher.close()
 except Exception as e:
     check("web /clients still answers", False, str(e))
+
+group("shared settings are announced, not asked for")
+# One encoder feeds every native client, so a client that arrives has to
+# be TOLD what everyone is watching. Before this, each client pushed its
+# own saved profile on connecting, which changed the picture for people
+# already connected -- to whatever that device had in its config file.
+try:
+    c = connect(tok)
+    a = read_ack(c)
+    check("the handshake is accepted", a["accepted"] == 1)
+
+    # The announcement has to arrive on its own, without being asked.
+    c.settimeout(5)
+    shared = None
+    deadline = time.time() + 5
+    buf = b""
+    while time.time() < deadline and shared is None:
+        buf += c.recv(65536)
+        while len(buf) >= 8:
+            t, fl, _r, size = struct.unpack("<BBHI", buf[:8])
+            if len(buf) < 8 + size:
+                break
+            payload = buf[8:8 + size]
+            buf = buf[8 + size:]
+            if t == MSG_SHARED:
+                shared = payload
+                break
+
+    check("a shared-settings message arrives unprompted", shared is not None)
+    if shared is not None:
+        check("it is the size the header pins", len(shared) == 12, f"{len(shared)} bytes")
+        w, h, fps, kbps, codec, mjpeg = struct.unpack("<HHHHBB2x", shared)
+        check("it carries the stream's size", w > 0 and h > 0, f"{w}x{h}")
+        check("and its frame rate", 0 < fps <= 240, fps)
+        check("and a bitrate", kbps > 0, kbps)
+        check("and a codec the protocol knows", codec in (1, 3), codec)
+        check("and the capture format", mjpeg in (0, 1), mjpeg)
+        # What the handshake said and what the announcement says must
+        # agree: two answers to one question is how a client ends up
+        # showing a resolution nobody is on.
+        check("it agrees with the handshake",
+              (w, h) == (a["width"], a["height"]),
+              f"{w}x{h} vs {a['width']}x{a['height']}")
+    c.close()
+except Exception as e:
+    check("a shared-settings message arrives unprompted", False, str(e))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

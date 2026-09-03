@@ -26,6 +26,16 @@ import kotlin.concurrent.thread
  * interface is not, and that is why [onState] hops to the main thread at
  * the call site rather than here.
  */
+/** The settings the host says everyone connected is sharing. */
+data class Shared(
+    val width: Int,
+    val height: Int,
+    val fps: Int,
+    val bitrateKbps: Int,
+    val codec: Int,
+    val captureMjpeg: Boolean,
+)
+
 class DirectClient(
     private val host: String,
     private val port: Int,
@@ -34,6 +44,7 @@ class DirectClient(
     private val onVideo: (ByteBuffer, Boolean, Boolean) -> Unit,
     private val onAudio: (ByteBuffer) -> Unit,
     private val onStreamInfo: (width: Int, height: Int, codec: Int) -> Unit,
+    private val onShared: (Shared) -> Unit = {},
     private val onClosed: (String) -> Unit,
 ) {
     /** What the host answered the handshake with. */
@@ -227,6 +238,17 @@ class DirectClient(
                 Protocol.MSG_AUDIO -> {
                     audioBytes += size
                     onAudio(ByteBuffer.wrap(payload, 0, size))
+                }
+                Protocol.MSG_SHARED -> if (size >= 10) {
+                    val i = ByteBuffer.wrap(payload, 0, size).order(ByteOrder.LITTLE_ENDIAN)
+                    onShared(Shared(
+                        width = i.short.toInt() and 0xffff,
+                        height = i.short.toInt() and 0xffff,
+                        fps = i.short.toInt() and 0xffff,
+                        bitrateKbps = i.short.toInt() and 0xffff,
+                        codec = i.get().toInt() and 0xff,
+                        captureMjpeg = (i.get().toInt() and 0xff) != 0,
+                    ))
                 }
                 Protocol.MSG_STREAM_INFO -> if (size >= 6) {
                     val i = ByteBuffer.wrap(payload, 0, size).order(ByteOrder.LITTLE_ENDIAN)
