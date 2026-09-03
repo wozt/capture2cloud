@@ -85,6 +85,11 @@ void vpad_touch_clear(void);
 /* Combines what the glass is doing into `pad`, which already holds what
  * the physical controller is doing. Buttons are pressed if either says
  * so; a stick takes whichever deflection is larger. */
+/* Whether a touch at this normalised point was probably meant for a
+ * control. The caller uses it to keep whole-screen gestures -- the tap
+ * at the top that opens the menu -- from firing on a missed press. */
+int vpad_near_control(float nx, float ny);
+
 void vpad_merge(PadState21 pad);
 
 /* Draws the overlay, lit from `pad` -- which holds the physical

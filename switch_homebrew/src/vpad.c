@@ -468,6 +468,60 @@ static void deflect(PadState21 pad, int slot, int value) {
     }
 }
 
+/* Whether a point on the glass is close enough to a control that a
+ * touch there was probably meant for it.
+ *
+ * Used to keep the tap-at-the-top gesture that opens the menu away from
+ * the pad. The shoulders, the triggers, minus, plus and HOME all live
+ * along the top edge, so a thumb aiming for one of those and missing was
+ * landing in the menu zone -- and opening a menu is a poor thing to get
+ * for a missed press in the middle of a game.
+ *
+ * A margin around each control rather than a fixed strip, because the
+ * controls can be dragged: a strip chosen for the default layout would
+ * stop matching them the moment anyone moved anything.
+ */
+int vpad_near_control(float nx, float ny) {
+    if (!vpad_enabled()) {
+        return 0;
+    }
+    const float x = nx * VPAD_W;
+    const float y = ny * VPAD_H;
+    /* Three times each control's own size. Generous on purpose: the
+     * cost of guarding too much is a gesture that needs aiming at empty
+     * screen, and the cost of guarding too little is the gesture firing
+     * on a missed press, which is the thing being fixed. */
+    const float margin = 3.0f;
+    for (int i = 0; i < VPAD_COUNT; i++) {
+        const VpadStyle *style = &STYLE[i];
+        const SDL_FPoint p = g_pos[i];
+        switch (style->shape) {
+            case SHAPE_PILL: {
+                const float w = style->w * 0.5f * margin;
+                const float h = style->h * 0.5f * margin;
+                if (fabsf(x - p.x) <= w && fabsf(y - p.y) <= h) return 1;
+                break;
+            }
+            case SHAPE_CLUSTER: {
+                /* The four face buttons sit a little over one unit out
+                 * from the centre, so the cluster's reach is its own
+                 * radius plus that. */
+                const float r = (style->radius + 1.30f * U) * margin;
+                const float dx = x - p.x, dy = y - p.y;
+                if (dx * dx + dy * dy <= r * r) return 1;
+                break;
+            }
+            default: {
+                const float r = style->radius * margin;
+                const float dx = x - p.x, dy = y - p.y;
+                if (dx * dx + dy * dy <= r * r) return 1;
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
 void vpad_merge(PadState21 pad) {
     if (!g_enabled || g_editing) {
         return;

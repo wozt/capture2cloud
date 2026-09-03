@@ -629,13 +629,45 @@ fullscreenBox.onchange = function () {
     fullscreenBox.checked = isFullscreen();
   });
 });
+/* Whether a point is close enough to a virtual control that a tap there
+ * was probably meant for it.
+ *
+ * Checking the event's target was not enough. It catches a tap ON a
+ * button, which was never the problem: the problem is a thumb aiming for
+ * one and missing, which lands on the video a few pixels away and used
+ * to toggle fullscreen. Guarded by distance from each control instead,
+ * and by three times its own size -- generous on purpose, since the cost
+ * of guarding too much is a gesture that needs aiming at empty screen,
+ * and the cost of guarding too little is the thing being fixed.
+ *
+ * Measured against where the controls actually are rather than where
+ * they were laid out, because they can be dragged. */
+function nearVirtualControl(x, y) {
+  var pad = document.getElementById('vgp');
+  if (!pad || pad.classList.contains('hidden')) return false;
+  var controls = pad.querySelectorAll('.vgp-anchor');
+  for (var i = 0; i < controls.length; i++) {
+    var r = controls[i].getBoundingClientRect();
+    if (!r.width) continue;
+    var cx = r.left + r.width / 2;
+    var cy = r.top + r.height / 2;
+    /* Three times the size means one-and-a-half times the half-extent
+     * out from the centre, in each direction. */
+    if (Math.abs(x - cx) <= r.width * 1.5 && Math.abs(y - cy) <= r.height * 1.5) {
+      return true;
+    }
+  }
+  return false;
+}
+
 document.addEventListener('dblclick', function (e) {
   /* Only in the actual video area, not on the settings bar or the
-   * virtual gamepad overlay -- two quick taps on a virtual button
-   * shouldn't ever be interpreted as "toggle fullscreen". */
-  if (e.target === video || e.target === canvas || e.target === document.body) {
-    toggleFullscreen();
+   * virtual gamepad overlay. */
+  if (e.target !== video && e.target !== canvas && e.target !== document.body) {
+    return;
   }
+  if (nearVirtualControl(e.clientX, e.clientY)) return;
+  toggleFullscreen();
 });
 
 /* --- quality (target bitrate) --- */

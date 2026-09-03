@@ -387,7 +387,11 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
      */
     fun isNearControl(x: Float, y: Float): Boolean {
         if (!settings.padEnabled) return false
-        val margin = 1.6f
+        /* Three times each control's own size. Generous on purpose: the
+         * cost of guarding too much is a gesture that needs aiming at
+         * empty screen, and the cost of guarding too little is the
+         * gesture firing on a missed press. */
+        val margin = 3.0f
         for (s in sticks) if (hypot(x - s.x, y - s.y) <= s.r * margin) return true
         dpad?.let { if (hypot(x - it.x, y - it.y) <= it.w * margin) return true }
         for (c in controls) {

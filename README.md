@@ -32,6 +32,11 @@ becomes a working controller for real hardware.
 - **Wake the console** — optional: power-cycles a Home Assistant smart
   plug, since cutting and restoring power wakes some consoles from
   sleep.
+- **Three clients, one host** — the browser, a Nintendo Switch homebrew
+  and a native Android app, and they can all be connected at once. The
+  two native ones skip WebRTC entirely and take a small binary protocol
+  straight off a socket, which on a local network is the same picture
+  without the jitter buffer.
 
 ### On-screen touch controls
 
@@ -55,10 +60,13 @@ and no single hardcoded mapping fits them all.
 ## How it fits together
 
 ```
- HDMI ──► USB capture card ──► Capture2Cloud ──► WebRTC ──► browser
-                                    │                          │
-                                    │       gamepad state       │
-                                    │  ◄─── (DataChannel) ──────┘
+                                          WebRTC        browser
+ HDMI ──► USB capture card ──► Capture2Cloud ──┤
+                                    │          └──────  Switch homebrew
+                                    │        (binary)   Android app
+                                    │                        │
+                                    │      gamepad state     │
+                                    │  ◄─────────────────────┘
                                     ▼
                             USB adapter (Titan One)
                                     │
@@ -68,6 +76,13 @@ and no single hardcoded mapping fits them all.
 
 The console is driven by a real USB adapter that emulates a controller,
 so no modification or homebrew is needed on the console side.
+
+Which controller the adapter pretends to be is set from the settings
+window or `TITAN_OUTPUT_PROTOCOL` in the `.env` — it can present itself
+as a Switch Pro Controller, an Xbox pad or a DualShock, and the value
+lives in the adapter's own memory. A change only takes effect once the
+adapter has been unplugged from the console and plugged back in; the
+settings window says so and waits for it.
 
 ---
 
@@ -343,6 +358,9 @@ application and the shell scripts. See
 | `CAPTURE_FORMAT` | `mjpeg` (default; less USB bandwidth, ~50 points of a core more for the decode) or `yuyv` (raw, lowest CPU). Also switchable while running, from the page, and remembered per browser. |
 | `GAMEPAD_DEDUP` | Only send a controller report when the state changes, plus a keepalive (default 1). `0` sends on every pass, as it used to. |
 | `LOCAL_PLAYBACK` | Also play the captured audio on this machine (default 1) |
+| `LOCAL_SINK` | Play on this output rather than the system default. Worth setting where the default is a virtual device: sound that goes into one and never comes out the other side looks exactly like sound this program failed to produce. |
+| `SWITCH_PORT` / `SWITCH_AUTOSTART` | Port for the native clients, and whether that server starts on launch |
+| `TITAN_OUTPUT_PROTOCOL` | What the adapter pretends to be: `auto`, `switch`, `xb360`, `ps4`… Written into the adapter, so it only needs setting once. |
 | `GAMEPAD_USB_VID` / `_PID` | Force a specific adapter (default: auto-detect) |
 | `WEB_PORT` / `WEB_AUTOSTART` | Web server port, and whether it starts on launch |
 | `MAX_CLIENTS` | Simultaneous browser clients (capped at 32) |
@@ -353,11 +371,48 @@ application and the shell scripts. See
 
 ---
 
+## The other two clients
+
+Both speak the host's own protocol over a socket rather than WebRTC.
+That is worth having on a local network: WebRTC brings a jitter buffer,
+congestion control and its own idea of when to drop a frame, which is
+exactly right over the open internet and pure latency on a phone sitting
+on the same wifi as the host.
+
+### Switch homebrew — `switch_homebrew/`
+
+```sh
+cd switch_homebrew && make        # needs devkitPro with libnx
+```
+
+Copy `capture2switch.nro` to `/switch/` on the SD card. The host address
+and port are typed on the console's own keyboard, under `connection`.
+H.264 is decoded on the console's hardware at 720p60.
+
+### Android — `android/`
+
+```sh
+cd android && ./gradlew assembleDebug     # needs the Android SDK, API 36
+./gradlew test                            # JVM tests, no device needed
+```
+
+Mirrors the page's settings, and offers the same two ways in: the direct
+path, or HTTP like the browser. Video and audio are decoded by
+MediaCodec. The codec buttons say `HW` or `SW` for the device in hand,
+because whether a phone decodes VP8 in silicon is a property of that
+phone and is better read than discovered.
+
+---
+
 ## Development
 
 ```sh
 ./tests/run_all.sh          # C unit tests + JavaScript suite
+cd android && ./gradlew test # the Android client's own, on the JVM
 ```
+
+`run_all.sh` prints where the time went, per suite, and runs everything
+at `nice -n 19` so it cannot take a core from a live encode.
 
 Browser tests need the app running, plus a one-time
 `npm install && npx playwright install chromium`:
