@@ -65,6 +65,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     @Volatile private var mayControl = false
     @Volatile private var surfaceReady = false
     @Volatile private var pendingStream: Triple<Int, Int, Int>? = null
+    /* Which connection attempt is current.
+     *
+     * Closing a client makes its onClosed fire some time later, on its
+     * own thread. Reconnecting immediately -- which is what changing the
+     * host or logging in does -- meant the OLD connection's closure
+     * arrived after the NEW one had already put the picture back, and
+     * put the connection screen up over it. The pad went with it, which
+     * is why the controls "took a while to come back": they had been
+     * hidden by a message about a connection that no longer existed. */
+    private var generation = 0
     private var lastVideoAttempt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,12 +116,27 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         root.addView(pad, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
-        status = TextView(this).apply {
-            setPadding(24, 24, 24, 24)
-            setTextColor(0xFFCCDDEE.toInt())
-            textSize = 13f
+        /* Both in the top-left corner, one under the other: that is
+         * where the eye already goes for this, and a second corner for
+         * a second line of the same kind of information would only make
+         * it two places to look. */
+        val corner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 16, 24, 16)
         }
-        root.addView(status, FrameLayout.LayoutParams(
+        statsLine = TextView(this).apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = 10f
+            setTextColor(0xFF39FF14.toInt())
+            visibility = if (settings.showStats) View.VISIBLE else View.GONE
+        }
+        status = TextView(this).apply {
+            setTextColor(0xFFCCDDEE.toInt())
+            textSize = 12f
+        }
+        corner.addView(statsLine)
+        corner.addView(status)
+        root.addView(corner, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START))
 
@@ -133,19 +158,6 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
          * rotation. */
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
 
-        /* Small, monospaced and fluorescent green, at the top where a
-         * game has least going on. Discreet on purpose: it is meant to
-         * be readable at a glance without becoming part of the picture. */
-        statsLine = TextView(this).apply {
-            typeface = android.graphics.Typeface.MONOSPACE
-            textSize = 10f
-            setTextColor(0xFF39FF14.toInt())
-            setPadding(24, 6, 24, 6)
-            visibility = if (settings.showStats) View.VISIBLE else View.GONE
-        }
-        root.addView(statsLine, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END))
         startStatsTicker()
 
         setContentView(root)
@@ -164,7 +176,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun startStatsTicker() {
         val tick = object : Runnable {
             override fun run() {
-                val snapshot = diagnostics.sample(client)
+                val link = when {
+                    client == null -> "offline"
+                    mayControl -> "player"
+                    else -> "viewer"
+                }
+                val snapshot = diagnostics.sample(client, link)
                 lastStats = snapshot
                 val text = diagnostics.line(snapshot)
                 statsLine.text = text
@@ -258,7 +275,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
              * old host, and nothing about it can be redirected. */
             closeMenu()
             client?.close()
-            main.postDelayed({ hideConnectPanel(); connect() }, 400)
+            hideConnectPanel()
+            connect()
         }
         override fun onStatsChanged() {
             statsLine.visibility = if (settings.showStats) View.VISIBLE else View.GONE
@@ -268,6 +286,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         override fun onClose() = closeMenu()
         override fun mayControl() = mayControl
         override fun onLogin(password: String) = login(password)
+        override fun onBackToViewer() {
+            /* The token is dropped, not just ignored: what makes a
+             * client a player is what it presents in the handshake, so
+             * going back to watching means reconnecting without it. */
+            settings.token = ""
+            closeMenu()
+            client?.close()
+            hideConnectPanel()
+            connect()
+        }
     }
 
     // --- the connection screen ---------------------------------------
@@ -371,6 +399,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     // --- connecting ---------------------------------------------------
 
     private fun connect() {
+        generation++
+        val mine = generation
         if (settings.path == Settings.Path.HTTP) {
             say("the http path is not built yet -- use direct")
             showConnectPanel()
@@ -382,6 +412,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             port = settings.directPort,
             token = settings.token.ifEmpty { null },
             onAck = { ack ->
+                if (mine != generation) return@DirectClient
                 mayControl = ack.mayControl
                 main.post {
                     say("${ack.width}x${ack.height}, " +
@@ -421,7 +452,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     if (surfaceReady) startVideo(w, h, codec)
                 }
             },
-            onClosed = { reason -> main.post { onDisconnected(reason) } },
+            onClosed = { reason ->
+                main.post { if (mine == generation) onDisconnected(reason) }
+            },
         )
         client = c
         c.connect()
@@ -682,11 +715,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     say("logged in, reconnecting as player...")
                     closeMenu()
                     client?.close()
-                    /* close() lands onClosed, which puts the connection
-                     * screen back up; connecting from here would race it.
-                     * A moment's wait costs nothing and is honest about
-                     * what is happening. */
-                    main.postDelayed({ hideConnectPanel(); connect() }, 600)
+                    /* Straight into the new connection. The old one's
+                     * closure is ignored when it lands, because it
+                     * belongs to a previous generation. */
+                    hideConnectPanel()
+                    connect()
                 } else {
                     say("login refused")
                 }

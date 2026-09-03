@@ -35,4 +35,10 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+
+    /* Plain JVM tests. The parts worth testing here -- the wire format,
+     * the stick shaping, the rate arithmetic -- are pure functions of
+     * their inputs, so they need neither a device nor an emulator, and a
+     * test that needs a phone plugged in is a test nobody runs. */
+    testImplementation("junit:junit:4.13.2")
 }

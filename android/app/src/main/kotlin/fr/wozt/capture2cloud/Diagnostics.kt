@@ -20,6 +20,7 @@ class Diagnostics(private val context: Context) {
         val audioKbps: Int,
         val fps: Int,
         val pads: List<Pad>,
+        val link: String,
     )
 
     data class Pad(val name: String, val transport: String)
@@ -29,7 +30,7 @@ class Diagnostics(private val context: Context) {
     private var lastFrames = 0L
     private var lastAt = 0L
 
-    fun sample(client: DirectClient?): Snapshot {
+    fun sample(client: DirectClient?, link: String): Snapshot {
         val now = System.currentTimeMillis()
         val elapsed = (now - lastAt).coerceAtLeast(1)
         val v = client?.videoBytes ?: 0
@@ -44,7 +45,7 @@ class Diagnostics(private val context: Context) {
         val fps = if (fresh) 0 else ((f - lastFrames) * 1000 / elapsed).toInt()
 
         lastVideo = v; lastAudio = a; lastFrames = f; lastAt = now
-        return Snapshot(videoKbps, audioKbps, fps, pads())
+        return Snapshot(videoKbps, audioKbps, fps, pads(), link)
     }
 
     /**
@@ -92,6 +93,7 @@ class Diagnostics(private val context: Context) {
             s.pads.size == 1 -> "${s.pads[0].name} (${s.pads[0].transport})"
             else -> "${s.pads.size} pads"
         }
-        return "video ${s.videoKbps} kb/s   audio ${s.audioKbps} kb/s   ${s.fps} fps   $pad"
+        return "${s.link}   video ${s.videoKbps} kb/s   audio ${s.audioKbps} kb/s   " +
+               "${s.fps} fps   $pad"
     }
 }

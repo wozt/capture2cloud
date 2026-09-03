@@ -48,6 +48,7 @@ class SettingsPanel(
         fun onResetDongle()
         fun onRestartHost()
         fun onLogin(password: String)
+        fun onBackToViewer()
         fun onDisconnect()
         fun onClose()
         fun mayControl(): Boolean
@@ -195,10 +196,14 @@ class SettingsPanel(
         val password = field("", InputType.TYPE_CLASS_TEXT or
                                  InputType.TYPE_TEXT_VARIATION_PASSWORD, "player password")
         body.addView(password)
-        button(if (actions.mayControl()) "logged in" else "log in as player") {
+        /* Two buttons rather than one that changes its label. "Logged
+         * in" said what the state was and left it unclear what pressing
+         * it would do; these each say what they do. */
+        button("log in as player", !actions.mayControl()) {
             actions.onLogin(password.text.toString())
             password.setText("")
         }
+        button("back to viewer", actions.mayControl()) { actions.onBackToViewer() }
         button("disconnect") { actions.onDisconnect() }
     }
 
