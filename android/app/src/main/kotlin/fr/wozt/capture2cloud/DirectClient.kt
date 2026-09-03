@@ -55,6 +55,15 @@ class DirectClient(
         const val BACKLOG_BYTES = 96 * 1024
     }
 
+    /* Set when the reader should throw video away until it is caught up.
+     *
+     * Asked for on coming back from the background, where the system
+     * slows the app's threads and the socket fills with pictures of a
+     * moment that has passed. Decoding those is what "it lags, then it
+     * artefacts, then it is fine" is -- the decoder faithfully working
+     * through a backlog nobody wants to see. */
+    @Volatile private var flushing = false
+
     @Volatile private var socket: Socket? = null
     @Volatile private var running = false
 
@@ -189,9 +198,16 @@ class DirectClient(
                      * backlog is, which is the "lag that builds up" --
                      * it is not the network being slow, it is us being
                      * conscientious about frames that stopped mattering. */
+                    val key = (flags and Protocol.FLAG_KEYFRAME) != 0
                     val behind = input.available() > BACKLOG_BYTES
-                    onVideo(ByteBuffer.wrap(payload, 0, size),
-                            (flags and Protocol.FLAG_KEYFRAME) != 0, behind)
+                    if (flushing) {
+                        /* Caught up once the socket is drained AND a
+                         * keyframe has come round: stopping at the first
+                         * quiet moment would resume mid-prediction and
+                         * show a smear instead of a picture. */
+                        if (!behind && key) flushing = false else continue
+                    }
+                    onVideo(ByteBuffer.wrap(payload, 0, size), key, behind)
                 }
                 Protocol.MSG_AUDIO -> {
                     audioBytes += size
@@ -252,6 +268,11 @@ class DirectClient(
         state.copyInto(lastPad)
         lastPadSentAt = now
         send(Protocol.MSG_INPUT, state)
+    }
+
+    /** Throw away buffered video until caught up at a keyframe. */
+    fun flushBacklog() {
+        flushing = true
     }
 
     fun sendPing() = send(Protocol.MSG_PING)

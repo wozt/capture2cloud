@@ -61,6 +61,36 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
     var onState: ((ByteArray) -> Unit)? = null
 
     private val state = ByteArray(Protocol.PAD_SLOTS)
+
+    /**
+     * What a physical controller is doing, for the drawing only.
+     *
+     * The on-screen pad lights from both, the way the console client's
+     * does: with a real pad in hand the overlay becomes a picture of it,
+     * which is how you find out a stick is drifting or a trigger is
+     * resting half-pressed without leaving the game. It is never sent --
+     * the physical state reaches the host on its own path, and adding it
+     * here would send everything twice.
+     */
+    private val mirror = ByteArray(Protocol.PAD_SLOTS)
+
+    fun setMirror(physical: ByteArray) {
+        if (!physical.contentEquals(mirror)) {
+            physical.copyInto(mirror)
+            invalidate()
+        }
+    }
+
+    /** Lit by either source. */
+    private fun lit(slot: Int): Boolean =
+        state[slot].toInt() != 0 || mirror[slot].toInt() != 0
+
+    /** Where a stick's knob sits, from whichever source is pushing it. */
+    private fun axis(slot: Int): Int {
+        val a = state[slot].toInt()
+        val b = mirror[slot].toInt()
+        return if (kotlin.math.abs(b) > kotlin.math.abs(a)) b else a
+    }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -231,7 +261,7 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         dpad?.let { d -> drawDpad(canvas, d, a) }
 
         for (c in controls) {
-            val held = state[c.slot].toInt() != 0
+            val held = lit(c.slot)
             fill.color = Color.argb(if (held) a else a / 4, 0x5C, 0xE8, 0xFF)
             stroke.color = Color.argb(a, 0x5C, 0xE8, 0xFF)
             if (c.round) {
@@ -251,8 +281,8 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
             canvas.drawCircle(s.x, s.y, s.r, stroke)
             /* The knob sits where the stick is pushed: the only feedback
              * glass can give that a physical stick gives for free. */
-            val kx = s.x + state[s.axisX] / 100f * s.r * 0.6f
-            val ky = s.y + state[s.axisY] / 100f * s.r * 0.6f
+            val kx = s.x + axis(s.axisX) / 100f * s.r * 0.6f
+            val ky = s.y + axis(s.axisY) / 100f * s.r * 0.6f
             fill.color = Color.argb(a, 0x2E, 0xC4, 0xB6)
             canvas.drawCircle(kx, ky, s.r * 0.38f, fill)
         }
@@ -275,10 +305,10 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
      * as two separate things flashing.
      */
     private fun drawDpad(canvas: Canvas, d: Control, a: Int) {
-        val up = state[Protocol.UP].toInt() != 0
-        val down = state[Protocol.DOWN].toInt() != 0
-        val left = state[Protocol.LEFT].toInt() != 0
-        val right = state[Protocol.RIGHT].toInt() != 0
+        val up = lit(Protocol.UP)
+        val down = lit(Protocol.DOWN)
+        val left = lit(Protocol.LEFT)
+        val right = lit(Protocol.RIGHT)
         val r = d.w
 
         // The dish.
