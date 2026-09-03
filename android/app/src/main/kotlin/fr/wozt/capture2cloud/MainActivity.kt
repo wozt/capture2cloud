@@ -1,6 +1,10 @@
 package fr.wozt.capture2cloud
 
 import android.annotation.SuppressLint
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
+import android.view.GestureDetector
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -40,6 +44,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private var surface: Surface? = null
     private lateinit var status: TextView
     private var connectPanel: View? = null
+    private var menu: SettingsPanel? = null
+    private var videoWidth = 0
+    private var videoHeight = 0
+    private var immersive = false
 
     private var client: DirectClient? = null
     private var video: VideoDecoder? = null
@@ -86,9 +94,100 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.START))
 
+        /* A double tap in the middle is the whole gesture: one tap does
+         * nothing, so a stray touch during a game costs nothing either.
+         * The bars come back the same way they went. */
+        val taps = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                immersive = !immersive
+                applyImmersive()
+                return true
+            }
+            override fun onDown(e: MotionEvent) = true
+        })
+        root.setOnTouchListener { _, e -> taps.onTouchEvent(e) }
+
+        /* The first fit happens before the root has a size, so it does
+         * nothing; this runs it again once there is one, and after every
+         * rotation. */
+        root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
+
         setContentView(root)
         showConnectPanel()
         startPinger()
+        applyPicture()
+    }
+
+    private fun applyImmersive() {
+        val controller = window.insetsController
+        if (immersive) {
+            controller?.hide(android.view.WindowInsets.Type.systemBars())
+            controller?.systemBarsBehavior =
+                android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller?.show(android.view.WindowInsets.Type.systemBars())
+        }
+    }
+
+    // --- the menu, and what the back button now means ------------------
+
+    /**
+     * Back opens the menu, and back again leaves.
+     *
+     * Leaving on the first press was too easy to do by accident with a
+     * gesture bar during a game, and there was nowhere else for a menu
+     * to live on a screen that is meant to be all picture.
+     */
+    override fun onBackPressed() {
+        if (menu != null) {
+            /* Asked for explicitly: the second press leaves. The menu
+             * has its own way back to the picture, at the top where a
+             * thumb already is, so this is not the only exit -- it is
+             * the deliberate one. */
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        } else if (client != null) {
+            openMenu()
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
+    }
+
+    private fun openMenu() {
+        val panel = SettingsPanel(this, settings, menuActions)
+        menu = panel
+        root.addView(panel, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun closeMenu() {
+        menu?.let { root.removeView(it) }
+        menu = null
+    }
+
+    private val menuActions = object : SettingsPanel.Actions {
+        override fun onStreamShapeChanged() {
+            client?.sendCodec(settings.codec)
+            client?.sendProfile(settings.height * 16 / 9, settings.height,
+                                settings.fps, settings.bitrateMbps * 1000)
+        }
+        override fun onPictureChanged() = applyPicture()
+        override fun onSoundChanged() {
+            audio?.volume = settings.volume
+            audio?.muted = settings.muted
+        }
+        override fun onHome() { client?.sendHome() }
+        override fun onWake() { client?.sendWake() }
+        override fun onResetDongle() { client?.sendResetDongle() }
+        override fun onRestartHost() { client?.sendRestart() }
+        override fun onDisconnect() {
+            closeMenu()
+            client?.close()
+        }
+        override fun onClose() = closeMenu()
+        override fun mayControl() = mayControl
+        override fun onLogin(password: String) = login(password)
     }
 
     // --- the connection screen ---------------------------------------
@@ -261,7 +360,83 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         startVideo(w, h, codec)
     }
 
+    /**
+     * Sizes the picture to the largest box of its own shape that fits.
+     *
+     * The view filled the screen before, which stretched a 16:9 stream
+     * onto a 20:9 phone -- everything a little too wide, which is the
+     * kind of wrong that is easier to feel than to see. Letterboxed
+     * instead: black at the sides rather than a distorted picture.
+     */
+    private fun fitVideo() {
+        if (videoWidth <= 0 || videoHeight <= 0) return
+        val availableW = root.width
+        val availableH = root.height
+        if (availableW <= 0 || availableH <= 0) return
+        val scale = minOf(availableW.toFloat() / videoWidth, availableH.toFloat() / videoHeight)
+        val w = (videoWidth * scale).toInt()
+        val h = (videoHeight * scale).toInt()
+        view.layoutParams = FrameLayout.LayoutParams(w, h, Gravity.CENTER)
+        view.requestLayout()
+    }
+
+    /**
+     * Brightness, contrast, saturation and hue, as one colour matrix on
+     * the view's own layer.
+     *
+     * The same four the page offers, and applied the same way it applies
+     * them: to what is drawn, not to what is sent, so a picture adjusted
+     * here stays adjusted here and nobody else's changes.
+     */
+    private fun applyPicture() {
+        val b = settings.brightness / 100f
+        val c = settings.contrast / 100f
+        val sat = settings.saturation / 100f
+        val hue = Math.toRadians(settings.hue.toDouble())
+
+        val m = ColorMatrix()
+        m.setSaturation(sat)
+
+        /* Hue is a rotation of the colour plane. Written out rather than
+         * pulled from a library so the three coefficients are visible:
+         * they are the standard luminance weights, which is why a
+         * rotated grey stays grey. */
+        val cosv = Math.cos(hue).toFloat()
+        val sinv = Math.sin(hue).toFloat()
+        val lr = 0.213f; val lg = 0.715f; val lb = 0.072f
+        val hueMatrix = ColorMatrix(floatArrayOf(
+            lr + cosv * (1 - lr) - sinv * lr, lg - cosv * lg - sinv * lg, lb - cosv * lb + sinv * (1 - lb), 0f, 0f,
+            lr - cosv * lr + sinv * 0.143f, lg + cosv * (1 - lg) + sinv * 0.140f, lb - cosv * lb - sinv * 0.283f, 0f, 0f,
+            lr - cosv * lr - sinv * (1 - lr), lg - cosv * lg + sinv * lg, lb + cosv * (1 - lb) + sinv * lb, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f))
+        m.postConcat(hueMatrix)
+
+        /* Contrast pivots around mid grey, then brightness scales: the
+         * order matters, and this is the order the page's filters use. */
+        val t = (1f - c) * 127.5f
+        m.postConcat(ColorMatrix(floatArrayOf(
+            c * b, 0f, 0f, 0f, t,
+            0f, c * b, 0f, 0f, t,
+            0f, 0f, c * b, 0f, t,
+            0f, 0f, 0f, 1f, 0f)))
+
+        val identity = settings.brightness == 100 && settings.contrast == 100 &&
+                       settings.saturation == 100 && settings.hue == 0
+        if (identity) {
+            /* Nothing to apply, so nothing is applied: no layer, no
+             * filter, no per-frame cost for a picture nobody adjusted. */
+            view.setLayerType(View.LAYER_TYPE_NONE, null)
+        } else {
+            view.setLayerType(View.LAYER_TYPE_HARDWARE, Paint().apply {
+                colorFilter = ColorMatrixColorFilter(m)
+            })
+        }
+    }
+
     private fun startVideo(w: Int, h: Int, codec: Int) {
+        videoWidth = w
+        videoHeight = h
+        fitVideo()
         video?.stop()
         val target = surface ?: return
         val d = VideoDecoder(target) { client?.requestKeyframe() }
@@ -376,6 +551,53 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun pushPad() {
         if (!mayControl) return
         client?.sendPad(pad)
+    }
+
+    /**
+     * Asks the host for a session token, then reconnects with it.
+     *
+     * The password is used here and nowhere else -- not stored, not
+     * logged. What is kept is the token, which the host expires on its
+     * own terms; that is the same bargain the page makes, and it is why
+     * losing this file costs a login rather than a password.
+     *
+     * The reconnect is not ceremony: whether a client may control is
+     * decided in the handshake, so a token that arrives afterwards does
+     * nothing until the next one.
+     */
+    private fun login(password: String) {
+        if (password.isEmpty()) { say("a password is needed"); return }
+        say("logging in...")
+        thread(isDaemon = true, name = "c2c-login") {
+            val token = try {
+                val url = java.net.URL("http://${settings.host}:${settings.webPort}/login")
+                (url.openConnection() as java.net.HttpURLConnection).run {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    outputStream.use { it.write(password.toByteArray()) }
+                    if (responseCode == 200) inputStream.bufferedReader().readText().trim() else ""
+                }
+            } catch (e: Exception) {
+                ""
+            }
+            main.post {
+                if (token.length == 64) {
+                    settings.token = token
+                    say("logged in, reconnecting as player...")
+                    closeMenu()
+                    client?.close()
+                    /* close() lands onClosed, which puts the connection
+                     * screen back up; connecting from here would race it.
+                     * A moment's wait costs nothing and is honest about
+                     * what is happening. */
+                    main.postDelayed({ hideConnectPanel(); connect() }, 600)
+                } else {
+                    say("login refused")
+                }
+            }
+        }
     }
 
     private fun say(text: String) {
