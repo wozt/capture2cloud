@@ -31,7 +31,7 @@ class DirectClient(
     private val port: Int,
     private val token: String?,
     private val onAck: (Ack) -> Unit,
-    private val onVideo: (ByteBuffer, Boolean) -> Unit,
+    private val onVideo: (ByteBuffer, Boolean, Boolean) -> Unit,
     private val onAudio: (ByteBuffer) -> Unit,
     private val onStreamInfo: (width: Int, height: Int, codec: Int) -> Unit,
     private val onClosed: (String) -> Unit,
@@ -47,6 +47,13 @@ class DirectClient(
         val audioRate: Int,
         val audioChannels: Int,
     )
+
+    private companion object {
+        /* Roughly two 720p frames. Past this the socket is holding
+         * pictures older than the one being drawn, and catching up is
+         * worth more than showing them. */
+        const val BACKLOG_BYTES = 96 * 1024
+    }
 
     @Volatile private var socket: Socket? = null
     @Volatile private var running = false
@@ -175,8 +182,16 @@ class DirectClient(
                 Protocol.MSG_VIDEO -> {
                     videoBytes += size
                     videoFrames++
+                    /* How far behind we are, measured where it actually
+                     * shows: bytes already delivered by the network and
+                     * still unread. Decoding every one of those means
+                     * displaying a picture that is however old the
+                     * backlog is, which is the "lag that builds up" --
+                     * it is not the network being slow, it is us being
+                     * conscientious about frames that stopped mattering. */
+                    val behind = input.available() > BACKLOG_BYTES
                     onVideo(ByteBuffer.wrap(payload, 0, size),
-                            (flags and Protocol.FLAG_KEYFRAME) != 0)
+                            (flags and Protocol.FLAG_KEYFRAME) != 0, behind)
                 }
                 Protocol.MSG_AUDIO -> {
                     audioBytes += size

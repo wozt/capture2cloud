@@ -107,6 +107,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
          * the bars: it consumes what lands on a control and lets the
          * rest through. */
         pad = VirtualPad(this, settings)
+        pad.layoutFromString(settings.padLayout)
+        pad.onLayoutChanged = { settings.padLayout = pad.layoutToString() }
         pad.onState = { padState ->
             val merged = physicalPad.copyOf()
             pad.mergeInto(merged)
@@ -189,9 +191,22 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 val stream = when {
                     d == null || !d.isReady -> ""
                     else -> "${videoWidth}x$videoHeight ${codecShortName()} " +
-                            (if (d.codecIsHardware) "hw" else "sw")
+                            (if (d.codecIsHardware) "hw" else "sw") +
+                            (if (settings.bitrateIsAuto) " auto ${autoBitrateKbps / 1000}M" else "")
                 }
-                val snapshot = diagnostics.sample(client, link, stream)
+                /* Says why there is no sound when there is none: a
+                 * missing decoder, a decoder that refused, or one that
+                 * is being fed and returns nothing are three different
+                 * faults that look identical from a chair. */
+                val a = audio
+                val audioState = when {
+                    a == null -> " (no decoder)"
+                    a.lastError.isNotEmpty() -> " (${a.lastError})"
+                    a.buffersOut > 0 -> ""
+                    a.packetsIn > 0 -> " (fed, none out)"
+                    else -> " (nothing queued)"
+                }
+                val snapshot = diagnostics.sample(client, link, stream, audioState, skipped)
                 lastStats = snapshot
                 val text = diagnostics.line(snapshot)
                 statsLine.text = text
@@ -199,11 +214,63 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                  * picture: it is for saying what went wrong, not for
                  * sitting on the screen afterwards. */
                 if (video?.isReady == true && status.text.isNotEmpty()) status.text = ""
+                steerBitrate(snapshot)
                 menu?.refreshStats(text)
                 main.postDelayed(this, 1000)
             }
         }
         main.postDelayed(tick, 1000)
+    }
+
+    /* Automatic bitrate: what is being asked for right now, and what
+     * the last second looked like. */
+    private var autoBitrateKbps = 8000
+    private var lastDropped = 0L
+    /** Frames thrown away to catch up, for the diagnostics line. */
+    private var skipped = 0L
+    private var goodSeconds = 0
+
+    private fun requestedBitrateKbps(): Int =
+        if (settings.bitrateIsAuto) autoBitrateKbps else settings.bitrateMbps * 1000
+
+    /**
+     * Moves the requested bitrate towards what this link and this
+     * decoder can actually carry.
+     *
+     * Down fast, up slowly, which is the only sensible asymmetry: the
+     * cost of asking for too much is a picture that breaks up now, and
+     * the cost of asking for too little is a picture that is softer than
+     * it could be. Dropped frames are the signal rather than the arrival
+     * rate, because a link that cannot carry the stream shows up first
+     * as a decoder that cannot keep up with what does arrive.
+     *
+     * A change is only sent when it is worth sending: nudging the host's
+     * encoder every second would cost more in restarts than it gains.
+     */
+    private fun steerBitrate(snapshot: Diagnostics.Snapshot) {
+        if (!settings.bitrateIsAuto || client == null) return
+        val dropped = video?.dropped ?: 0
+        val newlyDropped = (dropped - lastDropped).coerceAtLeast(0)
+        lastDropped = dropped
+
+        val before = autoBitrateKbps
+        if (newlyDropped > 2) {
+            /* Losing frames: back off hard and start the patience over. */
+            autoBitrateKbps = (autoBitrateKbps * 3 / 4).coerceAtLeast(1500)
+            goodSeconds = 0
+        } else if (newlyDropped == 0L && snapshot.fps > 0) {
+            goodSeconds++
+            /* Five clean seconds before asking for more, so a moment of
+             * calm is not mistaken for a better link. */
+            if (goodSeconds >= 5) {
+                goodSeconds = 0
+                autoBitrateKbps = (autoBitrateKbps * 11 / 10).coerceAtMost(20000)
+            }
+        }
+        if (kotlin.math.abs(autoBitrateKbps - before) * 100 / before >= 10) {
+            client?.sendProfile(settings.height * 16 / 9, settings.height,
+                                settings.fps, autoBitrateKbps)
+        }
     }
 
     private fun codecShortName() =
@@ -300,6 +367,12 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
         override fun statsText() =
             lastStats?.let { diagnostics.line(it) } ?: "sampling..."
+        override fun onEditPad(on: Boolean) { pad.editing = on }
+        override fun onResetPadLayout() {
+            pad.resetLayout()
+            settings.padLayout = ""
+        }
+        override fun isEditingPad() = pad.editing
         override fun onClose() = closeMenu()
         override fun mayControl() = mayControl
         override fun onLogin(password: String) = login(password)
@@ -445,12 +518,21 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                  * something this one cannot decode well. */
                 client?.sendCodec(settings.codec)
                 client?.sendProfile(settings.height * 16 / 9, settings.height,
-                                    settings.fps, settings.bitrateMbps * 1000)
+                                    settings.fps, requestedBitrateKbps())
             },
-            onVideo = { buf, key ->
+            onVideo = { buf, key, behind ->
                 val d = video
                 if (d != null) {
-                    d.decode(buf, key)
+                    /* Behind, and this is not a keyframe: throw it away
+                     * rather than decode a picture that is already old.
+                     * Keyframes are always taken, so catching up ends at
+                     * the next one rather than at a black screen. */
+                    if (behind && !key) {
+                        skipped++
+                        d.requestKeyframe()
+                    } else {
+                        d.decode(buf, key)
+                    }
                 } else {
                     /* No decoder yet, or the last attempt was refused
                      * because the surface was between two lives -- a
