@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -32,6 +33,7 @@ class AudioPlayer(
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private val info = MediaCodec.BufferInfo()
+    private var presentationUs = 0L
 
     /** 0..100, where 100 is [MAX_GAIN] times the source. */
     @Volatile var volume: Int = 13
@@ -89,6 +91,9 @@ class AudioPlayer(
         codec = c
         true
     } catch (e: Exception) {
+        /* Logged, because a silent failure here means silence, which is
+         * indistinguishable from a stream that carries no sound. */
+        Log.w("Capture2Cloud", "no Opus decoder on this device", e)
         stop()
         false
     }
@@ -99,6 +104,7 @@ class AudioPlayer(
             try { it.release() } catch (_: Exception) {}
         }
         codec = null
+        presentationUs = 0L
         track?.let {
             try { it.stop() } catch (_: Exception) {}
             try { it.release() } catch (_: Exception) {}
@@ -109,18 +115,41 @@ class AudioPlayer(
     fun decode(packet: ByteBuffer) {
         val c = codec ?: return
         try {
-            val index = c.dequeueInputBuffer(0)
+            /* A short wait rather than none. Asking with no timeout at
+             * all returns nothing most of the time, and audio arrives
+             * far too steadily to skip a packet whenever the decoder
+             * happens to be busy for a millisecond. */
+            /* Output first, for the same reason as the video: a
+             * decoder that is not drained runs out of input buffers and
+             * then nothing can be queued at all, which is how this
+             * shipped silent. */
+            drain(c)
+            val index = c.dequeueInputBuffer(2000)
             if (index >= 0) {
                 val buffer = c.getInputBuffer(index)
-                if (buffer != null && buffer.remaining() >= packet.remaining()) {
-                    val size = packet.remaining()
+                /* Once an input buffer has been taken it is ALWAYS given
+                 * back, even empty. Abandoning one on a failed check
+                 * leaks it: after a handful the decoder has none left,
+                 * dequeue returns nothing for ever, and the sound stops
+                 * with no error anywhere -- which is exactly how this
+                 * shipped silent. */
+                val size = if (buffer != null) {
+                    val n = minOf(buffer.capacity(), packet.remaining())
                     buffer.clear()
-                    buffer.put(packet)
-                    c.queueInputBuffer(index, 0, size, 0, 0)
-                }
+                    val slice = packet.duplicate()
+                    slice.limit(slice.position() + n)
+                    buffer.put(slice)
+                    n
+                } else 0
+                /* Opus at 48 kHz in 20 ms packets. The timestamps have
+                 * to advance: given zero for every packet the decoder
+                 * has no idea how the stream is paced. */
+                c.queueInputBuffer(index, 0, size, presentationUs, 0)
+                presentationUs += 20_000
             }
             drain(c)
-        } catch (_: IllegalStateException) {
+        } catch (e: IllegalStateException) {
+            Log.w("Capture2Cloud", "audio decoder gave up", e)
             stop()
         }
     }

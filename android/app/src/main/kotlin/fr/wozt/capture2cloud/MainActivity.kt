@@ -130,6 +130,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             setTextColor(0xFF39FF14.toInt())
             visibility = if (settings.showStats) View.VISIBLE else View.GONE
         }
+        /* One line, not two. The resolution belonged with the rest of
+         * the numbers rather than beside them, and it should switch off
+         * with them: something permanently drawn over a game is part of
+         * the game's picture whether it is wanted or not. */
         status = TextView(this).apply {
             setTextColor(0xFFCCDDEE.toInt())
             textSize = 12f
@@ -181,16 +185,29 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     mayControl -> "player"
                     else -> "viewer"
                 }
-                val snapshot = diagnostics.sample(client, link)
+                val d = video
+                val stream = when {
+                    d == null || !d.isReady -> ""
+                    else -> "${videoWidth}x$videoHeight ${codecShortName()} " +
+                            (if (d.codecIsHardware) "hw" else "sw")
+                }
+                val snapshot = diagnostics.sample(client, link, stream)
                 lastStats = snapshot
                 val text = diagnostics.line(snapshot)
                 statsLine.text = text
+                /* The transient line clears itself once there is a
+                 * picture: it is for saying what went wrong, not for
+                 * sitting on the screen afterwards. */
+                if (video?.isReady == true && status.text.isNotEmpty()) status.text = ""
                 menu?.refreshStats(text)
                 main.postDelayed(this, 1000)
             }
         }
         main.postDelayed(tick, 1000)
     }
+
+    private fun codecShortName() =
+        if (settings.codec == Protocol.CODEC_H264) "h264" else "vp8"
 
     private fun applyImmersive() {
         val controller = window.insetsController
@@ -464,7 +481,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
      *  to put it. Cheap and idempotent: called on every frame that
      *  arrives while there is no decoder. */
     private fun retryVideoIfNeeded() {
-        if (video != null || !surfaceReady) return
+        /* Also retried when the decoder died on its own: the software
+         * VP8 one does that at 720p and above, and a decoder that has
+         * released itself leaves an object that is no longer ready. */
+        if (video?.isReady == true || !surfaceReady) return
+        video?.stop()
         /* Once a second at most. Retrying on every frame meant building
          * and tearing down a decoder sixty times a second, which is a
          * way of turning one failure into a resource shortage. */
@@ -556,7 +577,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         val target = surface ?: return
         val d = VideoDecoder(target) { client?.requestKeyframe() }
         video = if (d.start(w, h, codec)) d else null
-        if (video != null) say("$w x $h, playing")
+        /* Nothing said on success: the green line carries the resolution
+         * now, and a second line saying the same thing was the point of
+         * the complaint. */
+        if (video == null) say("no decoder for that stream")
     }
 
     private fun startAudio(rate: Int, channels: Int) {
