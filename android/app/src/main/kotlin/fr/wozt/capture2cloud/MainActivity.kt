@@ -193,10 +193,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             client?.sendProfile(settings.height * 16 / 9, settings.height,
                                 settings.fps, settings.bitrateMbps * 1000)
         }
-        override fun onPictureChanged() {
-            applyPicture()
+        override fun onPictureChanged() = applyPicture()
+        override fun onPadChanged() {
             /* The pad reads its own settings when it lays out, so a
-             * change of letters or opacity has to make it do that. */
+             * change of letters, shape or opacity has to make it do
+             * that again. */
             pad.requestLayout()
             pad.invalidate()
         }

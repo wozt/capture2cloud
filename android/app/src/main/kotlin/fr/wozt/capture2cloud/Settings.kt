@@ -151,6 +151,25 @@ class Settings(context: Context) {
         get() = prefs.getInt("padLabels", 0)
         set(v) = put { putInt("padLabels", v.coerceIn(0, 2)) }
 
+    /**
+     * How the d-pad is drawn: 0 a cross with its diagonals filled in,
+     * 1 an eight-way rose, 2 a pad with corner marks.
+     *
+     * Three designs rather than one because the thing being conveyed is
+     * hard to draw: the four directions are independent, so a thumb in a
+     * corner sends two of them, and a shape that looks like four
+     * separate buttons says the opposite. Which of the three says it
+     * best is a matter for the thumb that uses it.
+     */
+    var dpadStyle: Int
+        get() = prefs.getInt("dpadStyle", 0)
+        set(v) = put { putInt("dpadStyle", v.coerceIn(0, 2)) }
+
+    /** true: everything at once in columns. false: one category at a time. */
+    var menuColumns: Boolean
+        get() = prefs.getBoolean("menuColumns", true)
+        set(v) = put { putBoolean("menuColumns", v) }
+
     /** Button positions, as the homebrew stores them: "name:x:y;..." */
     var padLayout: String
         get() = prefs.getString("padLayout", "") ?: ""
