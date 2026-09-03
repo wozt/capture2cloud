@@ -55,6 +55,9 @@ typedef struct {
 
     /* --- this window only --- */
     int local_muted;        /* the speakers here; the stream is unaffected */
+    /* Play on the output named by LOCAL_SINK rather than the system
+     * default. Local to this machine, like the rest of this group. */
+    int local_direct_sink;
     int local_volume;       /* 0..100; the source's own level is near 13 */
     int brightness;         /* 50..150 */
     int contrast;           /* 50..150 */
@@ -73,7 +76,7 @@ typedef struct {
         .gamepad_index = -1, .invert_ry = 0, .lt_threshold = 30,               \
         .rt_threshold = 30, .stick_deadzone = {5, 5}, .stick_range = {100, 100},\
         .stick_diagonal = {100, 100}, .output_protocol = -1,                   \
-        .local_muted = 0, .local_volume = 13,                                  \
+        .local_muted = 0, .local_direct_sink = 0, .local_volume = 13,                                  \
         .brightness = 100, .contrast = 100, .vsync = 1,                        \
     }
 

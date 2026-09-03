@@ -56,6 +56,21 @@ void audio_capture_set_local_output(AudioCapture *ac, int enabled);
 void audio_capture_set_local_mute(AudioCapture *ac, int muted);
 void audio_capture_set_local_volume(AudioCapture *ac, int volume);
 
+/* Whether the local speakers play on the output named by LOCAL_SINK
+ * instead of whatever the system calls its default.
+ *
+ * Worth having as a switch rather than a fixed choice: the default sink
+ * is frequently a virtual device belonging to someone's routing setup,
+ * and audio that disappears somewhere inside that is indistinguishable
+ * from audio this program failed to produce. Does nothing if LOCAL_SINK
+ * is unset. */
+void audio_capture_set_local_direct(AudioCapture *ac, int direct);
+
+/* The name from LOCAL_SINK, or NULL when none is configured -- so an
+ * interface can say what the switch would actually select, or grey it
+ * out when it would select nothing. */
+const char *audio_capture_local_sink(const AudioCapture *ac);
+
 /* `local_output` opens the speakers on this machine. Pass 0 in headless
  * mode: nobody is sitting at a machine with no screen, and the stream is
  * unaffected either way -- this only ever fed a monitor. Not opening it
