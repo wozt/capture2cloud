@@ -64,6 +64,15 @@ class DirectClient(
     private val tx: ExecutorService =
         Executors.newSingleThreadExecutor { r -> Thread(r, "c2c-send").apply { isDaemon = true } }
 
+    /* Counters for the diagnostics line. Written on the reader thread
+     * and read from the interface without a lock: a torn long here costs
+     * one wrong number on a display that refreshes every second, and a
+     * lock on the receive path to protect a statistic would be a poor
+     * trade. */
+    @Volatile var videoBytes = 0L; private set
+    @Volatile var audioBytes = 0L; private set
+    @Volatile var videoFrames = 0L; private set
+
     /** The last state sent, so an unchanged pad is not resent. */
     private val lastPad = ByteArray(Protocol.PAD_SLOTS)
     @Volatile private var lastPadSentAt = 0L
@@ -163,11 +172,16 @@ class DirectClient(
             if (size > 0) input.readFully(payload, 0, size)
 
             when (type) {
-                Protocol.MSG_VIDEO ->
+                Protocol.MSG_VIDEO -> {
+                    videoBytes += size
+                    videoFrames++
                     onVideo(ByteBuffer.wrap(payload, 0, size),
                             (flags and Protocol.FLAG_KEYFRAME) != 0)
-                Protocol.MSG_AUDIO ->
+                }
+                Protocol.MSG_AUDIO -> {
+                    audioBytes += size
                     onAudio(ByteBuffer.wrap(payload, 0, size))
+                }
                 Protocol.MSG_STREAM_INFO -> if (size >= 6) {
                     val i = ByteBuffer.wrap(payload, 0, size).order(ByteOrder.LITTLE_ENDIAN)
                     onStreamInfo(i.short.toInt() and 0xffff,
