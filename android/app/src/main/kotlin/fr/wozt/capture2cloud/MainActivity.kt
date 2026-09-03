@@ -7,8 +7,9 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -31,11 +32,12 @@ import kotlin.concurrent.thread
  * congestion control are latency spent solving a problem that is not
  * there.
  */
-class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
+class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
     private lateinit var settings: Settings
     private lateinit var root: FrameLayout
-    private lateinit var surface: SurfaceView
+    private lateinit var view: TextureView
+    private var surface: Surface? = null
     private lateinit var status: TextView
     private var connectPanel: View? = null
 
@@ -49,6 +51,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     @Volatile private var mayControl = false
     @Volatile private var surfaceReady = false
     @Volatile private var pendingStream: Triple<Int, Int, Int>? = null
+    private var lastVideoAttempt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,8 +59,22 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         root = FrameLayout(this)
-        surface = SurfaceView(this).also { it.holder.addCallback(this) }
-        root.addView(surface, FrameLayout.LayoutParams(
+        /* A TextureView rather than a SurfaceView.
+         *
+         * A SurfaceView is the cheaper of the two -- its own layer, no
+         * copy through the view hierarchy -- and it is what this used.
+         * But on this hardware the OMX H.264 decoder refuses that
+         * surface outright: configure() throws an IllegalArgumentException
+         * with no message, which reads exactly like a device that cannot
+         * decode H.264, on a device that decodes it in silicon. The same
+         * format with no surface at all is accepted, which is how the
+         * surface was identified as the half at fault.
+         *
+         * A TextureView's surface comes from a SurfaceTexture, which is
+         * the path every decoder accepts. It costs one GPU copy per
+         * frame; a picture that costs a copy beats no picture. */
+        view = TextureView(this).also { it.surfaceTextureListener = this }
+        root.addView(view, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         status = TextView(this).apply {
@@ -140,20 +157,35 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     // --- the surface --------------------------------------------------
 
-    override fun surfaceCreated(holder: SurfaceHolder) {
+    /* surfaceCreated is deliberately not where the decoder starts.
+     *
+     * It only promises the Surface object exists. MediaCodec wants one
+     * that has been through a layout and has a size and a format, and
+     * given anything less it refuses the whole configuration with an
+     * IllegalArgumentException carrying no message -- which reads
+     * exactly like "this device cannot decode H.264", on a device that
+     * decodes H.264 in hardware. Proven by configuring the same format
+     * with no surface at all, which the same device accepts happily.
+     *
+     * surfaceChanged is the callback that promises a real size, so that
+     * is where this waits. */
+    override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+        surface = Surface(texture)
         surfaceReady = true
-        /* A stream announced before there was anywhere to draw it: start
-         * the decoder now rather than losing the announcement. */
-        pendingStream?.let { (w, h, codec) -> startVideo(w, h, codec) }
+        lastVideoAttempt = 0L
+        pendingStream?.let { (w, h, codec) -> if (video == null) startVideo(w, h, codec) }
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+    override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
 
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
+    override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
         surfaceReady = false
-        video?.stop()
-        video = null
+        video?.stop(); video = null
+        surface?.release(); surface = null
+        return true
     }
+
+    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
 
     // --- connecting ---------------------------------------------------
 
@@ -186,7 +218,21 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 client?.sendProfile(settings.height * 16 / 9, settings.height,
                                     settings.fps, settings.bitrateMbps * 1000)
             },
-            onVideo = { buf, key -> video?.decode(buf, key) },
+            onVideo = { buf, key ->
+                val d = video
+                if (d != null) {
+                    d.decode(buf, key)
+                } else {
+                    /* No decoder yet, or the last attempt was refused
+                     * because the surface was between two lives -- a
+                     * rotation does exactly that, and this app starts in
+                     * portrait and turns. Retried here rather than once
+                     * at connection time: frames are arriving, so there
+                     * is no better moment to notice the surface is ready
+                     * than when one does. */
+                    main.post { retryVideoIfNeeded() }
+                }
+            },
             onAudio = { buf -> audio?.decode(buf) },
             onStreamInfo = { w, h, codec ->
                 main.post {
@@ -200,11 +246,27 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         c.connect()
     }
 
+    /** Starts the decoder if there is a stream to decode and nowhere yet
+     *  to put it. Cheap and idempotent: called on every frame that
+     *  arrives while there is no decoder. */
+    private fun retryVideoIfNeeded() {
+        if (video != null || !surfaceReady) return
+        /* Once a second at most. Retrying on every frame meant building
+         * and tearing down a decoder sixty times a second, which is a
+         * way of turning one failure into a resource shortage. */
+        val now = System.currentTimeMillis()
+        if (now - lastVideoAttempt < 1000) return
+        lastVideoAttempt = now
+        val (w, h, codec) = pendingStream ?: return
+        startVideo(w, h, codec)
+    }
+
     private fun startVideo(w: Int, h: Int, codec: Int) {
         video?.stop()
-        val d = VideoDecoder(surface.holder.surface) { client?.requestKeyframe() }
+        val target = surface ?: return
+        val d = VideoDecoder(target) { client?.requestKeyframe() }
         video = if (d.start(w, h, codec)) d else null
-        if (video == null) say("no decoder for that stream on this device")
+        if (video != null) say("$w x $h, playing")
     }
 
     private fun startAudio(rate: Int, channels: Int) {

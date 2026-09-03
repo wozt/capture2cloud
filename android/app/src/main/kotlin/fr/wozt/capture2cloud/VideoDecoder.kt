@@ -2,6 +2,7 @@ package fr.wozt.capture2cloud
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 
@@ -29,41 +30,123 @@ class VideoDecoder(
     private var awaitingKeyframe = true
     private val info = MediaCodec.BufferInfo()
     private var startedAt = 0L
+    /** So a retry every frame does not fill the log with the same line. */
+    private var loggedFailure = false
+    private var pendingMime: String? = null
+    private var pendingWidth = 0
+    private var pendingHeight = 0
 
+    /** True once there is somewhere for frames to go. */
     val isReady: Boolean get() = codec != null
 
-    /** Builds a decoder for what the host says it is now sending. */
+    /**
+     * Notes what the host is sending. For VP8 the decoder is built right
+     * away; for H.264 it waits for the first keyframe.
+     *
+     * That wait is not caution, it is a requirement of this hardware.
+     * Configured with a surface, the OMX H.264 decoders that many phones
+     * still use refuse a format that does not carry the stream's
+     * parameter sets -- configure() throws an IllegalArgumentException
+     * with no message, which reads exactly like a device that cannot
+     * decode H.264. The same format with no surface is accepted, because
+     * buffer mode is lenient and picks the parameters up in flight. So
+     * the sets are taken out of the first keyframe and handed over up
+     * front, which is what a container would have done.
+     */
     fun start(width: Int, height: Int, protocolCodec: Int): Boolean {
         stop()
-        val mime = when (protocolCodec) {
+        pendingMime = when (protocolCodec) {
             Protocol.CODEC_H264 -> MediaFormat.MIMETYPE_VIDEO_AVC
             Protocol.CODEC_VP8 -> MediaFormat.MIMETYPE_VIDEO_VP8
             else -> return false
         }
+        pendingWidth = width
+        pendingHeight = height
+        onNeedKeyframe()
+        if (pendingMime == MediaFormat.MIMETYPE_VIDEO_VP8) {
+            return configure(null, null)
+        }
+        return true   // built at the first keyframe, once its SPS is in hand
+    }
+
+    private fun configure(sps: ByteArray?, pps: ByteArray?): Boolean {
+        val mime = pendingMime ?: return false
+        if (!surface.isValid) return false
+        var candidate: MediaCodec? = null
         return try {
-            val format = MediaFormat.createVideoFormat(mime, width, height)
-            /* Low latency where the device offers it: without this a
-             * decoder is free to hold frames back to smooth playback,
-             * which is the right call for a film and the wrong one for
-             * something being played. */
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
+            val format = MediaFormat.createVideoFormat(mime, pendingWidth, pendingHeight)
+            if (sps != null) format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(sps))
+            if (pps != null) format.setByteBuffer("csd-1", java.nio.ByteBuffer.wrap(pps))
             val c = MediaCodec.createDecoderByType(mime)
+            candidate = c
             c.configure(format, surface, null, 0)
             c.start()
             codec = c
-            awaitingKeyframe = true
+            candidate = null
+            awaitingKeyframe = false
             startedAt = System.nanoTime()
-            onNeedKeyframe()
             true
         } catch (e: Exception) {
+            /* Release what was built before the failure: a MediaCodec
+             * refused at configure() still holds the surface, and every
+             * later attempt is then refused for a different reason than
+             * the first. */
+            candidate?.let { try { it.release() } catch (_: Exception) {} }
+            if (!loggedFailure) {
+                loggedFailure = true
+                Log.w("Capture2Cloud", "decoder for $mime ${pendingWidth}x$pendingHeight refused", e)
+            }
             codec = null
             false
         }
     }
 
+    /**
+     * Finds the SPS and PPS in an Annex B frame.
+     *
+     * The stream carries them in band, before each keyframe, separated
+     * by start codes. Both are handed over including their start code,
+     * because that is the form a container would have produced and the
+     * form the decoder expects.
+     */
+    private fun parameterSets(frame: ByteArray, size: Int): Pair<ByteArray, ByteArray>? {
+        var sps: ByteArray? = null
+        var pps: ByteArray? = null
+        var i = 0
+        var nalStart = -1
+        var nalType = 0
+        while (i + 3 < size) {
+            val isStart4 = frame[i].toInt() == 0 && frame[i + 1].toInt() == 0 &&
+                           frame[i + 2].toInt() == 0 && frame[i + 3].toInt() == 1
+            val isStart3 = frame[i].toInt() == 0 && frame[i + 1].toInt() == 0 &&
+                           frame[i + 2].toInt() == 1
+            if (isStart4 || isStart3) {
+                val headerLen = if (isStart4) 4 else 3
+                if (nalStart >= 0) {
+                    val slice = frame.copyOfRange(nalStart, i)
+                    if (nalType == 7 && sps == null) sps = slice
+                    if (nalType == 8 && pps == null) pps = slice
+                }
+                nalStart = i
+                nalType = frame[i + headerLen].toInt() and 0x1f
+                i += headerLen
+                if (sps != null && pps != null) break
+            } else {
+                i++
+            }
+        }
+        if (nalStart >= 0 && (sps == null || pps == null)) {
+            val slice = frame.copyOfRange(nalStart, size)
+            if (nalType == 7 && sps == null) sps = slice
+            if (nalType == 8 && pps == null) pps = slice
+        }
+        val a = sps ?: return null
+        val b = pps ?: return null
+        return a to b
+    }
+
     fun stop() {
+        loggedFailure = false
         codec?.let {
             try { it.stop() } catch (_: Exception) {}
             try { it.release() } catch (_: Exception) {}
@@ -82,6 +165,16 @@ class VideoDecoder(
      * which dropping a frame answers better than queueing one does.
      */
     fun decode(frame: ByteBuffer, isKeyframe: Boolean): Boolean {
+        /* No decoder yet means H.264 waiting for its parameter sets. The
+         * first keyframe carries them; anything before it is of no use
+         * to a decoder that does not exist. */
+        if (codec == null) {
+            if (!isKeyframe) return false
+            val bytes = ByteArray(frame.remaining())
+            frame.duplicate().get(bytes)
+            val sets = parameterSets(bytes, bytes.size) ?: return false
+            if (!configure(sets.first, sets.second)) return false
+        }
         val c = codec ?: return false
         if (awaitingKeyframe) {
             if (!isKeyframe) return false
