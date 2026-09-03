@@ -66,7 +66,7 @@ typedef struct {
     GtkWidget *adapter_sees;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
-    GtkWidget *muted, *volume, *brightness, *contrast, *vsync;
+    GtkWidget *muted, *volume, *direct_sink, *brightness, *contrast, *vsync;
     GtkWidget *status_label;
 
     /* The replug dialog. Changing what the adapter emulates is not done
@@ -132,6 +132,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     else if (w == g_c.switch_enabled)  shell->settings.switch_enabled = on;
     else if (w == g_c.gamepad_enabled) shell->settings.gamepad_enabled = on;
     else if (w == g_c.invert_ry)       shell->settings.invert_ry = on;
+    else if (w == g_c.direct_sink)     shell->settings.local_direct_sink = on;
     else if (w == g_c.muted)           shell->settings.local_muted = on;
     else if (w == g_c.vsync)           shell->settings.vsync = on;
     SDL_UnlockMutex(shell->lock);
@@ -384,6 +385,7 @@ static void load_controls(GtkShell *shell) {
     }
 
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.muted), s.local_muted);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.direct_sink), s.local_direct_sink);
     gtk_range_set_value(GTK_RANGE(g_c.volume), s.local_volume);
     gtk_range_set_value(GTK_RANGE(g_c.brightness), s.brightness);
     gtk_range_set_value(GTK_RANGE(g_c.contrast), s.contrast);
@@ -398,6 +400,14 @@ static gboolean on_settings_delete(GtkWidget *w, GdkEvent *e, gpointer user_data
      * program, which is the whole point of living in the tray. */
     gtk_widget_hide(w);
     return TRUE;
+}
+
+/* The same icon on the settings window, so the thing in the tray and the
+ * thing in the window list are recognisably one program. */
+static void set_window_icon(GtkWidget *win) {
+    char path[512];
+    app_path(path, sizeof(path), "assets/icon-64.png");
+    gtk_window_set_icon_from_file(GTK_WINDOW(win), path, NULL);
 }
 
 static void build_settings_window(GtkShell *shell) {
@@ -528,6 +538,15 @@ static void build_settings_window(GtkShell *shell) {
         "The speakers on this machine only. What the browser and the console "
         "receive is untouched.");
     g_c.volume = add_row(grid, row++, "volume (%)", make_scale(shell, 0, 100, 5, "%"));
+    g_c.direct_sink = add_row(grid, row++, "output",
+                              make_check(shell, "straight to the card, not the default"));
+    gtk_widget_set_tooltip_text(g_c.direct_sink,
+        "Play on the device named by LOCAL_SINK in the .env instead of whatever "
+        "the system calls its default output.\n\nWorth turning on where the "
+        "default is a virtual device belonging to a routing setup: sound that "
+        "goes into one and never comes out the other side looks exactly like "
+        "sound this program failed to produce. Does nothing if LOCAL_SINK is "
+        "not set.");
     gtk_widget_set_tooltip_text(g_c.volume,
         "0 to 100, where about 13 is the source's own level and 100 is eight times it -- "
         "the same scale as the page and the console client.");
@@ -562,6 +581,7 @@ static void build_settings_window(GtkShell *shell) {
     gtk_widget_set_margin_bottom(g_c.status_label, 10);
     gtk_box_pack_start(GTK_BOX(box), g_c.status_label, FALSE, FALSE, 0);
 
+    set_window_icon(win);
     shell->settings_window = win;
     load_controls(shell);
 }
@@ -778,7 +798,16 @@ static int gtk_thread_main(void *arg) {
 
     /* A stock icon: shipping one would mean an asset to install and a
      * path to find at runtime, for a picture in a 22-pixel box. */
-    shell->icon = gtk_status_icon_new_from_icon_name("camera-video");
+    /* The project's own icon rather than a theme name. "camera-video" is
+     * whatever the current icon theme decides it is, which is a
+     * different picture on every desktop and no picture at all on some;
+     * this is one image, shipped with the program, and the same one the
+     * page and the console client show. */
+    {
+        char path[512];
+        app_path(path, sizeof(path), "assets/icon-64.png");
+        shell->icon = gtk_status_icon_new_from_file(path);
+    }
     gtk_status_icon_set_title(shell->icon, "Capture2Cloud");
     gtk_status_icon_set_tooltip_text(shell->icon, "Capture2Cloud");
     g_signal_connect(shell->icon, "popup-menu", G_CALLBACK(on_icon_popup), shell);

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Capture2Cloud's icon, and the one source all the others are rendered
+  from: the tray and window icons, the page's favicon, and the console
+  client's application icon.
+
+  A capture card, and the cloud it sends the picture to. Those are the
+  two halves of what this program does, and they are the only two shapes
+  here: at sixteen pixels a favicon has room for a silhouette and nothing
+  else, so the card is a plain tilted board with a slot connector, and
+  the cloud is three circles. Everything that would only read at 256
+  (traces, screws, port detail) was left out rather than turned to mush.
+
+  The dark rounded backing is not decoration. The console client's icon
+  has to be a JPEG, which cannot be transparent, and a cyan card on
+  whatever a system tray happens to be that day is a coin toss. One
+  backing means one icon that reads the same in all four places.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5ce8ff"/>
+      <stop offset="1" stop-color="#00b4d8"/>
+    </linearGradient>
+    <linearGradient id="vapour" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ff5e4"/>
+      <stop offset="1" stop-color="#2ec4b6"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="6" width="244" height="244" rx="52" fill="#0b1a26"/>
+
+  <!-- The card, tilted so it reads as an object rather than a rectangle,
+       with its mass in the upper right. Its slot connector sits on the
+       left half of the bottom edge, which is the half the cloud does not
+       cover: a board without its connector is just a box. -->
+  <g transform="rotate(-15 128 88)">
+    <rect x="188" y="26" width="18" height="112" rx="5" fill="#9fb3c8"/>
+    <rect x="192" y="52" width="10" height="26" rx="3" fill="#0b1a26"/>
+    <rect x="40" y="38" width="150" height="86" rx="9" fill="url(#board)"/>
+    <rect x="58" y="56" width="44" height="32" rx="5" fill="#0b1a26" opacity="0.55"/>
+    <rect x="114" y="56" width="28" height="19" rx="3" fill="#0b1a26" opacity="0.35"/>
+    <rect x="52" y="124" width="50" height="19" rx="3" fill="#e8b93b"/>
+    <rect x="110" y="124" width="34" height="19" rx="3" fill="#e8b93b"/>
+  </g>
+
+  <!-- The cloud, lower right, overlapping the card's corner. Drawn twice:
+       once in the backing colour with a stroke, to cut a dark rim that
+       keeps turquoise legible against cyan at small sizes, then again in
+       colour on top. -->
+  <g>
+    <g fill="#0b1a26" stroke="#0b1a26" stroke-width="13" stroke-linejoin="round">
+      <circle cx="168" cy="176" r="44"/>
+      <circle cx="124" cy="194" r="31"/>
+      <circle cx="204" cy="196" r="29"/>
+      <rect x="120" y="188" width="88" height="38" rx="19"/>
+    </g>
+    <g fill="url(#vapour)">
+      <circle cx="168" cy="176" r="44"/>
+      <circle cx="124" cy="194" r="31"/>
+      <circle cx="204" cy="196" r="29"/>
+      <rect x="120" y="188" width="88" height="38" rx="19"/>
+    </g>
+  </g>
+</svg>

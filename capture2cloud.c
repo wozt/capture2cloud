@@ -216,6 +216,21 @@ static int open_capture_window(void) {
         return -1;
     }
 
+    /* The same icon the tray and the page show. A BMP rather than the PNG
+     * the rest use, because SDL loads BMP on its own and pulling in
+     * SDL_image to draw one 64-pixel square would be a dependency for a
+     * decoration. Failing to load it costs the window its icon and
+     * nothing else, so it is not worth stopping for. */
+    {
+        char path[512];
+        app_path(path, sizeof(path), "assets/icon-64.bmp");
+        SDL_Surface *icon = SDL_LoadBMP(path);
+        if (icon) {
+            SDL_SetWindowIcon(g_window, icon);
+            SDL_FreeSurface(icon);
+        }
+    }
+
     g_renderer = SDL_CreateRenderer(g_window, -1,
                                     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!g_renderer) {
@@ -301,6 +316,13 @@ static void on_settings(void *userdata, const AppSettings *want) {
          * question about volume. */
         audio_capture_set_local_mute(g_audio, want->local_muted);
         audio_capture_set_local_volume(g_audio, want->local_volume);
+    }
+    /* Its own test, not folded in with mute and volume above: this one
+     * does close the stream and build it again, because there is no
+     * moving a stream from one output to another. */
+    if (want->local_direct_sink != have->local_direct_sink) {
+        have->local_direct_sink = want->local_direct_sink;
+        audio_capture_set_local_direct(g_audio, want->local_direct_sink);
     }
 
     /* The rest are read where they are used -- the controller poll, the

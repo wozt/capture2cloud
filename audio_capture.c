@@ -69,6 +69,30 @@
  * consumer here, and a brief local glitch beats delaying the stream. */
 #define PLAYBACK_RING_CHUNKS 24
 
+/* How far the ring is allowed to drift from half full before a frame is
+ * added or removed to bring it back.
+ *
+ * The ring is filled at the capture card's clock and drained at the
+ * speaker's, and those are two different crystals. Twenty parts per
+ * million between them -- ordinary for two USB devices -- is thirty
+ * milliseconds of drift in twenty-five minutes, which is the whole ring.
+ * Once it saturates, every push throws away the oldest chunk: 1.3 ms of
+ * silence punched into the sound over and over. That is what "it buzzes
+ * over the music and then dies" is, and why closing the window and
+ * reopening it fixed it for another twenty-five minutes -- the close
+ * empties the ring and the drift starts again from zero.
+ *
+ * The correction is one frame at a time, which at 48 kHz is 21
+ * microseconds and cannot be heard, and it is applied at most once per
+ * chunk. That is a rate change of one part in 64 available on demand,
+ * against a drift measured in parts per million: far more authority than
+ * is needed, used far more gently than the alternative.
+ *
+ * The browser never had this problem because WebRTC resamples to track
+ * the receiver's clock. This is the local path's version of that. */
+#define PLAYBACK_DRIFT_HIGH (PLAYBACK_RING_CHUNKS * 3 / 4)
+#define PLAYBACK_DRIFT_LOW  (PLAYBACK_RING_CHUNKS / 4)
+
 struct PlaybackRing {
     int16_t *data;      /* PLAYBACK_RING_CHUNKS * chunk_samples */
     size_t chunk_samples;
@@ -81,6 +105,10 @@ struct PlaybackRing {
      * the capture's own state from another thread. */
     pa_sample_spec spec;
     pa_buffer_attr attr;
+    /* Which output to play on: NULL for whatever the system calls its
+     * default. Kept here so the playback thread can rebuild the stream
+     * on the same device without reaching into the capture's state. */
+    const char *device;
 };
 
 /* The top of the volume slider, as a multiple of the source's own level.
@@ -103,6 +131,16 @@ struct AudioCapture {
     const char *source; /* points into source_buf, or NULL for the default */
     char source_buf[512];
     int local_playback;         /* LOCAL_PLAYBACK in the .env */
+    /* A real output to bypass the default with, from LOCAL_SINK, and
+     * whether to use it. The default sink is not always a sound card: on
+     * a machine with any kind of routing it is usually a virtual device,
+     * and sound that goes into one and never comes out the other side
+     * looks exactly like sound that broke. Naming a real card takes that
+     * whole class of question off the table. */
+    char sink_buf[192];
+    const char *local_sink;     /* points into sink_buf, or NULL if unset */
+    volatile int local_direct;  /* 1 = play on local_sink, 0 = the default */
+    volatile int local_direct_applied;
     /* The speakers here, changed from the settings window while
      * running. Muting stops what is queued to them; it never touches
      * what the browser and the console receive. Read on the capture
@@ -135,10 +173,14 @@ static void local_playback_close(AudioCapture *ac);
 
 static int playback_thread_main(void *arg) {
     struct PlaybackRing *r = arg;
-    int16_t *chunk = malloc(r->chunk_samples * sizeof(int16_t));
+    /* One frame of slack at each end, so a chunk can go out one frame
+     * shorter or one frame longer than it came in. */
+    int16_t *chunk = malloc((r->chunk_samples + 2) * sizeof(int16_t));
     if (!chunk) {
         return 1;
     }
+    unsigned long corrections = 0, chunks = 0;
+    Uint32 stats_since = SDL_GetTicks();
     for (;;) {
         SDL_LockMutex(r->mutex);
         while (r->running && r->count == 0) {
@@ -151,10 +193,43 @@ static int playback_thread_main(void *arg) {
         memcpy(chunk, r->data + (size_t)r->tail * r->chunk_samples, r->chunk_samples * sizeof(int16_t));
         r->tail = (r->tail + 1) % PLAYBACK_RING_CHUNKS;
         r->count--;
+        const int fill = r->count;
         SDL_UnlockMutex(r->mutex);
 
+        /* Track the two clocks. Running long means the card is the
+         * faster of the two and a frame has to go; running short means
+         * the speakers are, and one is repeated. Either way the ring is
+         * walked back towards half full, which is where it has the most
+         * room to absorb an ordinary scheduling hiccup. */
+        size_t out_samples = r->chunk_samples;
+        if (fill > PLAYBACK_DRIFT_HIGH) {
+            out_samples -= 2;
+            corrections++;
+        } else if (fill < PLAYBACK_DRIFT_LOW) {
+            chunk[r->chunk_samples] = chunk[r->chunk_samples - 2];
+            chunk[r->chunk_samples + 1] = chunk[r->chunk_samples - 1];
+            out_samples += 2;
+            corrections++;
+        }
+
+        /* Behind VERBOSE, like every other periodic line. Worth having
+         * when this is being looked at: a correction rate that sits at
+         * some small steady number is the two clocks being tracked, and
+         * one at zero with the fill climbing is this code not working. */
+        chunks++;
+        Uint32 now = SDL_GetTicks();
+        if (now - stats_since >= 10000) {
+            if (app_verbose()) {
+                fprintf(stderr, "audio_capture: playback ring %d/%d, %lu clock corrections in %lu chunks\n",
+                        fill, PLAYBACK_RING_CHUNKS, corrections, chunks);
+            }
+            corrections = 0;
+            chunks = 0;
+            stats_since = now;
+        }
+
         int err = 0;
-        if (pa_simple_write(r->play, chunk, r->chunk_samples * sizeof(int16_t), &err) < 0) {
+        if (pa_simple_write(r->play, chunk, out_samples * sizeof(int16_t), &err) < 0) {
             /* Ending the thread here left the speakers dead for the rest
              * of the session with one line in a log nobody was reading.
              * The stream is rebuilt instead, the same way the capture
@@ -165,7 +240,7 @@ static int playback_thread_main(void *arg) {
             r->play = NULL;
             while (r->running && !r->play) {
                 SDL_Delay(AUDIO_REOPEN_RETRY_MS);
-                r->play = pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, NULL,
+                r->play = pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, r->device,
                                         "Capture audio", &r->spec, NULL, &r->attr, &err);
             }
             if (!r->play) {
@@ -591,6 +666,12 @@ static int audio_thread(void *arg) {
 
         /* Opened and closed here rather than where it is asked for: the
          * capture thread owns the stream. */
+        /* Changed output: the stream has to be built again, there is no
+         * moving one. Done here rather than from the setter, because
+         * this thread is the one that owns the playback side. */
+        if (ac->ring.play && ac->local_direct != ac->local_direct_applied) {
+            local_playback_close(ac);
+        }
         if (ac->local_playback && ac->local_wanted && !ac->ring.play) {
             local_playback_open(ac);
         } else if (ac->ring.play && !ac->local_wanted) {
@@ -657,6 +738,9 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
      * say, decided once. `local_wanted` is whether they are on right
      * now, which headless starts with off and "show capture" turns on. */
     ac->local_playback = (int)config_get_int("LOCAL_PLAYBACK", 1, 0, 1);
+    if (config_get("LOCAL_SINK", ac->sink_buf, sizeof(ac->sink_buf)) && ac->sink_buf[0]) {
+        ac->local_sink = ac->sink_buf;
+    }
     ac->local_wanted = local_output;
     ac->local_volume = 13; /* about the source's own level; see the header */
     if (source && source[0]) {
@@ -686,8 +770,10 @@ static int local_playback_open(AudioCapture *ac) {
         ac->ring.data = malloc(PLAYBACK_RING_CHUNKS * ac->ring.chunk_samples * sizeof(int16_t));
     }
     ac->ring.head = ac->ring.tail = ac->ring.count = 0;
-    ac->ring.play = pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, NULL, "Capture audio",
-                                  &ac->ring.spec, NULL, &ac->ring.attr, &error);
+    ac->ring.device = (ac->local_direct && ac->local_sink) ? ac->local_sink : NULL;
+    ac->local_direct_applied = ac->local_direct;
+    ac->ring.play = pa_simple_new(NULL, APP_NAME, PA_STREAM_PLAYBACK, ac->ring.device,
+                                  "Capture audio", &ac->ring.spec, NULL, &ac->ring.attr, &error);
     if (!ac->ring.data || !ac->ring.mutex || !ac->ring.cond || !ac->ring.play) {
         fprintf(stderr, "audio_capture: local playback unavailable (%s), continuing without it\n",
                 pa_strerror(error));
@@ -733,6 +819,16 @@ void audio_capture_set_local_output(AudioCapture *ac, int enabled) {
      * opening a PulseAudio stream from whichever thread happened to
      * click a menu is how two threads end up owning one device. */
     ac->local_wanted = enabled ? 1 : 0;
+}
+
+void audio_capture_set_local_direct(AudioCapture *ac, int direct) {
+    if (ac && ac->local_sink) {
+        ac->local_direct = direct ? 1 : 0;
+    }
+}
+
+const char *audio_capture_local_sink(const AudioCapture *ac) {
+    return ac ? ac->local_sink : NULL;
 }
 
 void audio_capture_set_local_volume(AudioCapture *ac, int volume) {
