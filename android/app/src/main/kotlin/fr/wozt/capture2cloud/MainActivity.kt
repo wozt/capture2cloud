@@ -473,6 +473,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
      * surfaceChanged is the callback that promises a real size, so that
      * is where this waits. */
     override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+        /* Coming back from the background with a socket full of stale
+         * pictures. Throw them away rather than decode them: what is
+         * wanted is now, not the last thirty frames of then. */
+        client?.flushBacklog()
+        client?.requestKeyframe()
         surface = Surface(texture)
         surfaceReady = true
         lastVideoAttempt = 0L
@@ -782,6 +787,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun mergeAndPush() {
         physicalPad.copyInto(padState)
         pad.mergeInto(padState)
+        /* The overlay shows what the real pad is doing too, so with a
+         * controller in hand it becomes a picture of that controller. */
+        pad.setMirror(physicalPad)
         pushPad()
     }
 
