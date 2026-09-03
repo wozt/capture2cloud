@@ -147,34 +147,7 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         if (!settings.padEnabled) return
         val a = (settings.padOpacity * 255 / 100).coerceIn(0, 255)
 
-        /* A real cross, drawn as two crossed bars rather than four
-         * separate buttons. The shape is the affordance: a cross says
-         * "slide between directions", four circles say "press one", and
-         * only one of those is true here -- the four directions are
-         * independent, so a thumb in a corner sends two of them and the
-         * diagonals come out on their own.
-         */
-        dpad?.let { d ->
-            val arm = d.w
-            val thick = d.w * 0.42f
-            val r = thick * 0.35f
-            stroke.color = Color.argb(a, 0x5C, 0xE8, 0xFF)
-            for (i in 0..3) {
-                val lit = intArrayOf(Protocol.UP, Protocol.RIGHT,
-                                     Protocol.DOWN, Protocol.LEFT)[i]
-                fill.color = Color.argb(
-                    if (state[lit].toInt() != 0) a else a / 5, 0x5C, 0xE8, 0xFF)
-                val (l, t, rr, b) = when (i) {
-                    0 -> listOf(d.x - thick, d.y - arm, d.x + thick, d.y + thick)
-                    1 -> listOf(d.x - thick, d.y - thick, d.x + arm, d.y + thick)
-                    2 -> listOf(d.x - thick, d.y - thick, d.x + thick, d.y + arm)
-                    else -> listOf(d.x - arm, d.y - thick, d.x + thick, d.y + thick)
-                }
-                canvas.drawRoundRect(l, t, rr, b, r, r, fill)
-            }
-            canvas.drawRoundRect(d.x - thick, d.y - arm, d.x + thick, d.y + arm, r, r, stroke)
-            canvas.drawRoundRect(d.x - arm, d.y - thick, d.x + arm, d.y + thick, r, r, stroke)
-        }
+        dpad?.let { d -> drawDpad(canvas, d, a) }
 
         for (c in controls) {
             val held = state[c.slot].toInt() != 0
@@ -201,6 +174,116 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
             val ky = s.y - state[s.axisY] / 100f * s.r * 0.6f
             fill.color = Color.argb(a, 0x2E, 0xC4, 0xB6)
             canvas.drawCircle(kx, ky, s.r * 0.38f, fill)
+        }
+    }
+
+    /**
+     * Three ways of drawing the same eight directions.
+     *
+     * The difficulty is honest: the four directions are independent, a
+     * thumb in a corner sends two of them, and any shape that reads as
+     * four separate buttons says the opposite of that. None of these is
+     * obviously right, so all three are here and the thumb decides.
+     */
+    private fun drawDpad(canvas: Canvas, d: Control, a: Int) {
+        val up = state[Protocol.UP].toInt() != 0
+        val down = state[Protocol.DOWN].toInt() != 0
+        val left = state[Protocol.LEFT].toInt() != 0
+        val right = state[Protocol.RIGHT].toInt() != 0
+        stroke.color = Color.argb(a, 0x5C, 0xE8, 0xFF)
+
+        when (settings.dpadStyle) {
+            // --- 0: a cross whose inner corners are filled in ----------
+            //
+            // The arms say "four directions" and the corner wedges say
+            // "and the pairs between them". A wedge lights only when
+            // both of its neighbours do, which is exactly the condition
+            // it stands for.
+            0 -> {
+                val arm = d.w
+                val t = d.w * 0.40f
+                val r = t * 0.4f
+                fun bar(l: Float, top: Float, rr: Float, b: Float, lit: Boolean) {
+                    fill.color = Color.argb(if (lit) a else a / 5, 0x5C, 0xE8, 0xFF)
+                    canvas.drawRoundRect(l, top, rr, b, r, r, fill)
+                }
+                bar(d.x - t, d.y - arm, d.x + t, d.y + t, up)
+                bar(d.x - t, d.y - t, d.x + arm, d.y + t, right)
+                bar(d.x - t, d.y - t, d.x + t, d.y + arm, down)
+                bar(d.x - arm, d.y - t, d.x + t, d.y + t, left)
+
+                val c = t * 1.55f
+                val corners = listOf(
+                    Triple(d.x + t, d.y - c, up && right),
+                    Triple(d.x + t, d.y + t, down && right),
+                    Triple(d.x - c, d.y + t, down && left),
+                    Triple(d.x - c, d.y - c, up && left),
+                )
+                for ((cx, cy, lit) in corners) {
+                    fill.color = Color.argb(if (lit) a else a / 8, 0x2E, 0xC4, 0xB6)
+                    canvas.drawRoundRect(cx, cy, cx + c - t + t * 0.9f, cy + c - t + t * 0.9f,
+                                         r, r, fill)
+                }
+                canvas.drawRoundRect(d.x - t, d.y - arm, d.x + t, d.y + arm, r, r, stroke)
+                canvas.drawRoundRect(d.x - arm, d.y - t, d.x + arm, d.y + t, r, r, stroke)
+            }
+
+            // --- 1: an eight-way rose ---------------------------------
+            //
+            // Eight wedges around a hub, each lighting on its own. There
+            // is no arguing with it: the diagonals are drawn, so they
+            // exist.
+            1 -> {
+                val lit = booleanArrayOf(
+                    up, up && right, right, down && right,
+                    down, down && left, left, up && left)
+                val box = android.graphics.RectF(d.x - d.w, d.y - d.w, d.x + d.w, d.y + d.w)
+                for (i in 0..7) {
+                    fill.color = Color.argb(
+                        if (lit[i]) a else a / 6,
+                        if (i % 2 == 0) 0x5C else 0x2E,
+                        if (i % 2 == 0) 0xE8 else 0xC4,
+                        if (i % 2 == 0) 0xFF else 0xB6)
+                    /* Starting at -112.5 so a wedge is centred on north
+                     * rather than straddling it. */
+                    canvas.drawArc(box, -112.5f + i * 45f, 41f, true, fill)
+                }
+                canvas.drawCircle(d.x, d.y, d.w, stroke)
+                fill.color = Color.argb(a, 0x0B, 0x1A, 0x26)
+                canvas.drawCircle(d.x, d.y, d.w * 0.3f, fill)
+                canvas.drawCircle(d.x, d.y, d.w * 0.3f, stroke)
+            }
+
+            // --- 2: a pad with corner marks ---------------------------
+            //
+            // The quietest of the three: one rounded square, four
+            // arrows, and four corner dots that light on the pairs.
+            else -> {
+                val r = d.w * 0.42f
+                fill.color = Color.argb(a / 6, 0x5C, 0xE8, 0xFF)
+                canvas.drawRoundRect(d.x - d.w, d.y - d.w, d.x + d.w, d.y + d.w, r, r, fill)
+                canvas.drawRoundRect(d.x - d.w, d.y - d.w, d.x + d.w, d.y + d.w, r, r, stroke)
+
+                val marks = arrayOf("▲", "▶", "▼", "◀")
+                val on = booleanArrayOf(up, right, down, left)
+                val mx = floatArrayOf(0f, 0.62f, 0f, -0.62f)
+                val my = floatArrayOf(-0.62f, 0f, 0.62f, 0f)
+                for (i in 0..3) {
+                    label.color = Color.argb(if (on[i]) a else a / 3, 0xFF, 0xFF, 0xFF)
+                    canvas.drawText(marks[i], d.x + mx[i] * d.w,
+                                    d.y + my[i] * d.w + label.textSize * 0.35f, label)
+                }
+                val dots = listOf(
+                    Triple(0.52f, -0.52f, up && right),
+                    Triple(0.52f, 0.52f, down && right),
+                    Triple(-0.52f, 0.52f, down && left),
+                    Triple(-0.52f, -0.52f, up && left),
+                )
+                for ((ox, oy, litc) in dots) {
+                    fill.color = Color.argb(if (litc) a else a / 8, 0x2E, 0xC4, 0xB6)
+                    canvas.drawCircle(d.x + ox * d.w, d.y + oy * d.w, d.w * 0.16f, fill)
+                }
+            }
         }
     }
 
