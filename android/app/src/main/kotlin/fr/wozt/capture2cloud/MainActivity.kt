@@ -49,6 +49,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private var videoWidth = 0
     private var videoHeight = 0
     private var immersive = false
+    private lateinit var diagnostics: Diagnostics
+    private lateinit var statsLine: TextView
+    private var lastStats: Diagnostics.Snapshot? = null
 
     private var client: DirectClient? = null
     private var video: VideoDecoder? = null
@@ -67,6 +70,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        diagnostics = Diagnostics(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         root = FrameLayout(this)
@@ -129,10 +133,46 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
          * rotation. */
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
 
+        /* Small, monospaced and fluorescent green, at the top where a
+         * game has least going on. Discreet on purpose: it is meant to
+         * be readable at a glance without becoming part of the picture. */
+        statsLine = TextView(this).apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = 10f
+            setTextColor(0xFF39FF14.toInt())
+            setPadding(24, 6, 24, 6)
+            visibility = if (settings.showStats) View.VISIBLE else View.GONE
+        }
+        root.addView(statsLine, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END))
+        startStatsTicker()
+
         setContentView(root)
         showConnectPanel()
         startPinger()
         applyPicture()
+    }
+
+    /**
+     * Samples once a second and feeds both places the numbers appear.
+     *
+     * One timer for the overlay and the menu together: two would drift
+     * apart and show different figures for the same second, which is the
+     * kind of thing that makes someone doubt both.
+     */
+    private fun startStatsTicker() {
+        val tick = object : Runnable {
+            override fun run() {
+                val snapshot = diagnostics.sample(client)
+                lastStats = snapshot
+                val text = diagnostics.line(snapshot)
+                statsLine.text = text
+                menu?.refreshStats(text)
+                main.postDelayed(this, 1000)
+            }
+        }
+        main.postDelayed(tick, 1000)
     }
 
     private fun applyImmersive() {
@@ -220,6 +260,11 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             client?.close()
             main.postDelayed({ hideConnectPanel(); connect() }, 400)
         }
+        override fun onStatsChanged() {
+            statsLine.visibility = if (settings.showStats) View.VISIBLE else View.GONE
+        }
+        override fun statsText() =
+            lastStats?.let { diagnostics.line(it) } ?: "sampling..."
         override fun onClose() = closeMenu()
         override fun mayControl() = mayControl
         override fun onLogin(password: String) = login(password)
@@ -549,10 +594,15 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             return super.onGenericMotionEvent(event)
         }
         physicalPad[Protocol.LX] = axis(event, MotionEvent.AXIS_X, 0)
-        physicalPad[Protocol.LY] = axis(event, MotionEvent.AXIS_Y, 0, invert = true)
+        /* No inversion: Android's AXIS_Y is already negative when the
+         * stick is pushed up, which is the sign the host wants -- the
+         * page sends exactly that. Inverting here made a physical stick
+         * disagree with the on-screen one, and both disagree with the
+         * page. */
+        physicalPad[Protocol.LY] = axis(event, MotionEvent.AXIS_Y, 0)
         physicalPad[Protocol.RX] = axis(event, MotionEvent.AXIS_Z, 1)
         physicalPad[Protocol.RY] = axis(event, MotionEvent.AXIS_RZ, 1,
-                                        invert = !settings.invertRy)
+                                        invert = settings.invertRy)
         physicalPad[Protocol.LT] = trigger(event, MotionEvent.AXIS_LTRIGGER, settings.ltThreshold)
         physicalPad[Protocol.RT] = trigger(event, MotionEvent.AXIS_RTRIGGER, settings.rtThreshold)
         mergeAndPush()

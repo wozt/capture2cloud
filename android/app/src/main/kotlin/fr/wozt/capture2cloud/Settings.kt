@@ -165,6 +165,11 @@ class Settings(context: Context) {
         get() = prefs.getInt("dpadStyle", 0)
         set(v) = put { putInt("dpadStyle", v.coerceIn(0, 2)) }
 
+    /** The green line of numbers over the picture. */
+    var showStats: Boolean
+        get() = prefs.getBoolean("showStats", false)
+        set(v) = put { putBoolean("showStats", v) }
+
     /** true: everything at once in columns. false: one category at a time. */
     var menuColumns: Boolean
         get() = prefs.getBoolean("menuColumns", true)

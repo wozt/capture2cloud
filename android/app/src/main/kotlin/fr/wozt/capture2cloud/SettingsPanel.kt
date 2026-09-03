@@ -40,6 +40,8 @@ class SettingsPanel(
         fun onPictureChanged()
         fun onSoundChanged()
         fun onPadChanged()
+        fun onStatsChanged()
+        fun statsText(): String
         fun onHostChanged()
         fun onHome()
         fun onWake()
@@ -94,7 +96,7 @@ class SettingsPanel(
          * because a heading in one column with half its contents in the
          * next is worse than an uneven column. The long ones lead two
          * different columns so the three come out roughly even. */
-        body = cols[0]; connection(); sound()
+        body = cols[0]; connection(); sound(); diagnostics()
         body = cols[1]; stream(); picture()
         body = cols[2]; controls(); touchPad(); console()
 
@@ -145,6 +147,35 @@ class SettingsPanel(
             setPadding(16, 0, 6, 0)
         })
         body.addView(top)
+    }
+
+    /**
+     * The numbers, under the first column where there was empty space.
+     *
+     * Live: refreshed by [refreshStats] while the menu is open, so this
+     * is what the stream is doing now rather than what it was doing when
+     * the menu was opened -- which for a diagnostic is the difference
+     * between useful and misleading.
+     */
+    private var statsView: TextView? = null
+
+    private fun diagnostics() {
+        group("diagnostics")
+        check("show a line over the stream", settings.showStats) {
+            settings.showStats = it; actions.onStatsChanged()
+        }
+        val v = TextView(context).apply {
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = 11f
+            setTextColor(0xFF39FF14.toInt())
+            text = actions.statsText()
+        }
+        statsView = v
+        body.addView(v)
+    }
+
+    fun refreshStats(text: String) {
+        statsView?.text = text
     }
 
     private fun connection() {
@@ -257,9 +288,6 @@ class SettingsPanel(
          * you read it as. */
         choice("letters", listOf("Nin" to 0, "Xbox" to 1, "PS" to 2), settings.padLabels) {
             settings.padLabels = it; actions.onPadChanged()
-        }
-        choice("d-pad", listOf("cross" to 0, "rose" to 1, "pad" to 2), settings.dpadStyle) {
-            settings.dpadStyle = it; actions.onPadChanged()
         }
         slider("opacity", 10, 100, settings.padOpacity, "%") {
             settings.padOpacity = it; actions.onPadChanged()
