@@ -849,6 +849,31 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         status.text = text
     }
 
+    /**
+     * Silent in the background, and audible again on return.
+     *
+     * Muted rather than stopped: the decoder keeps draining, which keeps
+     * the socket moving and means there is no audio backlog to work
+     * through on the way back -- the same problem the video had, solved
+     * by never letting it build. Restarting the decoder instead would
+     * cost a rebuild for something that only needs to be quiet.
+     *
+     * The stream itself is untouched: this is one client going quiet,
+     * not the host, so nobody else's sound changes.
+     */
+    override fun onPause() {
+        super.onPause()
+        audio?.muted = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        audio?.muted = settings.muted
+        /* Whatever piled up while away is not worth watching. */
+        client?.flushBacklog()
+        client?.requestKeyframe()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         client?.close()
