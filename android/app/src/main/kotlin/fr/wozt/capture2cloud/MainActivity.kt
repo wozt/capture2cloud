@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private lateinit var status: TextView
     private var connectPanel: View? = null
     private var menu: SettingsPanel? = null
+    private lateinit var pad: VirtualPad
     private var videoWidth = 0
     private var videoHeight = 0
     private var immersive = false
@@ -54,8 +55,10 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private var audio: AudioPlayer? = null
     private val main = Handler(Looper.getMainLooper())
 
-    /** The merged pad state, in the host's slot order. */
-    private val pad = ByteArray(Protocol.PAD_SLOTS)
+    /** What a physical controller is doing, in the host's slot order. */
+    private val physicalPad = ByteArray(Protocol.PAD_SLOTS)
+    /** That merged with the on-screen pad: what actually goes out. */
+    private val padState = ByteArray(Protocol.PAD_SLOTS)
     @Volatile private var mayControl = false
     @Volatile private var surfaceReady = false
     @Volatile private var pendingStream: Triple<Int, Int, Int>? = null
@@ -83,6 +86,20 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
          * frame; a picture that costs a copy beats no picture. */
         view = TextureView(this).also { it.surfaceTextureListener = this }
         root.addView(view, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        /* Over the picture and under everything else. Its own view, so
+         * the touches it wants do not fight the double tap that toggles
+         * the bars: it consumes what lands on a control and lets the
+         * rest through. */
+        pad = VirtualPad(this, settings)
+        pad.onState = { padState ->
+            val merged = physicalPad.copyOf()
+            pad.mergeInto(merged)
+            merged.copyInto(this.padState)
+            pushPad()
+        }
+        root.addView(pad, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         status = TextView(this).apply {
@@ -157,6 +174,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun openMenu() {
         val panel = SettingsPanel(this, settings, menuActions)
         menu = panel
+        pad.visibility = View.GONE
         root.addView(panel, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
     }
@@ -164,6 +182,9 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun closeMenu() {
         menu?.let { root.removeView(it) }
         menu = null
+        if (connectPanel == null) pad.visibility = View.VISIBLE
+        /* Opacity or visibility may have changed while it was open. */
+        pad.invalidate()
     }
 
     private val menuActions = object : SettingsPanel.Actions {
@@ -172,7 +193,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             client?.sendProfile(settings.height * 16 / 9, settings.height,
                                 settings.fps, settings.bitrateMbps * 1000)
         }
-        override fun onPictureChanged() = applyPicture()
+        override fun onPictureChanged() {
+            applyPicture()
+            /* The pad reads its own settings when it lays out, so a
+             * change of letters or opacity has to make it do that. */
+            pad.requestLayout()
+            pad.invalidate()
+        }
         override fun onSoundChanged() {
             audio?.volume = settings.volume
             audio?.muted = settings.muted
@@ -184,6 +211,13 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         override fun onDisconnect() {
             closeMenu()
             client?.close()
+        }
+        override fun onHostChanged() {
+            /* A new address is a new connection: the old one is to the
+             * old host, and nothing about it can be redirected. */
+            closeMenu()
+            client?.close()
+            main.postDelayed({ hideConnectPanel(); connect() }, 400)
         }
         override fun onClose() = closeMenu()
         override fun mayControl() = mayControl
@@ -241,6 +275,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         })
         panel.addView(host); panel.addView(port); panel.addView(pathButton); panel.addView(go)
         connectPanel = panel
+        pad.visibility = View.GONE
         root.addView(panel, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
     }
@@ -252,6 +287,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private fun hideConnectPanel() {
         connectPanel?.let { root.removeView(it) }
         connectPanel = null
+        pad.visibility = View.VISIBLE
     }
 
     // --- the surface --------------------------------------------------
@@ -502,8 +538,8 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
             KeyEvent.KEYCODE_DPAD_RIGHT -> Protocol.RIGHT
             else -> return false
         }
-        pad[slot] = value.toByte()
-        pushPad()
+        physicalPad[slot] = value.toByte()
+        mergeAndPush()
         return true
     }
 
@@ -511,14 +547,14 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         if (event.source and android.view.InputDevice.SOURCE_JOYSTICK == 0) {
             return super.onGenericMotionEvent(event)
         }
-        pad[Protocol.LX] = axis(event, MotionEvent.AXIS_X, 0)
-        pad[Protocol.LY] = axis(event, MotionEvent.AXIS_Y, 0, invert = true)
-        pad[Protocol.RX] = axis(event, MotionEvent.AXIS_Z, 1)
-        pad[Protocol.RY] = axis(event, MotionEvent.AXIS_RZ, 1,
-                                invert = !settings.invertRy)
-        pad[Protocol.LT] = trigger(event, MotionEvent.AXIS_LTRIGGER, settings.ltThreshold)
-        pad[Protocol.RT] = trigger(event, MotionEvent.AXIS_RTRIGGER, settings.rtThreshold)
-        pushPad()
+        physicalPad[Protocol.LX] = axis(event, MotionEvent.AXIS_X, 0)
+        physicalPad[Protocol.LY] = axis(event, MotionEvent.AXIS_Y, 0, invert = true)
+        physicalPad[Protocol.RX] = axis(event, MotionEvent.AXIS_Z, 1)
+        physicalPad[Protocol.RY] = axis(event, MotionEvent.AXIS_RZ, 1,
+                                        invert = !settings.invertRy)
+        physicalPad[Protocol.LT] = trigger(event, MotionEvent.AXIS_LTRIGGER, settings.ltThreshold)
+        physicalPad[Protocol.RT] = trigger(event, MotionEvent.AXIS_RTRIGGER, settings.rtThreshold)
+        mergeAndPush()
         return true
     }
 
@@ -548,9 +584,16 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         return (((v - threshold) / (1f - threshold)) * 100f).toInt().coerceIn(0, 100).toByte()
     }
 
+    /** Both sources, combined the way the host combines its own. */
+    private fun mergeAndPush() {
+        physicalPad.copyInto(padState)
+        pad.mergeInto(padState)
+        pushPad()
+    }
+
     private fun pushPad() {
         if (!mayControl) return
-        client?.sendPad(pad)
+        client?.sendPad(padState)
     }
 
     /**
