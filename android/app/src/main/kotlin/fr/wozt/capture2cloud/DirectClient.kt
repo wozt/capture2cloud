@@ -6,6 +6,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 /**
@@ -48,7 +50,19 @@ class DirectClient(
 
     @Volatile private var socket: Socket? = null
     @Volatile private var running = false
-    private val txLock = Any()
+
+    /**
+     * Everything sent goes through here, and nothing is written on the
+     * thread that asked.
+     *
+     * Android kills a process that touches a socket on the main thread,
+     * and almost everything this client sends is asked for from there: a
+     * button press arrives as an input event, a keyframe request comes
+     * from the decoder being built, a menu sends a wake. One thread, so
+     * order is kept, and the caller never blocks on the network.
+     */
+    private val tx: ExecutorService =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "c2c-send").apply { isDaemon = true } }
 
     /** The last state sent, so an unchanged pad is not resent. */
     private val lastPad = ByteArray(Protocol.PAD_SLOTS)
@@ -61,6 +75,7 @@ class DirectClient(
 
     fun close() {
         running = false
+        tx.shutdownNow()
         try { socket?.close() } catch (_: IOException) {}
         socket = null
     }
@@ -176,13 +191,19 @@ class DirectClient(
         frame.putShort(0)
         frame.putInt(size)
         if (body != null) frame.put(body)
+        val bytes = frame.array()
         try {
-            synchronized(txLock) {
-                s.getOutputStream().write(frame.array())
-                s.getOutputStream().flush()
+            tx.execute {
+                try {
+                    s.getOutputStream().write(bytes)
+                    s.getOutputStream().flush()
+                } catch (e: IOException) {
+                    if (running) onClosed(e.message ?: "the connection went away")
+                }
             }
-        } catch (e: IOException) {
-            if (running) onClosed(e.message ?: "the connection went away")
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            /* Closed while something was still asking. Nothing to do and
+             * nothing wrong: the connection is going away by request. */
         }
     }
 
