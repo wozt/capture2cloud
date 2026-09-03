@@ -162,6 +162,7 @@ class SettingsPanel(
      * between useful and misleading.
      */
     private var statsView: TextView? = null
+    private var autoBitrateView: TextView? = null
 
     private fun diagnostics() {
         group("diagnostics")
@@ -180,6 +181,13 @@ class SettingsPanel(
 
     fun refreshStats(text: String) {
         statsView?.text = text
+    }
+
+    /** What the automatic bitrate settled on, in kb/s; 0 while unknown. */
+    fun refreshAutoBitrate(kbps: Int) {
+        autoBitrateView?.text =
+            if (kbps <= 0) "  choosing..."
+            else "  currently %.1f Mb/s".format(kbps / 1000f)
     }
 
     private fun connection() {
@@ -257,6 +265,16 @@ class SettingsPanel(
         check("bitrate: automatic", settings.bitrateIsAuto) {
             settings.bitrateMbps = if (it) 0 else 12
             actions.onStreamShapeChanged(); rebuild()
+        }
+        if (settings.bitrateIsAuto) {
+            /* An automatic setting that shows no number is a setting the
+             * user cannot check. */
+            autoBitrateView = TextView(context).apply {
+                text = "  choosing..."
+                textSize = 11f
+                setTextColor(0xFF8AA0B4.toInt())
+            }
+            body.addView(autoBitrateView)
         }
         if (!settings.bitrateIsAuto) {
             slider("bitrate", 1, 50, settings.bitrateMbps, "M") {
