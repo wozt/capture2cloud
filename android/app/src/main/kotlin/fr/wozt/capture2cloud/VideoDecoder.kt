@@ -106,7 +106,15 @@ class VideoDecoder(
         pendingHeight = height
         onNeedKeyframe()
         if (pendingMime == MediaFormat.MIMETYPE_VIDEO_VP8) {
-            return configure(null, null)
+            /* VP8 needs no parameter sets, so the decoder is built now
+             * -- but it still must not be fed until a keyframe arrives.
+             * Handing a software VP8 decoder an inter-frame that refers
+             * to a picture it never received is not a glitch it rides
+             * out: it errors and releases itself, which is why VP8 went
+             * black here while the same phone's browser played it. */
+            if (!configure(null, null)) return false
+            awaitingKeyframe = true
+            return true
         }
         return true   // built at the first keyframe, once its SPS is in hand
     }
@@ -117,6 +125,20 @@ class VideoDecoder(
         var candidate: MediaCodec? = null
         return try {
             val format = MediaFormat.createVideoFormat(mime, pendingWidth, pendingHeight)
+            /* Ask for input buffers big enough for the largest frame the
+             * stream can produce.
+             *
+             * Left to itself a decoder sizes these for what it expects,
+             * and the software VP8 decoder expects modest ones. A 1080p
+             * keyframe at 12 Mb/s does not fit, and a frame that does not
+             * fit was being truncated -- which hands the decoder a
+             * corrupt frame and gets err -14 back. That is the whole
+             * reason VP8 "did not work here" while the same phone's
+             * browser played it perfectly: the browser does not truncate
+             * anything, and neither should this. Two megabytes covers a
+             * 1080p keyframe with room to spare and costs a buffer that
+             * is mostly unused, which is a trade worth making. */
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024)
             if (sps != null) format.setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(sps))
             if (pps != null) format.setByteBuffer("csd-1", java.nio.ByteBuffer.wrap(pps))
             val c = MediaCodec.createDecoderByType(mime)
@@ -221,6 +243,14 @@ class VideoDecoder(
      */
     private var lastKeyframeRequest = 0L
 
+    /** Frames the decoder had no room for. The signal auto bitrate uses. */
+    @Volatile var dropped = 0L
+        private set
+
+    /** Public, so a caller that skipped a frame can ask for a fresh
+     *  start without reaching into the rate limiter itself. */
+    fun requestKeyframe() = requestKeyframeSparingly()
+
     private fun requestKeyframeSparingly() {
         val now = System.currentTimeMillis()
         if (now - lastKeyframeRequest < 1000) return
@@ -263,26 +293,32 @@ class VideoDecoder(
                  * in the meantime. Refusing everything until a keyframe
                  * arrives turns a few artefacts into five seconds of
                  * nothing, which is how the picture disappeared. */
+                dropped++
                 requestKeyframeSparingly()
                 return false
             }
             val buffer = c.getInputBuffer(index)
-            /* Once taken, always given back: an abandoned input buffer
-             * is gone for good, and a few of those leave the decoder
-             * with none. */
             val remaining = frame.remaining()
-            val size = if (buffer != null) {
-                val n = minOf(buffer.capacity(), remaining)
-                buffer.clear()
-                val slice = frame.duplicate()
-                slice.limit(slice.position() + n)
-                buffer.put(slice)
-                n
-            } else 0
+            /* Once taken, always given back -- an abandoned input buffer
+             * is gone for good -- but never given back HALF a frame. A
+             * truncated frame is not a smaller frame, it is a corrupt
+             * one, and a decoder handed one of those does not degrade
+             * gracefully: it errors out and releases itself. So a frame
+             * that will not fit is dropped whole, with an empty buffer
+             * returned in its place and a keyframe asked for. */
+            if (buffer == null || buffer.capacity() < remaining) {
+                c.queueInputBuffer(index, 0, 0, 0, 0)
+                Log.w("Capture2Cloud",
+                      "frame of $remaining bytes exceeds the input buffer" +
+                      " (${buffer?.capacity() ?: 0}); dropped whole")
+                requestKeyframeSparingly()
+                return false
+            }
+            buffer.clear()
+            buffer.put(frame.duplicate())
             val us = (System.nanoTime() - startedAt) / 1000
-            c.queueInputBuffer(index, 0, size, us,
+            c.queueInputBuffer(index, 0, remaining, us,
                                if (isKeyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-            if (size < remaining) requestKeyframeSparingly()
             return true
         } catch (e: IllegalStateException) {
             /* The decoder gave up. That is not always a broken stream:

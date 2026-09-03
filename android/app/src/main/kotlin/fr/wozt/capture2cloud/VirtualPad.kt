@@ -44,6 +44,19 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         )
     }
 
+    /**
+     * Move mode: a drag shifts a control instead of pressing it.
+     *
+     * Nothing is sent while this is on. A pad that both moved and fired
+     * would be unusable for either -- and the console client learned the
+     * same lesson, which is why its edit mode is a mode.
+     */
+    var editing = false
+        set(value) { field = value; invalidate() }
+
+    /** Called when a control has been moved, so the offsets get saved. */
+    var onLayoutChanged: (() -> Unit)? = null
+
     /** Called whenever the pad state changes. Slots are the host's. */
     var onState: ((ByteArray) -> Unit)? = null
 
@@ -74,6 +87,15 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
                         val axisX: Int, val axisY: Int, val index: Int)
 
     private val controls = mutableListOf<Control>()
+
+    /**
+     * Where each control has been dragged to, as a fraction of the
+     * screen rather than in pixels: saved positions then survive a
+     * rotation, and mean the same thing on a different phone.
+     */
+    private val offsets = HashMap<Int, Pair<Float, Float>>()
+    private val DPAD_KEY = -1
+    private val STICK_KEY = -100   // -100 and -101 for the two sticks
     private val sticks = mutableListOf<Stick>()
     private var dpad: Control? = null
 
@@ -117,12 +139,16 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
          * what the adapter makes of it, not by what is printed on it. */
         val fx = w - 4.800f * u
         val fy = bottom(6.200f)
-        val fr = 0.54f * u
+        /* A little larger and a little closer together than the
+         * console client's, which were sized for a screen held in two
+         * hands at arm's length rather than a phone held in two thumbs. */
+        val fr = 0.62f * u
+        val spread = 1.20f * u
         val letters = FACE_LABELS[settings.padLabels.coerceIn(0, 2)]
-        controls += Control(fx, fy - 1.30f * u, fr, fr, Protocol.Y, letters[0], true)
-        controls += Control(fx - 1.30f * u, fy, fr, fr, Protocol.X, letters[1], true)
-        controls += Control(fx + 1.30f * u, fy, fr, fr, Protocol.B, letters[2], true)
-        controls += Control(fx, fy + 1.30f * u, fr, fr, Protocol.A, letters[3], true)
+        controls += Control(fx, fy - spread, fr, fr, Protocol.Y, letters[0], true)
+        controls += Control(fx - spread, fy, fr, fr, Protocol.X, letters[1], true)
+        controls += Control(fx + spread, fy, fr, fr, Protocol.B, letters[2], true)
+        controls += Control(fx, fy + spread, fr, fr, Protocol.A, letters[3], true)
 
         // Stick clicks, offset from their sticks exactly as on the console.
         controls += Control(7.375f * u, bottom(5.275f), 0.50f * u, 0.50f * u,
@@ -141,11 +167,66 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         controls += Control(w / 2f, bottom(0.900f), 0.44f * u, 0.44f * u, Protocol.GUIDE, "H", true)
 
         label.textSize = 0.40f * u
+        applyOffsets(w, h)
+    }
+
+    private fun applyOffsets(w: Float, h: Float) {
+        if (offsets.isEmpty()) return
+        for (i in controls.indices) {
+            val c = controls[i]
+            offsets[c.slot]?.let { (ox, oy) ->
+                controls[i] = Control(c.x + ox * w, c.y + oy * h, c.w, c.h, c.slot, c.text, c.round)
+            }
+        }
+        dpad?.let { d ->
+            offsets[DPAD_KEY]?.let { (ox, oy) ->
+                dpad = Control(d.x + ox * w, d.y + oy * h, d.w, d.h, d.slot, d.text, d.round)
+            }
+        }
+        for (i in sticks.indices) {
+            val st = sticks[i]
+            offsets[STICK_KEY - st.index]?.let { (ox, oy) ->
+                sticks[i] = Stick(st.x + ox * w, st.y + oy * h, st.r, st.axisX, st.axisY, st.index)
+            }
+        }
+    }
+
+    /** "key:dx:dy;..." with the offsets as screen fractions. */
+    fun layoutToString(): String =
+        offsets.entries.joinToString(";") { (k, v) -> "$k:${v.first}:${v.second}" }
+
+    fun layoutFromString(text: String) {
+        offsets.clear()
+        for (part in text.split(";")) {
+            val bits = part.split(":")
+            if (bits.size != 3) continue
+            val k = bits[0].toIntOrNull() ?: continue
+            val dx = bits[1].toFloatOrNull() ?: continue
+            val dy = bits[2].toFloatOrNull() ?: continue
+            offsets[k] = dx to dy
+        }
+        if (width > 0 && height > 0) layout(width.toFloat(), height.toFloat())
+        invalidate()
+    }
+
+    fun resetLayout() {
+        offsets.clear()
+        if (width > 0 && height > 0) layout(width.toFloat(), height.toFloat())
+        invalidate()
+        onLayoutChanged?.invoke()
+    }
+
+    private fun shift(key: Int, dx: Float, dy: Float) {
+        val current = offsets[key] ?: (0f to 0f)
+        offsets[key] = (current.first + dx / width) to (current.second + dy / height)
     }
 
     override fun onDraw(canvas: Canvas) {
         if (!settings.padEnabled) return
-        val a = (settings.padOpacity * 255 / 100).coerceIn(0, 255)
+        /* Full strength while arranging: judging where something sits is
+         * hard enough without judging it through the opacity it will
+         * have later. */
+        val a = if (editing) 255 else (settings.padOpacity * 255 / 100).coerceIn(0, 255)
 
         dpad?.let { d -> drawDpad(canvas, d, a) }
 
@@ -241,8 +322,35 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         canvas.drawCircle(d.x, d.y, t * 0.5f, stroke)
     }
 
+    private var dragKey: Int? = null
+    private var dragFrom = 0f to 0f
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!settings.padEnabled) return false
+
+        if (editing) {
+            /* One finger at a time here: moving two controls at once is
+             * not something anyone does, and allowing it would double
+             * the bookkeeping for nothing. */
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragKey = keyAt(event.x, event.y)
+                    dragFrom = event.x to event.y
+                }
+                MotionEvent.ACTION_MOVE -> dragKey?.let { k ->
+                    shift(k, event.x - dragFrom.first, event.y - dragFrom.second)
+                    dragFrom = event.x to event.y
+                    layout(width.toFloat(), height.toFloat())
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragKey != null) onLayoutChanged?.invoke()
+                    dragKey = null
+                }
+            }
+            return dragKey != null || event.actionMasked == MotionEvent.ACTION_DOWN
+        }
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val i = event.actionIndex
@@ -262,6 +370,14 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         invalidate()
         onState?.invoke(state)
         return true
+    }
+
+    /** Which control is under a point, for move mode. */
+    private fun keyAt(x: Float, y: Float): Int? {
+        for (s in sticks) if (hypot(x - s.x, y - s.y) <= s.r) return STICK_KEY - s.index
+        dpad?.let { if (hypot(x - it.x, y - it.y) <= it.w) return DPAD_KEY }
+        for (c in controls) if (inside(c, x, y)) return c.slot
+        return null
     }
 
     private fun grab(id: Int, x: Float, y: Float): Boolean {

@@ -52,9 +52,20 @@ class Settings(context: Context) {
         get() = prefs.getInt("fps", 60)
         set(v) = put { putInt("fps", v) }
 
+    /**
+     * What the host is asked to encode at, or 0 for automatic.
+     *
+     * Automatic is not a guess at the network: it watches what actually
+     * arrives and what the decoder can keep up with, and moves the
+     * request to match. A fixed number is right when you know your link;
+     * automatic is right when you move between a home wifi and a phone
+     * held in a garden.
+     */
     var bitrateMbps: Int
-        get() = prefs.getInt("bitrateMbps", 12)
-        set(v) = put { putInt("bitrateMbps", v.coerceIn(1, 50)) }
+        get() = prefs.getInt("bitrateMbps", 0)
+        set(v) = put { putInt("bitrateMbps", if (v <= 0) 0 else v.coerceIn(1, 50)) }
+
+    val bitrateIsAuto: Boolean get() = bitrateMbps == 0
 
     /**
      * H.264 by default, unlike the page, which negotiates VP8.
@@ -187,6 +198,26 @@ class Settings(context: Context) {
      * the point of it being a token: losing this costs a login, losing a
      * password costs rather more.
      */
+    /**
+     * The player password, encrypted at rest.
+     *
+     * Kept because reconnecting after every restart otherwise means
+     * typing it again, and this app is used with two thumbs. Never
+     * written in the clear: see [Secret] for what that does and does not
+     * buy.
+     */
+    var password: String
+        get() = Secret.decrypt(prefs.getString("passwordEnc", "") ?: "")
+        set(v) = put {
+            if (v.isEmpty()) remove("passwordEnc")
+            else putString("passwordEnc", Secret.encrypt(v))
+        }
+
+    /** Whether to keep it at all. Off means it is forgotten on exit. */
+    var rememberPassword: Boolean
+        get() = prefs.getBoolean("rememberPassword", true)
+        set(v) = put { putBoolean("rememberPassword", v) }
+
     var token: String
         get() = prefs.getString("token", "") ?: ""
         set(v) = put { putString("token", v) }

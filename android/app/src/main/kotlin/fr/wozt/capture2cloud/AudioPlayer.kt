@@ -35,6 +35,16 @@ class AudioPlayer(
     private val info = MediaCodec.BufferInfo()
     private var presentationUs = 0L
 
+    /* Counted so "there is no sound" can be told apart from "nothing is
+     * arriving", "nothing is being queued" and "nothing comes back out"
+     * -- three different faults that look identical from a chair. */
+    @Volatile var packetsIn = 0L
+        private set
+    @Volatile var buffersOut = 0L
+        private set
+    @Volatile var lastError: String = ""
+        private set
+
     /** 0..100, where 100 is [MAX_GAIN] times the source. */
     @Volatile var volume: Int = 13
     @Volatile var muted: Boolean = false
@@ -93,6 +103,7 @@ class AudioPlayer(
     } catch (e: Exception) {
         /* Logged, because a silent failure here means silence, which is
          * indistinguishable from a stream that carries no sound. */
+        lastError = e.message ?: e.javaClass.simpleName
         Log.w("Capture2Cloud", "no Opus decoder on this device", e)
         stop()
         false
@@ -133,19 +144,23 @@ class AudioPlayer(
                  * dequeue returns nothing for ever, and the sound stops
                  * with no error anywhere -- which is exactly how this
                  * shipped silent. */
-                val size = if (buffer != null) {
-                    val n = minOf(buffer.capacity(), packet.remaining())
+                /* Whole packets only, for the same reason as the
+                 * video: half an Opus packet is not a shorter packet,
+                 * it is a corrupt one. An Opus packet is a few hundred
+                 * bytes, so this should never fire -- but silently
+                 * feeding rubbish if it ever did is not a risk worth
+                 * carrying for the sake of one branch. */
+                val size = if (buffer != null && buffer.capacity() >= packet.remaining()) {
                     buffer.clear()
-                    val slice = packet.duplicate()
-                    slice.limit(slice.position() + n)
-                    buffer.put(slice)
-                    n
+                    buffer.put(packet.duplicate())
+                    packet.remaining()
                 } else 0
                 /* Opus at 48 kHz in 20 ms packets. The timestamps have
                  * to advance: given zero for every packet the decoder
                  * has no idea how the stream is paced. */
                 c.queueInputBuffer(index, 0, size, presentationUs, 0)
                 presentationUs += 20_000
+                packetsIn++
             }
             drain(c)
         } catch (e: IllegalStateException) {
@@ -159,6 +174,7 @@ class AudioPlayer(
         while (true) {
             val out = c.dequeueOutputBuffer(info, 0)
             if (out < 0) break
+            buffersOut++
             val buffer = c.getOutputBuffer(out)
             if (buffer != null && info.size > 0) {
                 val pcm = ByteArray(info.size)

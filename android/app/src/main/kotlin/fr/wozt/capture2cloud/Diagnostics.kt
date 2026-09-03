@@ -23,6 +23,10 @@ class Diagnostics(private val context: Context) {
         val link: String,
         /** "1280x720 h264 hw", or empty before anything decodes. */
         val stream: String,
+        /** Why there is no sound, when there is none. Empty when fine. */
+        val audio: String,
+        /** Frames thrown away to catch up with a backlog. */
+        val skipped: Long,
     )
 
     data class Pad(val name: String, val transport: String)
@@ -32,7 +36,8 @@ class Diagnostics(private val context: Context) {
     private var lastFrames = 0L
     private var lastAt = 0L
 
-    fun sample(client: DirectClient?, link: String, stream: String): Snapshot {
+    fun sample(client: DirectClient?, link: String, stream: String,
+               audio: String, skipped: Long): Snapshot {
         val now = System.currentTimeMillis()
         val elapsed = (now - lastAt).coerceAtLeast(1)
         val v = client?.videoBytes ?: 0
@@ -47,7 +52,7 @@ class Diagnostics(private val context: Context) {
         val fps = if (fresh) 0 else ((f - lastFrames) * 1000 / elapsed).toInt()
 
         lastVideo = v; lastAudio = a; lastFrames = f; lastAt = now
-        return Snapshot(videoKbps, audioKbps, fps, pads(), link, stream)
+        return Snapshot(videoKbps, audioKbps, fps, pads(), link, stream, audio, skipped)
     }
 
     /**
@@ -96,7 +101,13 @@ class Diagnostics(private val context: Context) {
             else -> "${s.pads.size} pads"
         }
         val stream = if (s.stream.isEmpty()) "" else "${s.stream}   "
+        /* Frames thrown away to catch up. Worth showing rather than
+         * hiding: a number that climbs steadily says the link cannot
+         * carry what is being asked of it, which is a different problem
+         * from a decoder that cannot keep up, and they look identical
+         * from a chair. */
+        val late = if (s.skipped > 0) "   ${s.skipped} late" else ""
         return "$stream${s.link}   video ${s.videoKbps} kb/s   " +
-               "audio ${s.audioKbps} kb/s   ${s.fps} fps   $pad"
+               "audio ${s.audioKbps} kb/s${s.audio}   ${s.fps} fps$late   $pad"
     }
 }

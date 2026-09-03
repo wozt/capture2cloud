@@ -41,6 +41,9 @@ class SettingsPanel(
         fun onSoundChanged()
         fun onPadChanged()
         fun onStatsChanged()
+        fun onEditPad(on: Boolean)
+        fun onResetPadLayout()
+        fun isEditingPad(): Boolean
         fun statsText(): String
         fun onHostChanged()
         fun onHome()
@@ -193,15 +196,24 @@ class SettingsPanel(
             settings.directPort = port.text.toString().trim().toIntOrNull() ?: 5081
             actions.onHostChanged()
         }
-        val password = field("", InputType.TYPE_CLASS_TEXT or
+        val password = field(settings.password, InputType.TYPE_CLASS_TEXT or
                                  InputType.TYPE_TEXT_VARIATION_PASSWORD, "player password")
         body.addView(password)
+        /* Kept encrypted with a key held in the phone's keystore, not in
+         * the clear. That does not make a stored password safe -- anyone
+         * with the unlocked phone can connect -- but it does keep it out
+         * of backups and out of anything else on the device. */
+        check("remember it", settings.rememberPassword) {
+            settings.rememberPassword = it
+            if (!it) settings.password = ""
+        }
         /* Two buttons rather than one that changes its label. "Logged
          * in" said what the state was and left it unclear what pressing
          * it would do; these each say what they do. */
         button("log in as player", !actions.mayControl()) {
-            actions.onLogin(password.text.toString())
-            password.setText("")
+            val typed = password.text.toString()
+            if (settings.rememberPassword) settings.password = typed
+            actions.onLogin(typed)
         }
         button("back to viewer", actions.mayControl()) { actions.onBackToViewer() }
         button("disconnect") { actions.onDisconnect() }
@@ -242,8 +254,14 @@ class SettingsPanel(
                 setTextColor(0xFFFFB454.toInt())
             })
         }
-        slider("bitrate", 1, 50, settings.bitrateMbps, "M") {
-            settings.bitrateMbps = it; actions.onStreamShapeChanged()
+        check("bitrate: automatic", settings.bitrateIsAuto) {
+            settings.bitrateMbps = if (it) 0 else 12
+            actions.onStreamShapeChanged(); rebuild()
+        }
+        if (!settings.bitrateIsAuto) {
+            slider("bitrate", 1, 50, settings.bitrateMbps, "M") {
+                settings.bitrateMbps = it; actions.onStreamShapeChanged()
+            }
         }
     }
 
@@ -312,6 +330,14 @@ class SettingsPanel(
         slider("opacity", 10, 100, settings.padOpacity, "%") {
             settings.padOpacity = it; actions.onPadChanged()
         }
+        /* Arranging and playing are a mode apart: a pad that both moved
+         * and fired would be unusable for either. Positions are saved as
+         * they are dragged, so there is nothing to remember to press. */
+        button(if (actions.isEditingPad()) "done moving" else "move the buttons") {
+            actions.onEditPad(!actions.isEditingPad())
+            actions.onClose()
+        }
+        button("reset positions") { actions.onResetPadLayout() }
     }
 
     private fun console() {
