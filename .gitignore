@@ -37,3 +37,10 @@ backup/
 # Compiled C tests, kept between runs so a suite does not recompile them
 # every time -- gcc taking cores is what made the live stream stutter.
 tests/.build/
+
+# Android build outputs, and the SDK path, which is one machine's answer
+# to where its SDK lives and nobody else's.
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
