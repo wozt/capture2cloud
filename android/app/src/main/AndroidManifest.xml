@@ -11,7 +11,14 @@
          fallback, the same one the page draws. -->
     <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
 
+    <!-- The host speaks plain HTTP on a local network, and Android has
+         refused cleartext by default since Android 9. Without this the
+         login request fails before it reaches the host, and the app can
+         only report what it sees: "login refused", for a password that
+         was perfectly good. The direct path is unaffected, being a raw
+         socket rather than an HTTP request. -->
     <application
+        android:usesCleartextTraffic="true"
         android:label="Capture2Cloud"
         android:icon="@mipmap/ic_launcher"
         android:supportsRtl="true"

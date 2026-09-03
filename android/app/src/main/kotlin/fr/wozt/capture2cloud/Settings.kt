@@ -137,6 +137,20 @@ class Settings(context: Context) {
         get() = prefs.getInt("padColour", 0)
         set(v) = put { putInt("padColour", v) }
 
+    /**
+     * Which letters the face buttons wear: 0 Nintendo, 1 Microsoft,
+     * 2 PlayStation.
+     *
+     * Only the letters change. The slots underneath stay positional --
+     * the button under your thumb is always the southern one -- because
+     * that is what the adapter forwards and what the console reads. A
+     * layout here is a question of what you are used to reading, not of
+     * what gets pressed.
+     */
+    var padLabels: Int
+        get() = prefs.getInt("padLabels", 0)
+        set(v) = put { putInt("padLabels", v.coerceIn(0, 2)) }
+
     /** Button positions, as the homebrew stores them: "name:x:y;..." */
     var padLayout: String
         get() = prefs.getString("padLayout", "") ?: ""
