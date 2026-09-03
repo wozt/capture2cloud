@@ -25,6 +25,9 @@ typedef struct GstWebrtcStream GstWebrtcStream;
 GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate, int audio_channels);
 void gst_webrtc_stream_destroy(GstWebrtcStream *g);
 void gst_webrtc_stream_set_video_bitrate(GstWebrtcStream *g, int bitrate_kbps);
+/* What that bitrate currently is. Read by /shared, so a page that did
+ * not set it still shows what everyone is actually getting. */
+int gst_webrtc_stream_get_video_bitrate(GstWebrtcStream *g);
 
 /* One capture frame for the browser stream, in however many planes it
  * arrived in: packed YUYV straight off the card, the JPEG's own planes,
@@ -75,6 +78,11 @@ int gst_webrtc_stream_get_client_count(GstWebrtcStream *g, int *max_clients);
  * encoder. Below 1080p that also saves the encoder most of its work,
  * which is the point on a busy scene. */
 void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int width, int height);
+
+/* The capture card's format, which is shared by everyone: the browsers
+ * poll for it, and the native clients are told. Mirrored here only so
+ * the native announcement can carry it. */
+void gst_webrtc_stream_set_capture_mjpeg(GstWebrtcStream *g, int mjpeg);
 void gst_webrtc_stream_get_browser_resolution(GstWebrtcStream *g, int *width, int *height);
 
 /* --- the native (Switch) branch --------------------------------------

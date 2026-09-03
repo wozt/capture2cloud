@@ -32,6 +32,11 @@ object Protocol {
     const val MSG_WAKE = 23
     const val MSG_RESET_DONGLE = 24
     const val MSG_RESTART = 25
+    /* server -> client: the settings this client does not own alone --
+     * the stream's shape, its codec, its bitrate, the capture format.
+     * Told rather than asked for, so a client that joins adopts what
+     * everyone else is already watching instead of changing it. */
+    const val MSG_SHARED = 26
 
     const val FLAG_KEYFRAME = 0x01
 

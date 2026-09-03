@@ -306,6 +306,9 @@ static void on_settings(void *userdata, const AppSettings *want) {
         have->capture_mjpeg = want->capture_mjpeg;
         video_capture_request_format(want->capture_mjpeg ? VIDEO_FORMAT_MJPEG
                                                          : VIDEO_FORMAT_YUYV);
+        /* Shared by everyone watching, so the native clients are told
+         * rather than left to find out. */
+        gst_webrtc_stream_set_capture_mjpeg(g_gst, want->capture_mjpeg);
     }
     if (want->local_muted != have->local_muted || want->local_volume != have->local_volume) {
         have->local_muted = want->local_muted;
@@ -650,6 +653,38 @@ int main(int argc, char **argv) {
                 const char *names[8];
                 const int n = local_pad_list(names, 8);
                 gtk_shell_set_controllers(g_shell, names, n);
+            }
+        }
+
+        /* The settings window follows what the clients did.
+         *
+         * The resolution, the bitrate and the capture format are shared
+         * by everyone, and a browser or a console client can change any
+         * of them -- at which point this window was still showing what
+         * it last set, with no hint that it had been overruled. Read
+         * back from the things themselves rather than from whatever
+         * asked last, so a format the driver refused shows as refused.
+         *
+         * Once a second, and only when something actually differs:
+         * load_controls() rebuilds every widget, and doing that while
+         * somebody is dragging a slider would fight them. */
+        {
+            static Uint32 last_reconcile = 0;
+            const Uint32 now = SDL_GetTicks();
+            if (now - last_reconcile > 1000) {
+                last_reconcile = now;
+                int w = 0, h = 0;
+                gst_webrtc_stream_get_browser_resolution(g_gst, &w, &h);
+                const int bitrate = gst_webrtc_stream_get_video_bitrate(g_gst) / 1000;
+                const int mjpeg = (video_capture_active_format() == VIDEO_FORMAT_MJPEG);
+                if ((h > 0 && h != g_settings.browser_height)
+                    || (bitrate > 0 && bitrate != g_settings.bitrate_mbps)
+                    || mjpeg != g_settings.capture_mjpeg) {
+                    if (h > 0) g_settings.browser_height = h;
+                    if (bitrate > 0) g_settings.bitrate_mbps = bitrate;
+                    g_settings.capture_mjpeg = mjpeg;
+                    gtk_shell_update(g_shell, &g_settings);
+                }
             }
         }
 

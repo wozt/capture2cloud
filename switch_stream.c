@@ -104,6 +104,12 @@ struct SwitchStream {
      * else happened to change the codec. */
     uint8_t video_codec;
 
+    /* The last shared settings announced, kept so a client that arrives
+     * later is told the same thing as everyone already connected -- and
+     * so it has no reason to announce its own. */
+    C2sShared shared;
+    int shared_known;
+
     SDL_mutex *mutex;
     SsClient clients[SS_MAX_CLIENTS];
 
@@ -166,6 +172,29 @@ void switch_stream_announce_stream(SwitchStream *s, uint16_t width, uint16_t hei
     s->height = height;
     s->video_codec = codec;
     broadcast(s, C2S_MSG_STREAM_INFO, 0, (const uint8_t *)&info, sizeof(info));
+}
+
+/* Tells everyone what the settings they have in common now are.
+ *
+ * Sent on every change rather than polled, and sent to a client the
+ * moment it finishes its handshake: the alternative is a client that
+ * shows its own saved values while receiving somebody else's stream,
+ * with no way of telling which of the two is the truth. */
+void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t height,
+                                   uint16_t fps, uint16_t bitrate_kbps,
+                                   uint8_t codec, uint8_t capture_mjpeg) {
+    if (!s) return;
+    C2sShared sh;
+    memset(&sh, 0, sizeof(sh));
+    sh.width = width;
+    sh.height = height;
+    sh.fps = fps;
+    sh.bitrate_kbps = bitrate_kbps;
+    sh.video_codec = codec;
+    sh.capture_mjpeg = capture_mjpeg;
+    s->shared = sh;
+    s->shared_known = 1;
+    broadcast(s, C2S_MSG_SHARED, 0, (const uint8_t *)&sh, sizeof(sh));
 }
 
 void switch_stream_set_profile_request(SwitchStream *s,
@@ -433,6 +462,21 @@ static void handle_hello(SwitchStream *s, int index) {
      * a keyframe -- otherwise it decodes against frames that went out
      * before it arrived and shows garbage until the interval elapses. */
     s->keyframe_pending = 1;
+
+    /* Before it can ask for anything: what the room is already doing.
+     * A client told this has no reason to push its own saved settings,
+     * which is what used to change the picture for everyone the moment
+     * somebody else joined. */
+    if (s->shared_known) {
+        C2sFrameHeader sh_h;
+        memset(&sh_h, 0, sizeof(sh_h));
+        sh_h.type = C2S_MSG_SHARED;
+        sh_h.size = sizeof(C2sShared);
+        if (send_all_now(c->fd, &sh_h, sizeof(sh_h)) == 0) {
+            send_all_now(c->fd, &s->shared, sizeof(s->shared));
+        }
+    }
+
     fprintf(stderr, "switch_stream: client %d connected as %s\n", index,
             c->may_control ? "PLAYER" : "viewer");
 }

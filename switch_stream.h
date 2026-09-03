@@ -47,6 +47,14 @@ void switch_stream_set_codec_request(SwitchStream *s, void (*cb)(void *ctx, int 
  * of the old stream. */
 void switch_stream_announce_stream(SwitchStream *s, uint16_t width, uint16_t height, uint8_t codec);
 
+/* Announces the settings every native client shares -- the stream's
+ * shape, its codec, its bitrate, and the capture format. Sent on change
+ * and to each client as it connects; see SHARED_SETTINGS.md for what is
+ * shared and what is deliberately not. */
+void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t height,
+                                   uint16_t fps, uint16_t bitrate_kbps,
+                                   uint8_t codec, uint8_t capture_mjpeg);
+
 /* How many native clients are connected. The encoder branch for this
  * stream is only fed while this is above zero -- there is no point
  * encoding a second resolution for nobody. */

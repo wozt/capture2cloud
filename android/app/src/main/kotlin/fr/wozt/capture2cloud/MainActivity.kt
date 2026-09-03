@@ -323,6 +323,35 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
         }
     }
 
+    /**
+     * Takes the settings the host says everyone is sharing.
+     *
+     * Applied to the fields directly and never through the controls'
+     * own callbacks: those send the value back to the host, and a value
+     * that is echoed back is a value two clients can bounce between
+     * each other for as long as they are both connected.
+     */
+    private fun adoptShared(sh: Shared) {
+        if (sh.height in 100..2160) settings.height = sh.height
+        if (sh.fps in 1..240) settings.fps = sh.fps
+        if (sh.codec == Protocol.CODEC_H264 || sh.codec == Protocol.CODEC_VP8) {
+            settings.codec = sh.codec
+        }
+        if (sh.bitrateKbps > 0) {
+            if (settings.bitrateIsAuto) {
+                autoBitrateKbps = sh.bitrateKbps
+                /* Somebody else just set the rate. Wait the usual clean
+                 * spell before asking for more, rather than arguing with
+                 * them a second later. */
+                goodSeconds = 0
+            } else {
+                settings.bitrateMbps = (sh.bitrateKbps / 1000).coerceAtLeast(1)
+            }
+        }
+        /* So an open menu does not go on showing what used to be true. */
+        menu?.rebuild()
+    }
+
     private fun codecShortName() =
         if (settings.codec == Protocol.CODEC_H264) "h264" else "vp8"
 
@@ -567,13 +596,17 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     pendingStream = Triple(ack.width, ack.height, ack.videoCodec)
                     if (surfaceReady) startVideo(ack.width, ack.height, ack.videoCodec)
                 }
-                /* Ask for what this device wants rather than taking what
-                 * the last client asked for: the host encodes one native
-                 * stream and the previous client may have wanted
-                 * something this one cannot decode well. */
-                client?.sendCodec(settings.codec)
-                client?.sendProfile(settings.height * 16 / 9, settings.height,
-                                    settings.fps, requestedBitrateKbps())
+                /* Nothing is asked for here, deliberately.
+                 *
+                 * This used to push the codec and the profile the moment
+                 * the handshake finished, which meant that joining a
+                 * stream changed it for everyone already watching -- to
+                 * whatever this device happened to have saved, possibly
+                 * months ago. One encoder feeds every native client, so
+                 * arriving is not an occasion to redecorate. The host
+                 * sends C2S_MSG_SHARED instead and the controls move to
+                 * match; changing one afterwards is a deliberate act and
+                 * still changes it for the room. */
             },
             onVideo = { buf, key, behind ->
                 val d = video
@@ -600,6 +633,7 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                 }
             },
             onAudio = { buf -> audio?.decode(buf) },
+            onShared = { sh -> main.post { if (mine == generation) adoptShared(sh) } },
             onStreamInfo = { w, h, codec ->
                 main.post {
                     pendingStream = Triple(w, h, codec)

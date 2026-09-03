@@ -172,6 +172,12 @@ struct GstWebrtcStream {
     const char *switch264_encoder;
     int switch_width, switch_height, switch_fps;
     int switch_codec; /* C2sCodec */
+    /* Kept, not merely applied: a client that connects later has to be
+     * told the rate everyone is already on. */
+    int switch_bitrate_kbps;
+    /* The capture card's format, shared with the browsers too. Mirrored
+     * here so the native announcement can carry it. */
+    int capture_mjpeg;
     struct SwsContext *sws_switch;
     enum AVPixelFormat sws_switch_src_format;
     enum AVPixelFormat sws_switch_dst_format;
@@ -506,6 +512,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->switch_width = SWITCH_VIDEO_WIDTH;
     g->switch_height = SWITCH_VIDEO_HEIGHT;
     g->switch_fps = 60;
+    g->switch_bitrate_kbps = SWITCH_VIDEO_BITRATE_KBPS;
     g->switchasink = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchasink");
     if (g->switchsink) {
         g_signal_connect(g->switchsink, "new-sample", G_CALLBACK(on_switch_video_sample), g);
@@ -647,6 +654,10 @@ void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int width, int
     fprintf(stderr, "gst_webrtc: browser stream now %dx%d\n", width, height);
 }
 
+int gst_webrtc_stream_get_video_bitrate(GstWebrtcStream *g) {
+    return g ? g->video_bitrate_kbps : 0;
+}
+
 void gst_webrtc_stream_get_browser_resolution(GstWebrtcStream *g, int *width, int *height) {
     if (width) *width = g ? g->browser_width : 0;
     if (height) *height = g ? g->browser_height : 0;
@@ -679,6 +690,18 @@ static void on_switch_keyframe_request(void *ctx) {
 
 /* A client saying what it can actually decode. Applied to the native
  * branch only; the browser stream and the capture are untouched. */
+/* One line, because it is called from four places and forgetting one of
+ * them is how a client ends up showing a setting nobody else has. */
+static void announce_shared(GstWebrtcStream *g) {
+    if (!g || !g->switch_out) return;
+    switch_stream_announce_shared(g->switch_out,
+                                  (uint16_t)g->switch_width, (uint16_t)g->switch_height,
+                                  (uint16_t)g->switch_fps,
+                                  (uint16_t)g->switch_bitrate_kbps,
+                                  (uint8_t)g->switch_codec,
+                                  (uint8_t)(g->capture_mjpeg ? 1 : 0));
+}
+
 static void on_switch_profile_request(void *ctx, int w, int h, int fps, int bitrate_kbps) {
     GstWebrtcStream *g = ctx;
     if (!g || !g->vscale_switch_caps || w <= 0 || h <= 0) {
@@ -716,11 +739,13 @@ static void on_switch_profile_request(void *ctx, int w, int h, int fps, int bitr
     g->switch_width = w;
     g->switch_height = h;
     g->switch_fps = fps;
+    if (bitrate_kbps > 0) g->switch_bitrate_kbps = bitrate_kbps;
     on_switch_keyframe_request(g);
     if (g->switch_out) {
         switch_stream_set_video_size(g->switch_out, (uint16_t)w, (uint16_t)h);
         switch_stream_announce_stream(g->switch_out, (uint16_t)w, (uint16_t)h,
                                       (uint8_t)g->switch_codec);
+        announce_shared(g);
     }
     fprintf(stderr, "gst_webrtc: native stream now %dx%d@%d, %d kbps\n", w, h, fps,
             bitrate_kbps > 0 ? bitrate_kbps : SWITCH_VIDEO_BITRATE_KBPS);
@@ -754,9 +779,18 @@ static void on_switch_codec_request(void *ctx, int codec) {
     if (g->switch_out) {
         switch_stream_announce_stream(g->switch_out, (uint16_t)g->switch_width,
                                       (uint16_t)g->switch_height, (uint8_t)codec);
+        announce_shared(g);
     }
     fprintf(stderr, "gst_webrtc: native stream now %s\n",
             codec == C2S_CODEC_H264 ? "H.264" : "VP8");
+}
+
+void gst_webrtc_stream_set_capture_mjpeg(GstWebrtcStream *g, int mjpeg) {
+    if (!g) return;
+    mjpeg = mjpeg ? 1 : 0;
+    if (g->capture_mjpeg == mjpeg) return;
+    g->capture_mjpeg = mjpeg;
+    announce_shared(g);
 }
 
 void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) {
@@ -767,6 +801,7 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
     switch_stream_set_keyframe_request(out, on_switch_keyframe_request, g);
     switch_stream_set_profile_request(out, on_switch_profile_request, g);
     switch_stream_set_codec_request(out, on_switch_codec_request, g);
+    announce_shared(g);
 }
 
 /* Scales the captured frame to the native client's size and pushes it.

@@ -42,6 +42,11 @@ void switch_stream_announce_stream(SwitchStream *s, uint16_t w, uint16_t h, uint
     (void)s; (void)w; (void)h; (void)codec;
 }
 
+void switch_stream_announce_shared(SwitchStream *s, uint16_t w, uint16_t h, uint16_t fps,
+                                   uint16_t kbps, uint8_t codec, uint8_t mjpeg) {
+    (void)s; (void)w; (void)h; (void)fps; (void)kbps; (void)codec; (void)mjpeg;
+}
+
 void switch_stream_set_codec_request(SwitchStream *s, void (*cb)(void *ctx, int codec), void *ctx) {
     (void)s; (void)cb; (void)ctx;
 }

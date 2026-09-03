@@ -92,7 +92,36 @@ the server.
 4. The push must not become a loop: a client applying a value it was
    *told* must not report that value back as a change it made.
 
-`C2S_MSG_STREAM_INFO` already does part of (1) and (2) for the native
-transport — width, height, codec — and is the obvious place to carry the
-rest. The browser has `GET /resolution` and `GET /capture-format`, which
-are polled rather than pushed.
+## How it is done
+
+**Native clients** (Android, Switch) are *pushed* `C2S_MSG_SHARED`: once
+the moment the handshake finishes, and again on every change. It carries
+width, height, frame rate, bitrate, codec and capture format.
+`C2S_MSG_STREAM_INFO` is left alone and keeps its one meaning —
+"re-initialise your decoder now" — because a message that both moves
+sliders and rebuilds decoders would rebuild a decoder every time
+somebody nudged a slider.
+
+Neither client sends anything on connecting any more. Both used to push
+their saved profile and codec the instant they were accepted, which is
+the failure at the top of this file: starting a client changed the
+stream for everyone already watching.
+
+**Browsers** poll `GET /shared` every two seconds, because a page holds
+no socket to the host but the WebRTC one, and putting settings through
+that would tie them to a stream that may not be up yet. Two seconds is
+far below the rate at which anyone changes a setting by hand. The page
+no longer pushes its stored bitrate on load, nor its stored capture
+format on becoming a player.
+
+**The GTK window** reconciles once a second against the encoder and the
+capture device themselves — not against what it last asked for — so a
+format the driver refused shows as refused, and a resolution a player
+changed from a phone appears in the window.
+
+Two rules hold everywhere. A value that was *received* is written
+straight to the control and never through the control's own change
+handler, which would post it back and let two clients correct each other
+for ever. And a control touched by hand in the last few seconds is left
+alone, so a reply already in flight cannot undo a slider someone is
+still holding.
