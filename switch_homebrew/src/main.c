@@ -1604,7 +1604,12 @@ int main(int argc, char **argv) {
                  * where a finger that has gone is simply absent. */
                 if (g_screen == SCREEN_MENU) {
                     menu_touch(event.tfinger.x, event.tfinger.y);
-                } else {
+                } else if (!vpad_near_control(event.tfinger.x, event.tfinger.y)) {
+                    /* Not near a control. The shoulders, triggers, minus,
+                     * plus and HOME all sit along the top edge, which is
+                     * also where a tap opens the menu -- so a thumb that
+                     * missed one of them was opening the menu instead,
+                     * which is a poor thing to get mid-game. */
                     input_feed_touch(event.tfinger.y, 1);
                 }
             }
