@@ -372,6 +372,35 @@ class VirtualPad(context: Context, private val settings: Settings) : View(contex
         return true
     }
 
+    /**
+     * Whether a point is close enough to a control that a tap there was
+     * probably meant for it.
+     *
+     * Used to keep the double tap that toggles fullscreen away from the
+     * pad: missing a button and hiding the system bars instead is a poor
+     * trade, and it happens constantly because a thumb aiming for a
+     * button that it misses lands right beside it.
+     *
+     * A guard around each control rather than a safe rectangle in the
+     * middle, because the controls can be dragged: a fixed zone would
+     * stop matching them the moment anything moved.
+     */
+    fun isNearControl(x: Float, y: Float): Boolean {
+        if (!settings.padEnabled) return false
+        val margin = 1.6f
+        for (s in sticks) if (hypot(x - s.x, y - s.y) <= s.r * margin) return true
+        dpad?.let { if (hypot(x - it.x, y - it.y) <= it.w * margin) return true }
+        for (c in controls) {
+            if (c.round) {
+                if (hypot(x - c.x, y - c.y) <= c.w * margin) return true
+            } else if (kotlin.math.abs(x - c.x) <= c.w * margin &&
+                       kotlin.math.abs(y - c.y) <= c.h * margin) {
+                return true
+            }
+        }
+        return false
+    }
+
     /** Which control is under a point, for move mode. */
     private fun keyAt(x: Float, y: Float): Int? {
         for (s in sticks) if (hypot(x - s.x, y - s.y) <= s.r) return STICK_KEY - s.index
