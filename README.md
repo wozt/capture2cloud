@@ -446,8 +446,39 @@ The measurement scripts are how the hitch and latency questions in
 WORKINPROGRESS.md were settled — worth reaching for before changing
 anything that claims to affect smoothness or delay.
 
-`page.html` and `app.js` are served straight from disk — edit and
-refresh the browser, no rebuild.
+### The front end
+
+`page.html` and the files under `web/` are served straight from disk —
+edit and refresh the browser, no rebuild.
+
+```
+web/
+├── main.js            the elements, looked up once; loaded first
+├── settings.js        what the browser remembers, versioned
+├── ui/controls.js     the control bar: sound, picture, bitrate, format
+├── ui/overlay.js      the stats row and the numbers in it
+├── authentication.js  viewer by default, player on request
+├── gamepad.js         real controllers, shaping, and the merge
+├── keyboard.js        keyboard and mouse as a controller
+├── ui/panels.js       the rebind panel and the controller test
+├── touchpad.js        the on-screen pad
+├── webrtc.js          the connection; loaded last, it starts the stream
+└── styles/app.css
+```
+
+These are **plain scripts sharing one scope, not modules**, and the
+order above is the order `page.html` loads them in — which is part of
+the program, since a function declaration hoists within a file and not
+across two. `tests/run_tests.js` pins both the list and the order and
+runs the files concatenated, so a file added to one list and not the
+other fails there rather than in somebody's browser.
+
+The server does **not** build a path out of what was requested: a
+request selects a row from a fixed table in `web_stream.c` or gets a
+404. Adding a file to the front end means adding a line there. That is
+the price of `/web/../scripts/.env` — the file holding the password this
+same server checks — being unreachable by construction rather than by
+careful escaping.
 
 Architecture, protocol notes and the reasoning behind the trickier parts
 (latency, the GCAPI wire format, threading) are documented in

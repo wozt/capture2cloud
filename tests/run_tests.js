@@ -14,10 +14,27 @@
 //
 // Exit code is non-zero if any test fails, so it can gate a deploy.
 
+const fs = require('fs');
 const path = require('path');
 const { createSandbox } = require('./dom_stub.js');
 
-const APP_JS = path.join(__dirname, '..', 'app.js');
+/* The order page.html loads them in. Kept in step with it by the test
+ * "the page loads every front-end file, in this order" below: a file
+ * added to one and not the other is exactly the kind of thing that
+ * works in the tests and breaks in the browser. */
+const WEB_FILES = [
+  'main.js',
+  'settings.js',
+  'ui/controls.js',
+  'ui/overlay.js',
+  'authentication.js',
+  'gamepad.js',
+  'keyboard.js',
+  'ui/panels.js',
+  'touchpad.js',
+  'webrtc.js',
+];
+const APP_JS = WEB_FILES.map((f) => path.join(__dirname, '..', 'web', f));
 const VERBOSE = process.argv.includes('--verbose');
 
 let passed = 0;
@@ -926,6 +943,29 @@ group('shared settings are followed, not imposed', () => {
   s.sendQuality();
   s.applyShared({ height: 480, bitrate_kbps: 2000, capture: 'yuyv' });
   check('a just-touched control is left alone', s.quality.value, '20');
+});
+
+group('the page and the test suite agree on what to load', () => {
+  // The front end is ten plain scripts sharing one scope, so the ORDER
+  // is part of the program: a function declaration hoists within a file
+  // and not across two. This suite runs them concatenated, which means
+  // a file added to page.html and not to WEB_FILES (or the reverse)
+  // would be tested in an order the browser never uses -- green here,
+  // broken there. So the two lists are compared.
+  const html = fs.readFileSync(path.join(__dirname, '..', 'page.html'), 'utf8');
+  const inPage = [];
+  const re = /<script src="\/web\/([^"]+)"><\/script>/g;
+  let m;
+  while ((m = re.exec(html))) inPage.push(m[1]);
+  check('page.html loads the same files, in the same order',
+    inPage.join(','), WEB_FILES.join(','));
+
+  // Every one of them must exist, since a 404 on a script tag is silent
+  // in the browser: the page simply behaves as though that file's half
+  // of the program was never written.
+  const missing = WEB_FILES.filter(
+    (f) => !fs.existsSync(path.join(__dirname, '..', 'web', f)));
+  check('every file listed exists', missing.join(','), '');
 });
 
 group('player token storage', () => {
