@@ -150,6 +150,10 @@
       <button id="restart-server" title="Stops and starts the capture program, keeping its pid and its log. The stream drops for a few seconds and this page reloads itself once the server answers again. The one thing that has always brought the sound back when it stopped arriving.">restart server</button>
       <span id="restart-note"></span>
     </div></details>
+    <!-- Always visible, unlike the stats line, which is collapsible:
+         "which version am I running" should be answerable by looking at
+         the page rather than by opening something first. -->
+    <span id="ver" class="version"></span>
   </div>
 </div>
 <!-- Plain scripts in one shared scope, loaded in an order that matters:

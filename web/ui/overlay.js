@@ -79,7 +79,8 @@ function updateStats() {
       });
       var gamepadLine = 'gamepad: ' + currentGamepadStatus;
       infoEl.textContent =
-        videoLine + '  ' + audioLine + '  viewers ' + connectedClients + '  ' + gamepadLine;
+        videoLine + '  ' + audioLine + '  viewers ' + connectedClients + '  ' + gamepadLine +
+        '  v' + C2C_VERSION;
     })
     .catch(function () {});
 }

@@ -945,6 +945,30 @@ group('shared settings are followed, not imposed', () => {
   check('a just-touched control is left alone', s.quality.value, '20');
 });
 
+group('every place that names a version names the same one', () => {
+  // Four files say which release this is: VERSION, version.h (the host
+  // and the console client), web/main.js (the page) and the Android
+  // build. They are separate because they are read by four different
+  // toolchains, which makes a bump that misses one both easy and
+  // invisible -- the symptom is a client confidently reporting a
+  // version nobody shipped.
+  const root = path.join(__dirname, '..');
+  const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
+  check('VERSION looks like a release', /^\d+\.\d+\.\d+$/.test(version), true);
+
+  const fromHeader = /#define C2C_VERSION "([^"]+)"/.exec(
+    fs.readFileSync(path.join(root, 'version.h'), 'utf8'));
+  check('version.h matches VERSION', fromHeader && fromHeader[1], version);
+
+  const fromPage = /var C2C_VERSION = '([^']+)'/.exec(
+    fs.readFileSync(path.join(root, 'web', 'main.js'), 'utf8'));
+  check('the page matches VERSION', fromPage && fromPage[1], version);
+
+  const fromGradle = /versionName = "([^"]+)"/.exec(
+    fs.readFileSync(path.join(root, 'android', 'app', 'build.gradle.kts'), 'utf8'));
+  check('the Android build matches VERSION', fromGradle && fromGradle[1], version);
+});
+
 group('the page and the test suite agree on what to load', () => {
   // The front end is ten plain scripts sharing one scope, so the ORDER
   // is part of the program: a function declaration hoists within a file
