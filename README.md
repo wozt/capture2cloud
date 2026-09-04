@@ -454,22 +454,6 @@ The measurement scripts are how the hitch and latency questions in
 WORKINPROGRESS.md were settled — worth reaching for before changing
 anything that claims to affect smoothness or delay.
 
-### A picture of it
-
-![architecture](architecture.svg)
-
-`architecture.dot` is the source; `architecture.svg` and
-`architecture.png` are rendered from it with
-
-```sh
-dot -Tsvg architecture.dot -o architecture.svg
-dot -Tpng -Gdpi=120 architecture.dot -o architecture.png
-```
-
-The element names in the boxes are the ones in the GStreamer launch
-strings in `gst_webrtc.c`, so anything on the diagram can be grepped for
-in the code.
-
 ### The front end
 
 `page.html` and the files under `web/` are served straight from disk —
