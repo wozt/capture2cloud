@@ -13,8 +13,8 @@ android {
         applicationId = "fr.wozt.capture2cloud"
         minSdk = 26          // MediaCodec's Opus decoder and a sane camera-free base
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.2.1"
     }
 
     /* The release key lives outside the repository and is never
