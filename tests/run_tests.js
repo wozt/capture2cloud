@@ -954,7 +954,8 @@ group('every place that names a version names the same one', () => {
   // version nobody shipped.
   const root = path.join(__dirname, '..');
   const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
-  check('VERSION looks like a release', /^\d+\.\d+\.\d+$/.test(version), true);
+  // Three parts, or four for a hotfix on top of one.
+  check('VERSION looks like a release', /^\d+\.\d+\.\d+(\.\d+)?$/.test(version), true);
 
   const fromHeader = /#define C2C_VERSION "([^"]+)"/.exec(
     fs.readFileSync(path.join(root, 'version.h'), 'utf8'));
