@@ -35,17 +35,26 @@ void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest c
  * what they can actually decode: a console that cannot keep up at 720p60
  * produces exactly the symptom skipping causes. */
 void switch_stream_set_profile_request(SwitchStream *s,
-                                       void (*cb)(void *ctx, int w, int h, int fps, int bitrate_kbps),
+                                       void (*cb)(void *ctx, int codec, int w, int h, int fps,
+                                                  int bitrate_kbps),
                                        void *ctx);
 
 /* The client asking for a different video codec. */
-void switch_stream_set_codec_request(SwitchStream *s, void (*cb)(void *ctx, int codec), void *ctx);
+/* How many clients are watching one codec (C2S_CODEC_VP8 / _H264).
+ * Read per frame by the pipeline, so a chain nobody is on is not
+ * encoded at all. */
+int switch_stream_codec_client_count(SwitchStream *s, int codec);
+
+/* Called whenever that count changes for either codec -- a client
+ * arriving, leaving, or switching. Fired outside the client lock. */
+void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), void *ctx);
 
 /* Tells every connected client what the video stream is now. Sent after
  * a change, because the change takes effect some frames after the
  * request and a decoder re-initialised at the wrong moment sees the tail
  * of the old stream. */
-void switch_stream_announce_stream(SwitchStream *s, uint16_t width, uint16_t height, uint8_t codec);
+void switch_stream_announce_stream(SwitchStream *s, uint8_t codec,
+                                   uint16_t width, uint16_t height);
 
 /* Announces the settings every native client shares -- the stream's
  * shape, its codec, its bitrate, and the capture format. Sent on change
@@ -67,7 +76,11 @@ int switch_stream_max_clients(void);
 /* Hands an encoded frame to every connected client. Non-blocking: a
  * client that cannot keep up loses the frame rather than stalling the
  * pipeline. */
-void switch_stream_send_video(SwitchStream *s, const uint8_t *data, uint32_t size, int keyframe);
+/* Sends one encoded frame to the clients on that codec, and only them:
+ * the other group is watching a different encode, and bytes from the
+ * wrong chain do not fail cleanly -- they decode into a picture. */
+void switch_stream_send_video(SwitchStream *s, int codec, const uint8_t *data, uint32_t size,
+                              int keyframe);
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size);
 
 /* The size the stream is encoded at, announced in the handshake so the

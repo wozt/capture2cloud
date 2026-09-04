@@ -347,6 +347,14 @@ picture for people already connected, silently. Changing one of these on
 purpose still changes it for everyone, and every other client's sliders
 and dropdowns follow within a second or two.
 
+The native side is **two streams**: the host runs a VP8 chain and an
+H.264 one, and a client is sent whichever it asked for. Two encoders and
+never more — one per codec, each shared by everyone on it — and a chain
+nobody is watching is not fed at all, so it costs nothing. The two are
+independent: someone on VP8 dropping to 480p30 leaves the H.264 viewers
+alone, menus included. Picking a codec is therefore each client's own
+choice.
+
 Volume, the picture adjustments, the virtual pad and the stick shaping
 are nobody else's business and are never sent anywhere. The full split,
 and why it falls where it does, is in

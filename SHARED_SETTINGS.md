@@ -30,23 +30,31 @@ So "shared" below means *shared by everyone on the same stream*:
 | Stream | Who is on it | Where its settings live |
 |---|---|---|
 | **browser** | every web page | `browser_height`, `bitrate_mbps`; read by `GET /shared` |
-| **native** | Android and Switch clients | `switch_width/height/fps/bitrate`; pushed as `C2S_MSG_SHARED` |
+| **native VP8** | the native clients that asked for VP8 | `switch_*[0]`; pushed as `C2S_MSG_SHARED` to that group |
+| **native H.264** | the native clients that asked for H.264 | `switch_*[1]`; pushed as `C2S_MSG_SHARED` to that group |
 
 The capture format is the exception that really is global: there is one
 card, and both encoders are fed from it.
 
-**Within the native stream there is one codec for everyone.** The host
-feeds either the VP8 chain or the H.264 one, never both, so a native
-client switching codec switches every native client — which is why the
-codec is in the shared table rather than being a per-client preference.
-Serving VP8 and H.264 natively *at the same time*, each with its own
-size and rate, would be a different host: two chains fed in parallel,
-two profiles, and roughly twice the encoding. It is not what happens
-today.
+**The native side is two streams, not one.** The host runs a VP8 chain
+and an H.264 chain, and a client is sent whichever it asked for. There
+are still exactly **two encoders and never more** — one per codec, each
+shared by everyone watching it; ten clients on H.264 are one H.264
+encode.
+
+Each chain has its own size, frame rate and bitrate, and they are
+independent: somebody on VP8 dropping to 480p30 does not shrink the
+picture of the people on H.264, nor move their menus. And a chain
+**nobody is on is not fed at all**, so it encodes nothing: the first
+client to ask for a codec starts it, the last one to leave stops it.
+Everyone on one codec therefore costs exactly what it did when there
+was only one chain.
+
+The codec itself is consequently a **per-client** setting and not a
+shared one — the one row that moved out of the table below.
 
 | Setting | Lives in | Browser | Android | Switch | GTK |
 |---|---|---|---|---|---|
-| **Video codec** (H.264 / VP8) | the native encoder | — | `codec` | `net_send_codec` | — |
 | **Stream height** (1080 / 720 / 480) | encoder | `/resolution` | `height` | profile | `browser_height` |
 | **Stream width** | derived from height | — | — | — | — |
 | **Frame rate** | encoder | — | `fps` | profile | — |
@@ -86,6 +94,7 @@ Nothing here touches the host. Two people can disagree about all of it.
 | Host, port, transport path | — | ✓ | ✓ | — |
 | Saved password, session token | ✓ | ✓ | ✓ | — |
 | Vsync | ✓ | — | — | `vsync` |
+| **Video codec** (H.264 / VP8) — picks which native stream to be on | — | ✓ | ✓ | — |
 | Local playback sink | — | — | — | `local_direct_sink` |
 | Which local controller drives the console | — | — | — | `gamepad_enabled`, `gamepad_index` |
 

@@ -77,6 +77,13 @@ typedef struct {
     int in_use;
     int handshake_done;
     int may_control;
+    /* Which video codec THIS client is being sent.
+     *
+     * It used to be one setting for the whole server: a client asking
+     * for H.264 moved everyone to H.264, including whoever was happily
+     * decoding VP8. Two chains are fed now, so this is the client's own
+     * business and nobody else's. */
+    uint8_t codec;
     uint32_t last_seen_ms;
     uint8_t rx[SS_RX_CAPACITY];
     uint32_t rx_len;
@@ -104,11 +111,29 @@ struct SwitchStream {
      * else happened to change the codec. */
     uint8_t video_codec;
 
-    /* The last shared settings announced, kept so a client that arrives
-     * later is told the same thing as everyone already connected -- and
-     * so it has no reason to announce its own. */
-    C2sShared shared;
-    int shared_known;
+    /* The last shared settings announced, per codec, kept so a client
+     * that arrives later is told the same thing as everyone already on
+     * ITS stream -- and so it has no reason to announce its own.
+     *
+     * Indexed by codec_slot(): the two groups share nothing, because
+     * they are not watching the same encode. */
+    /* How many clients each codec has, kept up to date rather than
+     * counted per frame: the video path reads this sixty times a second
+     * and must not take the client lock to do it. */
+    volatile int live[2];
+    volatile int demand_dirty;
+
+    uint32_t max_frame_bytes_by_codec[2];
+    C2sShared shared[2];
+    int shared_known[2];
+    uint16_t group_width[2], group_height[2];
+    int group_stream_known[2];
+
+    /* Told whenever the set of codecs anybody is watching changes, so
+     * the pipeline can start feeding a chain or stop wasting a core on
+     * one nobody is reading. */
+    void (*demand_cb)(void *ctx);
+    void *demand_ctx;
 
     SDL_mutex *mutex;
     SsClient clients[SS_MAX_CLIENTS];
@@ -118,10 +143,8 @@ struct SwitchStream {
 
     SwitchKeyframeRequest keyframe_cb;
     void *keyframe_ctx;
-    void (*profile_cb)(void *ctx, int w, int h, int fps, int bitrate_kbps);
+    void (*profile_cb)(void *ctx, int codec, int w, int h, int fps, int bitrate_kbps);
     void *profile_ctx;
-    void (*codec_cb)(void *ctx, int codec);
-    void *codec_ctx;
 
     /* When the last forced keyframe went out. Forcing one per skipped
      * frame turned a client that was slightly behind into one that could
@@ -150,36 +173,56 @@ static uint32_t now_ms(void) {
 }
 
 /* Defined further down, with the rest of the sending. */
-static void broadcast(SwitchStream *s, uint8_t type, uint8_t flags,
+/* VP8 in slot 0, H.264 in slot 1. Anything else is not a codec this
+ * transport carries, and is treated as the default rather than indexing
+ * past the end of an array. */
+static int codec_slot(int codec) {
+    return codec == C2S_CODEC_H264 ? 1 : 0;
+}
+/* codec_filter 0 means every client; otherwise only those on that
+ * codec. Video is always filtered -- handing a client the other
+ * chain's bytes produces a picture, and the picture is bright pink. */
+static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t flags,
                       const uint8_t *data, uint32_t size);
+static void recount(SwitchStream *s);
+static void send_group_state(SwitchStream *s, int index);
 
 void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest cb, void *ctx) {
     if (s) { s->keyframe_cb = cb; s->keyframe_ctx = ctx; }
 }
 
-void switch_stream_set_codec_request(SwitchStream *s, void (*cb)(void *ctx, int codec), void *ctx) {
-    if (s) { s->codec_cb = cb; s->codec_ctx = ctx; }
-}
-
-void switch_stream_announce_stream(SwitchStream *s, uint16_t width, uint16_t height, uint8_t codec) {
+/* Announces the shape of ONE of the two streams, to the clients on it.
+ *
+ * The codec is no longer a property of the server, so neither is this:
+ * telling a VP8 client that the stream is now 720p H.264 would make it
+ * rebuild its decoder for an encode it is not being sent. */
+void switch_stream_announce_stream(SwitchStream *s, uint8_t codec,
+                                   uint16_t width, uint16_t height) {
     if (!s) return;
     C2sStreamInfo info;
     memset(&info, 0, sizeof(info));
     info.width = width;
     info.height = height;
     info.video_codec = codec;
-    s->width = width;
-    s->height = height;
-    s->video_codec = codec;
-    broadcast(s, C2S_MSG_STREAM_INFO, 0, (const uint8_t *)&info, sizeof(info));
+    const int slot = codec_slot(codec);
+    s->group_width[slot] = width;
+    s->group_height[slot] = height;
+    s->group_stream_known[slot] = 1;
+    broadcast(s, codec, C2S_MSG_STREAM_INFO, 0, (const uint8_t *)&info, sizeof(info));
 }
 
-/* Tells everyone what the settings they have in common now are.
+/* Tells one codec's clients what the settings they have in common now
+ * are.
  *
  * Sent on every change rather than polled, and sent to a client the
  * moment it finishes its handshake: the alternative is a client that
  * shows its own saved values while receiving somebody else's stream,
- * with no way of telling which of the two is the truth. */
+ * with no way of telling which of the two is the truth.
+ *
+ * "In common" stops at the codec boundary. The two groups are watching
+ * two different encodes with their own size, rate and bitrate, so a
+ * VP8 viewer dropping to 480p30 has no business moving an H.264
+ * viewer's menu -- which is exactly what one shared set of values did. */
 void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t height,
                                    uint16_t fps, uint16_t bitrate_kbps,
                                    uint8_t codec, uint8_t capture_mjpeg) {
@@ -192,13 +235,15 @@ void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t hei
     sh.bitrate_kbps = bitrate_kbps;
     sh.video_codec = codec;
     sh.capture_mjpeg = capture_mjpeg;
-    s->shared = sh;
-    s->shared_known = 1;
-    broadcast(s, C2S_MSG_SHARED, 0, (const uint8_t *)&sh, sizeof(sh));
+    const int slot = codec_slot(codec);
+    s->shared[slot] = sh;
+    s->shared_known[slot] = 1;
+    broadcast(s, codec, C2S_MSG_SHARED, 0, (const uint8_t *)&sh, sizeof(sh));
 }
 
 void switch_stream_set_profile_request(SwitchStream *s,
-                                       void (*cb)(void *ctx, int w, int h, int fps, int bitrate_kbps),
+                                       void (*cb)(void *ctx, int codec, int w, int h, int fps,
+                                                  int bitrate_kbps),
                                        void *ctx) {
     if (s) { s->profile_cb = cb; s->profile_ctx = ctx; }
 }
@@ -259,9 +304,12 @@ static void drop_client(SwitchStream *s, int i, const char *why) {
     free(s->clients[i].pending);
     memset(&s->clients[i], 0, sizeof(s->clients[i]));
     s->clients[i].fd = -1;
+    /* If that was the last client on its codec, the chain it was
+     * watching has nobody left and stops being encoded. */
+    recount(s);
 }
 
-static void broadcast(SwitchStream *s, uint8_t type, uint8_t flags,
+static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t flags,
                       const uint8_t *data, uint32_t size) {
     if (!s || size > C2S_MAX_PAYLOAD) {
         return;
@@ -277,10 +325,15 @@ static void broadcast(SwitchStream *s, uint8_t type, uint8_t flags,
      * interval instead of staying sized for a resolution nobody is
      * watching any more. */
     if (type == C2S_MSG_VIDEO) {
-        s->max_frame_bytes -= s->max_frame_bytes / 16;
-        if (size > s->max_frame_bytes) {
-            s->max_frame_bytes = size;
+        /* Per codec: a 6 Mb/s H.264 keyframe and a 1 Mb/s VP8 one are
+         * not the same size, and one allowance for both would size the
+         * small stream's backlog for the large stream's frames. */
+        uint32_t *largest = &s->max_frame_bytes_by_codec[codec_slot(codec_filter)];
+        *largest -= *largest / 16;
+        if (size > *largest) {
+            *largest = size;
         }
+        s->max_frame_bytes = *largest;
     }
     uint32_t allowance = s->max_frame_bytes * 2 + SS_INFLIGHT_HEADROOM;
     if (allowance < SS_INFLIGHT_MIN_BYTES) allowance = SS_INFLIGHT_MIN_BYTES;
@@ -288,6 +341,9 @@ static void broadcast(SwitchStream *s, uint8_t type, uint8_t flags,
     for (int i = 0; i < SS_MAX_CLIENTS; i++) {
         SsClient *c = &s->clients[i];
         if (!c->in_use || !c->handshake_done) {
+            continue;
+        }
+        if (codec_filter && c->codec != codec_filter) {
             continue;
         }
 
@@ -370,12 +426,32 @@ static void broadcast(SwitchStream *s, uint8_t type, uint8_t flags,
     }
 }
 
-void switch_stream_send_video(SwitchStream *s, const uint8_t *data, uint32_t size, int keyframe) {
-    broadcast(s, C2S_MSG_VIDEO, keyframe ? C2S_FLAG_KEYFRAME : 0, data, size);
+void switch_stream_send_video(SwitchStream *s, int codec, const uint8_t *data, uint32_t size,
+                              int keyframe) {
+    /* Only to the clients on that codec. The other group is watching a
+     * different encode and would decode these bytes as their own. */
+    broadcast(s, codec, C2S_MSG_VIDEO, keyframe ? C2S_FLAG_KEYFRAME : 0, data, size);
+}
+
+/* How many clients are watching one of the two codecs. The pipeline
+ * asks, so a chain nobody is reading is not encoded at all. */
+int switch_stream_codec_client_count(SwitchStream *s, int codec) {
+    return s ? s->live[codec_slot(codec)] : 0;
+}
+
+void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), void *ctx) {
+    if (s) { s->demand_cb = cb; s->demand_ctx = ctx; }
+}
+
+/* Outside the client mutex, always: the callback reaches into the
+ * pipeline, which is the other side of a lock this thread may hold. */
+static void note_demand_changed(SwitchStream *s) {
+    if (s && s->demand_cb) s->demand_cb(s->demand_ctx);
 }
 
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size) {
-    broadcast(s, C2S_MSG_AUDIO, 0, data, size);
+    /* One encode, everybody: sound has no codec groups. */
+    broadcast(s, 0, C2S_MSG_AUDIO, 0, data, size);
 }
 
 void switch_stream_set_video_size(SwitchStream *s, uint16_t width, uint16_t height) {
@@ -444,9 +520,17 @@ static void handle_hello(SwitchStream *s, int index) {
 
     ack.accepted = 1;
     ack.may_control = web_stream_may_control(s->web, token) ? 1 : 0;
-    ack.width = s->width;
-    ack.height = s->height;
-    ack.video_codec = s->video_codec ? s->video_codec : C2S_CODEC_VP8;
+    /* H.264 to start with, and the client says otherwise if it wants to.
+     * Both native clients decode H.264 in hardware and ask for it; VP8
+     * as the opening codec meant every connection began by spinning up
+     * a software encoder that was about to be abandoned. */
+    c->codec = C2S_CODEC_H264;
+    {
+        const int slot = codec_slot(c->codec);
+        ack.width = s->group_stream_known[slot] ? s->group_width[slot] : s->width;
+        ack.height = s->group_stream_known[slot] ? s->group_height[slot] : s->height;
+    }
+    ack.video_codec = c->codec;
     ack.audio_codec = C2S_CODEC_OPUS;
     ack.audio_rate = 48000;
     ack.audio_channels = 2;
@@ -467,22 +551,69 @@ static void handle_hello(SwitchStream *s, int index) {
      * A client told this has no reason to push its own saved settings,
      * which is what used to change the picture for everyone the moment
      * somebody else joined. */
-    if (s->shared_known) {
-        C2sFrameHeader sh_h;
-        memset(&sh_h, 0, sizeof(sh_h));
-        sh_h.type = C2S_MSG_SHARED;
-        sh_h.size = sizeof(C2sShared);
-        if (send_all_now(c->fd, &sh_h, sizeof(sh_h)) == 0) {
-            send_all_now(c->fd, &s->shared, sizeof(s->shared));
+    send_group_state(s, index);
+
+    /* One more client on this codec -- and possibly the first, which is
+     * what starts the chain encoding at all. */
+    recount(s);
+
+    fprintf(stderr, "switch_stream: client %d connected as %s, on %s\n", index,
+            c->may_control ? "PLAYER" : "viewer",
+            c->codec == C2S_CODEC_H264 ? "h264" : "vp8");
+}
+
+/* Recomputes who is watching what. Called with the lock held, whenever
+ * a client arrives, leaves, or changes codec -- the three things that
+ * can turn a chain on or off. */
+static void recount(SwitchStream *s) {
+    int n[2] = {0, 0};
+    for (int i = 0; i < SS_MAX_CLIENTS; i++) {
+        const SsClient *c = &s->clients[i];
+        if (c->in_use && c->handshake_done) n[codec_slot(c->codec)]++;
+    }
+    if (n[0] != s->live[0] || n[1] != s->live[1]) {
+        s->live[0] = n[0];
+        s->live[1] = n[1];
+        /* Not called from here: the pipeline is on the other side of a
+         * lock this thread is holding. The poll loop fires it once it
+         * has let go. */
+        s->demand_dirty = 1;
+    }
+}
+
+/* Tells one client the shape and the settings of the stream it is on.
+ *
+ * Sent when it connects and again whenever it changes codec, because
+ * both are moments where it is about to receive an encode it knows
+ * nothing about. */
+static void send_group_state(SwitchStream *s, int index) {
+    SsClient *c = &s->clients[index];
+    const int slot = codec_slot(c->codec);
+
+    if (s->group_stream_known[slot]) {
+        C2sStreamInfo info;
+        memset(&info, 0, sizeof(info));
+        info.width = s->group_width[slot];
+        info.height = s->group_height[slot];
+        info.video_codec = c->codec;
+        C2sFrameHeader h = {.type = C2S_MSG_STREAM_INFO, .flags = 0, .reserved = 0,
+                            .size = sizeof(info)};
+        if (send_all_now(c->fd, &h, sizeof(h)) == 0) {
+            send_all_now(c->fd, &info, sizeof(info));
         }
     }
-
-    fprintf(stderr, "switch_stream: client %d connected as %s\n", index,
-            c->may_control ? "PLAYER" : "viewer");
+    if (s->shared_known[slot]) {
+        C2sFrameHeader h = {.type = C2S_MSG_SHARED, .flags = 0, .reserved = 0,
+                            .size = sizeof(C2sShared)};
+        if (send_all_now(c->fd, &h, sizeof(h)) == 0) {
+            send_all_now(c->fd, &s->shared[slot], sizeof(s->shared[slot]));
+        }
+    }
 }
 
 static void handle_messages(SwitchStream *s, int index) {
     SsClient *c = &s->clients[index];
+    int codec_changed = 0;
     for (;;) {
         if (c->rx_len < sizeof(C2sFrameHeader)) {
             return;
@@ -517,22 +648,43 @@ static void handle_messages(SwitchStream *s, int index) {
                 break;
             case C2S_MSG_PROFILE:
                 /* Players only, like the browser's /quality and
-                 * /resolution: one encoder feeds every native client, so
-                 * this is not a per-viewer preference -- a viewer asking
-                 * for 360p would set it for the person playing. */
+                 * /resolution: one encoder feeds this client's whole
+                 * codec group, so it is not a per-viewer preference --
+                 * a viewer asking for 360p would set it for the person
+                 * playing. It stops at the group, though: the other
+                 * codec's viewers are watching a different encode. */
                 if (c->may_control && h.size == sizeof(C2sProfile)) {
                     C2sProfile p;
                     memcpy(&p, payload, sizeof(p));
-                    fprintf(stderr, "switch_stream: client %d asks for %ux%u@%u, %u kbps\n",
-                            index, p.width, p.height, p.fps, p.bitrate_kbps);
+                    fprintf(stderr, "switch_stream: client %d (%s) asks for %ux%u@%u, %u kbps\n",
+                            index, c->codec == C2S_CODEC_H264 ? "h264" : "vp8",
+                            p.width, p.height, p.fps, p.bitrate_kbps);
                     if (s->profile_cb) {
-                        s->profile_cb(s->profile_ctx, p.width, p.height, p.fps, p.bitrate_kbps);
+                        s->profile_cb(s->profile_ctx, c->codec, p.width, p.height, p.fps,
+                                      p.bitrate_kbps);
                     }
                 }
                 break;
             case C2S_MSG_CODEC:
-                if (c->may_control && h.size == 1 && s->codec_cb) {
-                    s->codec_cb(s->codec_ctx, payload[0]);
+                /* This client's own choice, and no longer players-only:
+                 * it changes what THIS connection is sent and nothing
+                 * else. It used to move every native client at once,
+                 * which is why it was gated -- and why a phone that
+                 * wanted H.264 could not have it while somebody else
+                 * was on VP8. */
+                if (h.size == 1
+                    && (payload[0] == C2S_CODEC_VP8 || payload[0] == C2S_CODEC_H264)
+                    && c->codec != payload[0]) {
+                    c->codec = payload[0];
+                    fprintf(stderr, "switch_stream: client %d now on %s\n", index,
+                            c->codec == C2S_CODEC_H264 ? "h264" : "vp8");
+                    /* Its decoder has to be rebuilt for the other
+                     * encode, and the first thing it must see there is
+                     * a keyframe -- everything else predicts from
+                     * pictures it never received. */
+                    send_group_state(s, index);
+                    s->keyframe_pending = 1;
+                    codec_changed = 1;
                 }
                 break;
             case C2S_MSG_KEYFRAME:
@@ -570,6 +722,10 @@ static void handle_messages(SwitchStream *s, int index) {
                 break;
         }
         client_consume(c, sizeof(h) + h.size);
+        if (codec_changed) {
+            codec_changed = 0;
+            recount(s);
+        }
     }
 }
 
@@ -668,6 +824,13 @@ static int accept_thread(void *arg) {
             }
         }
         SDL_UnlockMutex(s->mutex);
+
+        /* Outside the lock, for the same reason the keyframe request
+         * below is: this reaches into the pipeline. */
+        if (s->demand_dirty) {
+            s->demand_dirty = 0;
+            note_demand_changed(s);
+        }
 
         if (s->keyframe_pending) {
             s->keyframe_pending = 0;
