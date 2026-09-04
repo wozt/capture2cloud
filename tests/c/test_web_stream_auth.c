@@ -21,13 +21,25 @@
 
 /* --- stubs for the gst_webrtc.c side (never actually exercised here) --- */
 char *gst_webrtc_stream_handle_offer(GstWebrtcStream *g, const char *offer_sdp, int may_control,
-                                     const struct sockaddr *peer, socklen_t peer_len) {
+                                     const struct sockaddr *peer, socklen_t peer_len,
+                                     char *out_id, size_t out_id_size) {
     (void)g;
     (void)offer_sdp;
     (void)may_control;
     (void)peer;
     (void)peer_len;
+    if (out_id && out_id_size) out_id[0] = '\0';
     return NULL;
+}
+
+/* The liveness pair. A browser that goes away leaves the connection
+ * reading CONNECTED forever, so these are what actually notice; the
+ * auth tests only need them to link. */
+int gst_webrtc_stream_client_seen(GstWebrtcStream *g, const char *id) {
+    (void)g; (void)id; return 0;
+}
+int gst_webrtc_stream_client_bye(GstWebrtcStream *g, const char *id) {
+    (void)g; (void)id; return 0;
 }
 void gamepad_bridge_reset(void) {}
 /* /gamepad-rate reports this; nothing here drives a real adapter. */

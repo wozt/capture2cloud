@@ -52,6 +52,8 @@ async function start() {
    * tokens live only in the server's memory, so any restart invalidates
    * them while the browser keeps believing it is a player -- the UI
    * would say "player" while every input was silently dropped. */
+  clientId = resp.headers.get('X-Client-Id') || null;
+
   var granted = resp.headers.get('X-Player-Granted');
   if (granted !== null) {
     var isPlayer = granted === '1';

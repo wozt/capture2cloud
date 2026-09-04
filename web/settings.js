@@ -141,6 +141,19 @@ function saveSettings(patch) {
 /* A drag that is still in flight when the tab goes away would otherwise
  * lose its last change. */
 window.addEventListener('pagehide', flushSettings);
+
+/* And tell the host we are going, which it cannot work out for itself.
+ *
+ * sendBeacon rather than fetch: the page is being torn down, and a
+ * normal request is cancelled with it. Closing a tab and reloading are
+ * how a browser client normally ends, so this covers nearly every case
+ * -- the host's heartbeat timeout is only the backstop for a crash or a
+ * pulled cable. */
+window.addEventListener('pagehide', function () {
+  if (clientId && navigator.sendBeacon) {
+    try { navigator.sendBeacon('/bye', clientId); } catch (e) {}
+  }
+});
 document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'hidden') flushSettings();
 });
