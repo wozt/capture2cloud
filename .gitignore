@@ -53,3 +53,7 @@ android/local.properties
 # instead; viz/README.md says how.
 /viz/
 
+
+# Generated for the C language server so code-graph tools can resolve
+# this project. Machine-specific paths; regenerate rather than commit.
+/compile_commands.json
