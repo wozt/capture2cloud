@@ -596,17 +596,23 @@ class MainActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
                     pendingStream = Triple(ack.width, ack.height, ack.videoCodec)
                     if (surfaceReady) startVideo(ack.width, ack.height, ack.videoCodec)
                 }
-                /* Nothing is asked for here, deliberately.
+                /* The codec is asked for, and nothing else.
                  *
-                 * This used to push the codec and the profile the moment
-                 * the handshake finished, which meant that joining a
-                 * stream changed it for everyone already watching -- to
-                 * whatever this device happened to have saved, possibly
-                 * months ago. One encoder feeds every native client, so
-                 * arriving is not an occasion to redecorate. The host
-                 * sends C2S_MSG_SHARED instead and the controls move to
-                 * match; changing one afterwards is a deliberate act and
-                 * still changes it for the room. */
+                 * It is this client's own choice now: the host runs a
+                 * VP8 chain and an H.264 one, and this says which of the
+                 * two to be sent. Nobody else's picture moves.
+                 *
+                 * The size, the rate and the bitrate are NOT asked for.
+                 * Those belong to everyone on the same codec, and
+                 * pushing them here meant that joining changed the
+                 * stream for people already watching it -- to whatever
+                 * this device had saved, possibly months ago. The host
+                 * sends C2S_MSG_SHARED for the group instead and the
+                 * controls move to match; changing one afterwards is a
+                 * deliberate act and still changes it for that group. */
+                if (ack.videoCodec != settings.codec) {
+                    client?.sendCodec(settings.codec)
+                }
             },
             onVideo = { buf, key, behind ->
                 val d = video

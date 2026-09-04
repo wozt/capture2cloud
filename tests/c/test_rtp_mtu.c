@@ -34,12 +34,20 @@ void gamepad_bridge_forget(unsigned source) {
 /* gst_webrtc.c hands encoded frames to the native transport. None of
  * that is exercised here, and linking switch_stream.c would drag its
  * sockets and threads into a test about packet sizes. */
-void switch_stream_send_video(SwitchStream *s, const uint8_t *d, uint32_t n, int k) {
-    (void)s; (void)d; (void)n; (void)k;
+void switch_stream_send_video(SwitchStream *s, int codec, const uint8_t *d, uint32_t n, int k) {
+    (void)s; (void)codec; (void)d; (void)n; (void)k;
 }
 
-void switch_stream_announce_stream(SwitchStream *s, uint16_t w, uint16_t h, uint8_t codec) {
-    (void)s; (void)w; (void)h; (void)codec;
+void switch_stream_announce_stream(SwitchStream *s, uint8_t codec, uint16_t w, uint16_t h) {
+    (void)s; (void)codec; (void)w; (void)h;
+}
+
+int switch_stream_codec_client_count(SwitchStream *s, int codec) {
+    (void)s; (void)codec; return 0;
+}
+
+void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), void *ctx) {
+    (void)s; (void)cb; (void)ctx;
 }
 
 void switch_stream_announce_shared(SwitchStream *s, uint16_t w, uint16_t h, uint16_t fps,
@@ -47,9 +55,6 @@ void switch_stream_announce_shared(SwitchStream *s, uint16_t w, uint16_t h, uint
     (void)s; (void)w; (void)h; (void)fps; (void)kbps; (void)codec; (void)mjpeg;
 }
 
-void switch_stream_set_codec_request(SwitchStream *s, void (*cb)(void *ctx, int codec), void *ctx) {
-    (void)s; (void)cb; (void)ctx;
-}
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *d, uint32_t n) {
     (void)s; (void)d; (void)n;
 }
@@ -60,7 +65,8 @@ void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest c
     (void)s; (void)cb; (void)ctx;
 }
 void switch_stream_set_profile_request(SwitchStream *s,
-                                       void (*cb)(void *ctx, int w, int h, int fps, int kbps),
+                                       void (*cb)(void *ctx, int codec, int w, int h, int fps,
+                                                  int kbps),
                                        void *ctx) {
     (void)s; (void)cb; (void)ctx;
 }

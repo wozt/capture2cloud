@@ -21,7 +21,8 @@ MAGIC = 0x57533243
 VERSION = 1
 PAD_SLOTS = 21
 MSG_VIDEO, MSG_AUDIO, MSG_INPUT, MSG_PING, MSG_HOME = 1, 2, 16, 17, 18
-MSG_PROFILE, MSG_STREAM_INFO, MSG_SHARED = 19, 21, 26
+MSG_PROFILE, MSG_CODEC, MSG_STREAM_INFO, MSG_SHARED = 19, 20, 21, 26
+CODEC_VP8, CODEC_H264 = 1, 3
 
 passed = failed = 0
 def check(name, ok, detail=""):
@@ -358,12 +359,22 @@ try:
 
     # And the native stream really did move, or the check above would
     # pass by doing nothing at all.
+    #
+    # The LAST announcement, not the first: a client is told its group's
+    # settings the moment it connects, so the first one to arrive
+    # describes the stream as it was before this test touched it.
     sh = None
-    c.settimeout(5)
+    c.settimeout(1)
     buf = b""
-    deadline = time.time() + 5
-    while time.time() < deadline and sh is None:
-        buf += c.recv(65536)
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        try:
+            d = c.recv(65536)
+        except socket.timeout:
+            continue
+        if not d:
+            break
+        buf += d
         while len(buf) >= 8:
             t, fl, _r, size = struct.unpack("<BBHI", buf[:8])
             if len(buf) < 8 + size:
@@ -371,12 +382,79 @@ try:
             payload, buf = buf[8:8 + size], buf[8 + size:]
             if t == MSG_SHARED:
                 sh = struct.unpack("<HHHHBB2x", payload)
-                break
     check("the native stream did change", sh is not None and sh[1] == 480,
           sh[1] if sh else "no announcement")
     c.close()
 except Exception as e:
     check("a native client's profile leaves the browser stream alone", False, str(e))
+
+group("two codecs at once, and neither disturbs the other")
+# The host runs a VP8 chain and an H.264 one. Two encoders, never more,
+# each shared by everyone watching it -- and a client is only ever sent
+# the one it asked for. Before this, one codec was "current" for the
+# whole server: a phone asking for H.264 moved the console to H.264 too,
+# and a client that wanted the other one simply could not have it.
+def drain(sock, seconds):
+    """Reads for a while; returns (video frames, last SHARED, last INFO)."""
+    frames, shared, info = 0, None, None
+    buf = b""
+    sock.settimeout(1)
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            d = sock.recv(65536)
+        except socket.timeout:
+            continue
+        if not d:
+            break
+        buf += d
+        while len(buf) >= 8:
+            t, fl, _r, size = struct.unpack("<BBHI", buf[:8])
+            if len(buf) < 8 + size:
+                break
+            payload, buf = buf[8:8 + size], buf[8 + size:]
+            if t == MSG_VIDEO:
+                frames += 1
+            elif t == MSG_SHARED:
+                shared = struct.unpack("<HHHHBB2x", payload)
+            elif t == MSG_STREAM_INFO:
+                info = struct.unpack("<HHB3x", payload)
+    return frames, shared, info
+
+try:
+    a = connect(tok)   # VP8
+    read_ack(a)
+    a.sendall(frame(MSG_CODEC, bytes([CODEC_VP8])))
+    b = connect(tok)   # H.264
+    read_ack(b)
+    b.sendall(frame(MSG_CODEC, bytes([CODEC_H264])))
+
+    fa, sa, ia = drain(a, 4)
+    fb, sb, ib = drain(b, 1)
+    check("the VP8 client receives video", fa > 30, fa)
+    check("the H.264 client receives video at the same time", fb > 5, fb)
+    check("each is told its own codec",
+          (sa[4] if sa else 0, sb[4] if sb else 0) == (CODEC_VP8, CODEC_H264),
+          f"{sa} / {sb}")
+    check("and its own stream shape",
+          (ia[2] if ia else 0, ib[2] if ib else 0) == (CODEC_VP8, CODEC_H264),
+          f"{ia} / {ib}")
+
+    # The heart of it: a profile change belongs to one group.
+    before_b = sb
+    a.sendall(frame(MSG_PROFILE, struct.pack("<HHHH", 854, 480, 30, 1500)))
+    fa2, sa2, _ = drain(a, 3)
+    fb2, sb2, _ = drain(b, 2)
+    check("the asking client's stream changes",
+          sa2 is not None and (sa2[0], sa2[1], sa2[2]) == (854, 480, 30), sa2)
+    check("the other codec's stream does NOT",
+          sb2 is None or sb2 == before_b, f"{before_b} -> {sb2}")
+    check("and the other codec keeps receiving", fb2 > 5, fb2)
+
+    a.close()
+    b.close()
+except Exception as e:
+    check("two codecs at once", False, str(e))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

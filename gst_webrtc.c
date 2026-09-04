@@ -170,19 +170,33 @@ struct GstWebrtcStream {
      * right one. */
     int switch264_nv12;
     const char *switch264_encoder;
-    int switch_width, switch_height, switch_fps;
-    int switch_codec; /* C2sCodec */
+    /* One profile per codec, indexed VP8=0 / H.264=1.
+     *
+     * There used to be one, because there was one chain: a client
+     * asking for 480p30 moved everybody, including the people on the
+     * other codec who were not even watching that encode. Two chains
+     * are fed now, each with its own size, rate and bitrate. */
+    int switch_width[2], switch_height[2], switch_fps[2];
+    /* Whether anybody is watching each of them. A chain with no
+     * audience is not fed, so it encodes nothing and costs nothing --
+     * which is the point: two encoders running for one viewer was the
+     * reason only one ever ran. */
+    volatile int switch_wanted[2];
     /* Kept, not merely applied: a client that connects later has to be
-     * told the rate everyone is already on. */
-    int switch_bitrate_kbps;
+     * told the rate everyone on ITS codec is already on. */
+    int switch_bitrate_kbps[2];
     /* The capture card's format, shared with the browsers too. Mirrored
      * here so the native announcement can carry it. */
     int capture_mjpeg;
-    struct SwsContext *sws_switch;
-    enum AVPixelFormat sws_switch_src_format;
-    enum AVPixelFormat sws_switch_dst_format;
-    uint8_t *switch_i420_buf;
-    size_t switch_i420_size;
+    /* One converter per chain, because the two chains want different
+     * pixel layouts: the GPU H.264 encoder takes NV12 and nothing else,
+     * vp8enc takes I420. When only one chain is fed the other costs
+     * nothing -- it is never built. */
+    struct SwsContext *sws_switch[2];
+    enum AVPixelFormat sws_switch_src_format[2];
+    enum AVPixelFormat sws_switch_dst_format[2];
+    uint8_t *switch_i420_buf[2];
+    size_t switch_i420_size[2];
     uint64_t switch_frame;
     SwitchStream *switch_out;
     GstElement *asrc, *atee;
@@ -505,14 +519,15 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->switchsink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchsink264");
     g->vsrc_switch264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_switch264");
     g->vscale_switch264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_switch264_caps");
-    g->switch_codec = C2S_CODEC_VP8;
     if (g->switchsink264) {
         g_signal_connect(g->switchsink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
     }
-    g->switch_width = SWITCH_VIDEO_WIDTH;
-    g->switch_height = SWITCH_VIDEO_HEIGHT;
-    g->switch_fps = 60;
-    g->switch_bitrate_kbps = SWITCH_VIDEO_BITRATE_KBPS;
+    for (int slot = 0; slot < 2; slot++) {
+        g->switch_width[slot] = SWITCH_VIDEO_WIDTH;
+        g->switch_height[slot] = SWITCH_VIDEO_HEIGHT;
+        g->switch_fps[slot] = 60;
+        g->switch_bitrate_kbps[slot] = SWITCH_VIDEO_BITRATE_KBPS;
+    }
     g->switchasink = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchasink");
     if (g->switchsink) {
         g_signal_connect(g->switchsink, "new-sample", G_CALLBACK(on_switch_video_sample), g);
@@ -588,26 +603,20 @@ static GstFlowReturn on_switch_video_sample(GstElement *sink, gpointer user_data
         return GST_FLOW_OK;
     }
 
-    /* Both encoders report here, and only the chosen one may reach the
-     * client.
+    /* Both encoders report here, and each frame goes only to the clients
+     * on that encoder.
      *
-     * On a codec switch the chain that was running still has a frame or
-     * two inside it, and those come out after the client has been told
-     * the codec changed and has rebuilt its decoder for the other one.
-     * It then decoded VP8 as H.264 -- which does not fail cleanly, it
-     * produces a picture, and the picture was bright pink. Nothing
-     * downstream can tell those bytes apart from the real thing, so they
-     * are stopped here, where which encoder produced them is known. */
-    int is_h264 = (sink == g->switchsink264);
-    if (is_h264 != (g->switch_codec == C2S_CODEC_H264)) {
-        gst_sample_unref(sample);
-        return GST_FLOW_OK;
-    }
+     * This used to be a filter -- one codec was "current" and the other
+     * chain's frames were dropped -- because a client handed the wrong
+     * chain's bytes does not fail cleanly: it produces a picture, and
+     * the picture was bright pink. Routing rather than dropping is the
+     * same guarantee, and it is what lets both run at once. */
+    const int codec = (sink == g->switchsink264) ? C2S_CODEC_H264 : C2S_CODEC_VP8;
     GstBuffer *buf = gst_sample_get_buffer(sample);
     GstMapInfo map;
     if (buf && gst_buffer_map(buf, &map, GST_MAP_READ)) {
         int keyframe = !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
-        switch_stream_send_video(g->switch_out, map.data, (uint32_t)map.size, keyframe);
+        switch_stream_send_video(g->switch_out, codec, map.data, (uint32_t)map.size, keyframe);
         gst_buffer_unmap(buf, &map);
     }
     gst_sample_unref(sample);
@@ -690,21 +699,38 @@ static void on_switch_keyframe_request(void *ctx) {
 
 /* A client saying what it can actually decode. Applied to the native
  * branch only; the browser stream and the capture are untouched. */
-/* One line, because it is called from four places and forgetting one of
+/* Announces one codec group's settings to that group. Called from
+ * everywhere the group's shape can change, because forgetting one of
  * them is how a client ends up showing a setting nobody else has. */
-static void announce_shared(GstWebrtcStream *g) {
+static void announce_shared_slot(GstWebrtcStream *g, int slot) {
     if (!g || !g->switch_out) return;
     switch_stream_announce_shared(g->switch_out,
-                                  (uint16_t)g->switch_width, (uint16_t)g->switch_height,
-                                  (uint16_t)g->switch_fps,
-                                  (uint16_t)g->switch_bitrate_kbps,
-                                  (uint8_t)g->switch_codec,
+                                  (uint16_t)g->switch_width[slot], (uint16_t)g->switch_height[slot],
+                                  (uint16_t)g->switch_fps[slot],
+                                  (uint16_t)g->switch_bitrate_kbps[slot],
+                                  (uint8_t)(slot ? C2S_CODEC_H264 : C2S_CODEC_VP8),
                                   (uint8_t)(g->capture_mjpeg ? 1 : 0));
 }
 
-static void on_switch_profile_request(void *ctx, int w, int h, int fps, int bitrate_kbps) {
+static void announce_shared(GstWebrtcStream *g) {
+    announce_shared_slot(g, 0);
+    announce_shared_slot(g, 1);
+}
+
+/* A profile request from a client, applied to ITS codec's chain only.
+ *
+ * The other chain is left exactly as it was, which is the whole point:
+ * somebody on VP8 dropping to 480p30 must not shrink the picture of
+ * the people watching H.264, who are not even receiving that encode. */
+static void on_switch_profile_request(void *ctx, int codec, int w, int h, int fps,
+                                      int bitrate_kbps) {
     GstWebrtcStream *g = ctx;
-    if (!g || !g->vscale_switch_caps || w <= 0 || h <= 0) {
+    if (!g || w <= 0 || h <= 0) {
+        return;
+    }
+    const int slot = (codec == C2S_CODEC_H264) ? 1 : 0;
+    GstElement *caps_filter = slot ? g->vscale_switch264_caps : g->vscale_switch_caps;
+    if (!caps_filter) {
         return;
     }
     if (fps <= 0 || fps > 60) fps = 60;
@@ -717,72 +743,63 @@ static void on_switch_profile_request(void *ctx, int w, int h, int fps, int bitr
                                         "width", G_TYPE_INT, w,
                                         "height", G_TYPE_INT, h,
                                         "framerate", GST_TYPE_FRACTION, fps, 1, NULL);
-    g_object_set(g->vscale_switch_caps, "caps", caps, NULL);
-    /* Both chains, not just the one running: the idle one has to already
-     * be the right size when the codec is switched to it, or the client
-     * gets one announcement and a differently-sized picture. */
-    if (g->vscale_switch264_caps) {
-        g_object_set(g->vscale_switch264_caps, "caps", caps, NULL);
-    }
+    g_object_set(caps_filter, "caps", caps, NULL);
     gst_caps_unref(caps);
 
     if (bitrate_kbps > 0) {
         if (bitrate_kbps < 500) bitrate_kbps = 500;
         if (bitrate_kbps > 20000) bitrate_kbps = 20000;
-        if (g->venc_switch) {
+        if (slot == 0 && g->venc_switch) {
             g_object_set(g->venc_switch, "target-bitrate", bitrate_kbps * 1000, NULL);
         }
-        if (g->venc_switch_h264) {
+        if (slot == 1 && g->venc_switch_h264) {
             g_object_set(g->venc_switch_h264, "bitrate", bitrate_kbps, NULL);
         }
+        g->switch_bitrate_kbps[slot] = bitrate_kbps;
     }
-    g->switch_width = w;
-    g->switch_height = h;
-    g->switch_fps = fps;
-    if (bitrate_kbps > 0) g->switch_bitrate_kbps = bitrate_kbps;
+    g->switch_width[slot] = w;
+    g->switch_height[slot] = h;
+    g->switch_fps[slot] = fps;
     on_switch_keyframe_request(g);
     if (g->switch_out) {
-        switch_stream_set_video_size(g->switch_out, (uint16_t)w, (uint16_t)h);
-        switch_stream_announce_stream(g->switch_out, (uint16_t)w, (uint16_t)h,
-                                      (uint8_t)g->switch_codec);
-        announce_shared(g);
+        switch_stream_announce_stream(g->switch_out,
+                                      (uint8_t)(slot ? C2S_CODEC_H264 : C2S_CODEC_VP8),
+                                      (uint16_t)w, (uint16_t)h);
+        announce_shared_slot(g, slot);
     }
-    fprintf(stderr, "gst_webrtc: native stream now %dx%d@%d, %d kbps\n", w, h, fps,
+    fprintf(stderr, "gst_webrtc: native %s stream now %dx%d@%d, %d kbps\n",
+            slot ? "h264" : "vp8", w, h, fps,
             bitrate_kbps > 0 ? bitrate_kbps : SWITCH_VIDEO_BITRATE_KBPS);
 }
 
-/* Chooses which of the two native encoders is fed. Nothing is torn down:
- * switching back costs a keyframe, not a pipeline rebuild. */
-static void on_switch_codec_request(void *ctx, int codec) {
+/* Which chains have an audience, told by the transport whenever that
+ * changes. A chain nobody is on is not fed, so it encodes nothing.
+ *
+ * A chain that has just gained its first client has been idle, so its
+ * next picture would predict from one nobody received: it is asked for
+ * a keyframe, and told its shape, as it starts. */
+static void on_switch_demand_changed(void *ctx) {
     GstWebrtcStream *g = ctx;
-    if (!g) {
+    if (!g || !g->switch_out) {
         return;
     }
-    if (codec != C2S_CODEC_VP8 && codec != C2S_CODEC_H264) {
-        return;
+    for (int slot = 0; slot < 2; slot++) {
+        const int codec = slot ? C2S_CODEC_H264 : C2S_CODEC_VP8;
+        const int wanted = switch_stream_codec_client_count(g->switch_out, codec) > 0;
+        if (wanted == g->switch_wanted[slot]) {
+            continue;
+        }
+        g->switch_wanted[slot] = wanted;
+        fprintf(stderr, "gst_webrtc: native %s chain %s\n", slot ? "h264" : "vp8",
+                wanted ? "started (a client is watching it)" : "stopped (nobody left on it)");
+        if (wanted) {
+            switch_stream_announce_stream(g->switch_out, (uint8_t)codec,
+                                          (uint16_t)g->switch_width[slot],
+                                          (uint16_t)g->switch_height[slot]);
+            announce_shared_slot(g, slot);
+            on_switch_keyframe_request(g);
+        }
     }
-    if (g->switch_codec == codec) {
-        return;
-    }
-    /* Nothing is switched over in the pipeline: which appsrc gets fed is
-     * what decides, and that is read from here on the next captured
-     * frame. The chain not being fed simply goes quiet. */
-    g->switch_codec = codec;
-
-    /* The newly fed chain has been encoding nothing, so its next picture
-     * would be predicted from one the client never saw. */
-    on_switch_keyframe_request(g);
-
-    /* The client is told rather than left to assume: the change takes
-     * effect some frames after the request, and a decoder re-initialised
-     * at the wrong moment sees the tail of the old codec. */
-    if (g->switch_out) {
-        switch_stream_announce_stream(g->switch_out, (uint16_t)g->switch_width,
-                                      (uint16_t)g->switch_height, (uint8_t)codec);
-        announce_shared(g);
-    }
-    fprintf(stderr, "gst_webrtc: native stream now %s\n",
-            codec == C2S_CODEC_H264 ? "H.264" : "VP8");
 }
 
 void gst_webrtc_stream_set_capture_mjpeg(GstWebrtcStream *g, int mjpeg) {
@@ -800,7 +817,7 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
     g->switch_out = out;
     switch_stream_set_keyframe_request(out, on_switch_keyframe_request, g);
     switch_stream_set_profile_request(out, on_switch_profile_request, g);
-    switch_stream_set_codec_request(out, on_switch_codec_request, g);
+    switch_stream_set_demand_changed(out, on_switch_demand_changed, g);
     announce_shared(g);
 }
 
@@ -808,20 +825,15 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
  * Separate from push_i420() because the two differ in output size and in
  * which appsrc they feed, and sharing one function would mean a
  * converter rebuilt on every alternate call. */
-void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *const plane[3],
-                                          const int stride[3], int av_pixel_format,
-                                          int width, int height) {
-    if (!g) {
-        return;
-    }
-    /* Only the chain for the codec in use is fed; the other one sits at
-     * zero. This is also what performs the switch -- there is no element
-     * to toggle. */
-    GstElement *dest = (g->switch_codec == C2S_CODEC_H264) ? g->vsrc_switch264 : g->vsrc_switch;
+/* Feeds ONE of the two native chains. Returns nothing: a chain that
+ * cannot be set up is simply not fed this frame. */
+static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const plane[3],
+                              const int stride[3], enum AVPixelFormat format,
+                              int width, int height, GstClockTime pts) {
+    GstElement *dest = slot ? g->vsrc_switch264 : g->vsrc_switch;
     if (!dest) {
         return;
     }
-    enum AVPixelFormat format = (enum AVPixelFormat)av_pixel_format;
     const int dw = SWITCH_VIDEO_WIDTH, dh = SWITCH_VIDEO_HEIGHT;
 
     /* The GPU encoders take NV12 and nothing else; x264 and vp8 take
@@ -829,26 +841,26 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
      * the capture format happens either way -- and saves a second pass
      * over every pixel inside the pipeline. */
     enum AVPixelFormat dst_format =
-        (g->switch_codec == C2S_CODEC_H264 && g->switch264_nv12) ? AV_PIX_FMT_NV12
-                                                                 : AV_PIX_FMT_YUV420P;
+        (slot && g->switch264_nv12) ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
 
-    if (g->sws_switch && (g->sws_switch_src_format != format || g->sws_switch_dst_format != dst_format)) {
-        sws_freeContext(g->sws_switch);
-        g->sws_switch = NULL;
+    if (g->sws_switch[slot] && (g->sws_switch_src_format[slot] != format
+                                || g->sws_switch_dst_format[slot] != dst_format)) {
+        sws_freeContext(g->sws_switch[slot]);
+        g->sws_switch[slot] = NULL;
     }
-    if (!g->sws_switch) {
-        g->sws_switch = sws_getContext(width, height, format, dw, dh, dst_format,
-                                        SWS_FAST_BILINEAR, NULL, NULL, NULL);
-        if (!g->sws_switch) {
+    if (!g->sws_switch[slot]) {
+        g->sws_switch[slot] = sws_getContext(width, height, format, dw, dh, dst_format,
+                                             SWS_FAST_BILINEAR, NULL, NULL, NULL);
+        if (!g->sws_switch[slot]) {
             return;
         }
-        g->sws_switch_src_format = format;
-        g->sws_switch_dst_format = dst_format;
-        int hw = (dw + 1) / 2, hh = (dh + 1) / 2;
-        g->switch_i420_size = (size_t)dw * dh + 2 * (size_t)hw * hh;
-        free(g->switch_i420_buf);
-        g->switch_i420_buf = malloc(g->switch_i420_size);
-        if (!g->switch_i420_buf) {
+        g->sws_switch_src_format[slot] = format;
+        g->sws_switch_dst_format[slot] = dst_format;
+        int hw0 = (dw + 1) / 2, hh0 = (dh + 1) / 2;
+        g->switch_i420_size[slot] = (size_t)dw * dh + 2 * (size_t)hw0 * hh0;
+        free(g->switch_i420_buf[slot]);
+        g->switch_i420_buf[slot] = malloc(g->switch_i420_size[slot]);
+        if (!g->switch_i420_buf[slot]) {
             return;
         }
     }
@@ -859,7 +871,7 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
     int hw = (dw + 1) / 2, hh = (dh + 1) / 2;
     uint8_t *dst[4] = {0};
     int dst_stride[4] = {0};
-    dst[0] = g->switch_i420_buf;
+    dst[0] = g->switch_i420_buf[slot];
     dst_stride[0] = dw;
     if (dst_format == AV_PIX_FMT_NV12) {
         dst[1] = dst[0] + (size_t)dw * dh;
@@ -873,17 +885,41 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
 
     const uint8_t *src[4] = {plane[0], plane[1], plane[2], NULL};
     int src_strides[4] = {stride[0], stride[1], stride[2], 0};
-    sws_scale(g->sws_switch, src, src_strides, 0, height, dst, dst_stride);
+    sws_scale(g->sws_switch[slot], src, src_strides, 0, height, dst, dst_stride);
 
-    GstClockTime pts = gst_util_uint64_scale(g->switch_frame, GST_SECOND, 60);
-    g->switch_frame++;
-
-    GstBuffer *buffer = gst_buffer_new_allocate(NULL, g->switch_i420_size, NULL);
-    gst_buffer_fill(buffer, 0, g->switch_i420_buf, g->switch_i420_size);
+    GstBuffer *buffer = gst_buffer_new_allocate(NULL, g->switch_i420_size[slot], NULL);
+    gst_buffer_fill(buffer, 0, g->switch_i420_buf[slot], g->switch_i420_size[slot]);
     GST_BUFFER_PTS(buffer) = pts;
     GST_BUFFER_DTS(buffer) = pts;
     GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(1, GST_SECOND, 60);
     gst_app_src_push_buffer(GST_APP_SRC(dest), buffer);
+}
+
+/* Scales the captured frame to the native clients' size and pushes it.
+ * Separate from push_i420() because the two differ in output size and in
+ * which appsrc they feed, and sharing one function would mean a
+ * converter rebuilt on every alternate call.
+ *
+ * There are exactly two encoders here and never more -- one VP8, one
+ * H.264 -- each shared by every client watching it. A chain with nobody
+ * on it is not fed at all, so it encodes nothing: that is what makes
+ * running both affordable, and what makes the common case (everybody on
+ * one codec) cost exactly what it did before. */
+void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *const plane[3],
+                                          const int stride[3], int av_pixel_format,
+                                          int width, int height) {
+    if (!g) {
+        return;
+    }
+    const enum AVPixelFormat format = (enum AVPixelFormat)av_pixel_format;
+    const GstClockTime pts = gst_util_uint64_scale(g->switch_frame, GST_SECOND, 60);
+    g->switch_frame++;
+
+    for (int slot = 0; slot < 2; slot++) {
+        if (g->switch_wanted[slot]) {
+            push_switch_chain(g, slot, plane, stride, format, width, height, pts);
+        }
+    }
 }
 
 static void push_i420(GstWebrtcStream *g, const uint8_t *const src_plane[3], const int src_stride[3],

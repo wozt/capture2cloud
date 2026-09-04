@@ -717,14 +717,23 @@ static void start_decoders_if_needed(void) {
         audio_set_muted(g_saved_muted);
         printf("decoders ready: %ux%u codec %u, %u Hz x%u\n", n->width, n->height,
                n->video_codec, n->audio_rate, n->audio_channels);
-        /* Nothing is asked for here any more.
+        /* The codec is asked for, and nothing else.
          *
-         * Asking on connection meant that starting this client changed
-         * the stream for everyone already watching it, to whatever was
-         * in this console's config file. One encoder feeds every native
-         * client: arriving is not a vote. The host announces the shared
+         * It is this console's own choice: the host runs a VP8 chain
+         * and an H.264 one, and this says which of the two to send
+         * here. Nobody else's picture moves.
+         *
+         * The size, the rate and the bitrate are NOT asked for. Those
+         * belong to everyone on the same codec, and asking on
+         * connection meant that starting this client changed the stream
+         * for people already watching it, to whatever was in this
+         * console's config file. The host announces the group's
          * settings instead (C2S_MSG_SHARED) and the menu moves to them;
-         * changing one by hand afterwards still changes it for all. */
+         * changing one by hand afterwards still changes it for that
+         * group. */
+        if (n->video_codec != g_codec) {
+            net_send_codec(g_codec);
+        }
     } else {
         printf("decoders failed to start\n");
     }
