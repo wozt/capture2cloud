@@ -574,9 +574,11 @@ static void handle_offer(WebStream *ws, int fd, long content_length, const char 
     struct sockaddr_storage peer;
     socklen_t peer_len = sizeof(peer);
     int have_peer = getpeername(fd, (struct sockaddr *)&peer, &peer_len) == 0;
+    char client_id[17] = {0};
     char *answer = gst_webrtc_stream_handle_offer(ws->webrtc, body, may_control,
                                                   have_peer ? (struct sockaddr *)&peer : NULL,
-                                                  have_peer ? peer_len : 0);
+                                                  have_peer ? peer_len : 0,
+                                                  client_id, sizeof(client_id));
     free(body);
 
     if (!answer) {
@@ -592,10 +594,11 @@ static void handle_offer(WebStream *ws, int fd, long content_length, const char 
      * every input would be dropped in silence -- which is exactly as
      * confusing as it sounds. The page compares this against what it
      * believes and corrects itself. */
-    char header[220];
+    char header[280];
     int n = snprintf(header, sizeof(header),
-                      "HTTP/1.1 200 OK\r\nContent-Type: application/sdp\r\nX-Player-Granted: %d\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
-                      may_control ? 1 : 0, answer_len);
+                      "HTTP/1.1 200 OK\r\nContent-Type: application/sdp\r\nX-Player-Granted: %d\r\n"
+                      "X-Client-Id: %s\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",
+                      may_control ? 1 : 0, client_id, answer_len);
     send_all(fd, header, (size_t)n);
     send_all(fd, answer, answer_len);
     free(answer);
@@ -753,6 +756,25 @@ static void handle_capture_format_get(int fd) {
                       strlen(body));
     send_all(fd, header, (size_t)n);
     send_all(fd, body, strlen(body));
+}
+
+/* "I am closing", from a page on its way out.
+ *
+ * Worth having because the alternative is waiting out the heartbeat
+ * timeout for something the browser knows for certain, and closing or
+ * reloading a tab is how a browser client normally ends. */
+static void handle_bye(WebStream *ws, int fd, long content_length) {
+    char body[17] = {0};
+    if (content_length > 0 && content_length <= 16) {
+        if (read_exact(fd, body, (size_t)content_length) != 0) {
+            return;
+        }
+        body[content_length] = '\0';
+        body[strcspn(body, "\r\n")] = '\0';
+        gst_webrtc_stream_client_bye(ws->webrtc, body);
+    }
+    static const char response[] = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    send_all(fd, response, sizeof(response) - 1);
 }
 
 /* Everything a page shares with every other page, in one reply.
@@ -914,6 +936,11 @@ static int client_thread(void *arg) {
 
         long content_length = 0;
         char token[WS_TOKEN_HEX_LEN + 1] = {0};
+        /* Which WebRTC client this page is, so any request it makes
+         * doubles as "still here". The polls it already sends -- stats,
+         * client count, shared settings -- are the heartbeat; nothing
+         * extra is asked of it. */
+        char client_id[17] = {0};
         for (;;) {
             if (read_line(fd, line, sizeof(line)) != 0) break;
             if (line[0] == '\0') break; /* empty line = end of headers */
@@ -927,6 +954,14 @@ static int client_thread(void *arg) {
             if (sscanf(line, "X-Player-Token: %64s", tok) == 1 || sscanf(line, "x-player-token: %64s", tok) == 1) {
                 snprintf(token, sizeof(token), "%s", tok);
             }
+            char cid[17];
+            if (sscanf(line, "X-Client-Id: %16s", cid) == 1 || sscanf(line, "x-client-id: %16s", cid) == 1) {
+                snprintf(client_id, sizeof(client_id), "%s", cid);
+            }
+        }
+
+        if (client_id[0]) {
+            gst_webrtc_stream_client_seen(ws->webrtc, client_id);
         }
 
         if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0)) {
@@ -939,6 +974,12 @@ static int client_thread(void *arg) {
             handle_resolution_get(ws, fd);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/resolution") == 0) {
             handle_resolution(ws, fd, content_length, token);
+        } else if (strcmp(method, "POST") == 0 && strcmp(path, "/bye") == 0) {
+            /* The page saying it is closing or reloading, sent with
+             * navigator.sendBeacon so it survives the unload. Not gated:
+             * the id is random and only ever hangs up on the connection
+             * it names, which is the sender's own. */
+            handle_bye(ws, fd, content_length);
         } else if (strcmp(method, "GET") == 0 && strcmp(path, "/shared") == 0) {
             handle_shared_get(ws, fd);
         } else if (strcmp(method, "GET") == 0 && strcmp(path, "/capture-format") == 0) {

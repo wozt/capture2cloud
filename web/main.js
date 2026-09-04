@@ -81,6 +81,17 @@ var versionEl = document.getElementById('ver');
 if (versionEl) versionEl.textContent = 'v' + C2C_VERSION;
 
 var pc = null;
+/* Which WebRTC client this page is, as the host named it in the answer
+ * to /offer. Sent back on the polls this page already makes, and in the
+ * goodbye below.
+ *
+ * It exists because the host cannot tell on its own: a browser that
+ * goes away leaves the connection reading "connected" on the server for
+ * as long as it runs, so a page that does not say it is leaving is
+ * never noticed leaving. Each one that was missed kept an encoder
+ * branch alive, and enough of them took the stream down for everybody
+ * until the program was restarted. */
+var clientId = null;
 
 function log(s) {
   statusEl.textContent = s;

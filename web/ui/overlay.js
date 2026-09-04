@@ -94,7 +94,9 @@ setInterval(updateStats, 1000);
  * not something worth a request per second. */
 var connectedClients = '?';
 function updateClientCount() {
-  fetch('/clients')
+  /* Doubles as the heartbeat: the host takes any request carrying this
+   * id as "that page is still there". No extra request is made for it. */
+  fetch('/clients', clientId ? { headers: { 'X-Client-Id': clientId } } : undefined)
     .then(function (r) {
       return r.ok ? r.text() : null;
     })

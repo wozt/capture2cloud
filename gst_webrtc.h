@@ -62,8 +62,19 @@ void gst_webrtc_stream_push_audio(GstWebrtcStream *g, const int16_t *pcm_interle
  * media will be sent to, which is what lets the RTP packet size be sized
  * to that particular path (see RTP_MTU in gst_webrtc.c). Pass NULL to
  * fall back to the configured default. */
+/* `out_id` receives the identity this client is known by; the page
+ * sends it back to say it is still there, and to say goodbye. */
 char *gst_webrtc_stream_handle_offer(GstWebrtcStream *g, const char *offer_sdp, int may_control,
-                                     const struct sockaddr *peer, socklen_t peer_len);
+                                     const struct sockaddr *peer, socklen_t peer_len,
+                                     char *out_id, size_t out_id_size);
+
+/* "Still here" / "leaving", from the page holding that id.
+ *
+ * A browser that vanishes leaves webrtcbin reading CONNECTED for as
+ * long as this program runs -- never DISCONNECTED, never FAILED -- so
+ * this is the only thing that actually notices it is gone. */
+int gst_webrtc_stream_client_seen(GstWebrtcStream *g, const char *id);
+int gst_webrtc_stream_client_bye(GstWebrtcStream *g, const char *id);
 
 /* Number of clients currently connected; `max_clients` (may be NULL)
  * receives the hard limit. Slots are freed automatically when a browser

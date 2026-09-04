@@ -105,6 +105,24 @@ static const char *const H264_ENCODER_PREFERENCE[] = {
     "x264enc",             /* no GPU encoder available: back to the CPU */
 };
 
+/* How long a connection may sit in DISCONNECTED before its slot is
+ * taken back. Long enough that a genuine network blip -- the case that
+ * state exists for -- recovers untouched; short enough that a browser
+ * that quietly went away does not hold a tee branch for the rest of the
+ * session. */
+#define WEBRTC_DISCONNECTED_GRACE_US (10 * G_USEC_PER_SEC)
+/* How often that is checked. */
+#define WEBRTC_SWEEP_INTERVAL_MS 2000
+
+/* How long a page may go without saying it is still there.
+ *
+ * Generous on purpose: a browser throttles timers in a background tab,
+ * Firefox down to about once a minute, and a tab left in the background
+ * is still a viewer. A page that is closed or reloaded says so
+ * immediately (POST /bye), so this is only the backstop for a crash, a
+ * pulled cable or a machine that went to sleep. */
+#define WEBRTC_HEARTBEAT_TIMEOUT_US (90 * G_USEC_PER_SEC)
+
 #define DEFAULT_KEYFRAME_MAX_DIST 300
 #define MIN_KEYFRAME_MAX_DIST 15
 #define MAX_KEYFRAME_MAX_DIST 3000
@@ -132,6 +150,28 @@ typedef struct {
      * changes (disconnected -> failed -> closed) can't queue several
      * teardowns for the same client. Guarded by clients_mutex. */
     int teardown_scheduled;
+    /* When this connection first went DISCONNECTED, in monotonic
+     * microseconds, or 0 when it is not in that state.
+     *
+     * Firefox is why this exists. A tab that goes away leaves webrtcbin
+     * in DISCONNECTED and, with no traffic left to time out on, libnice
+     * can sit there instead of escalating to FAILED -- so the slot was
+     * never freed, its tee branch stayed linked, and every reload added
+     * another one. Chrome reaches FAILED on its own and hid the
+     * problem. Guarded by clients_mutex. */
+    gint64 disconnected_since;
+
+    /* Identity handed to the page, and when it last said it was still
+     * there.
+     *
+     * webrtcbin's connection-state is useless for this: measured, a
+     * browser that goes away leaves it reading CONNECTED for as long as
+     * the program runs -- never DISCONNECTED, never FAILED. Nothing in
+     * the media path notices either, because RTP to a peer that is gone
+     * is just UDP into a hole. So liveness is asked for out of band, on
+     * the polls the page already makes. */
+    char id[17];
+    gint64 last_seen;
 } WebrtcClient;
 
 struct GstWebrtcStream {
@@ -258,6 +298,62 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data)
     return TRUE;
 }
 
+static void schedule_client_teardown(WebrtcClient *client);
+
+/* Takes back the slots of clients that are gone but never said so.
+ *
+ * Teardown is normally driven by the connection state reaching FAILED
+ * or CLOSED. Firefox does not get there: a tab that goes away leaves
+ * webrtcbin in DISCONNECTED and, with no traffic left to time out on,
+ * it stays. The slot stayed in use, its branch stayed linked to the
+ * tee, and every reload added another -- until one of them stopped
+ * draining and, through a queue that used to block, stopped the encoder
+ * for everybody. Only restarting the program cleared it.
+ *
+ * Runs on the private context's loop, which does nothing else: not on
+ * the capture thread, which must never block, and not inside a
+ * GStreamer signal callback. */
+static gboolean sweep_dead_clients(gpointer user_data) {
+    GstWebrtcStream *g = user_data;
+    const gint64 now = g_get_monotonic_time();
+
+    for (int i = 0; i < g->max_clients; i++) {
+        WebrtcClient *client = &g->clients[i];
+
+        SDL_LockMutex(g->clients_mutex);
+        GstElement *bin = (client->in_use && !client->teardown_scheduled)
+                              ? client->webrtcbin : NULL;
+        const gint64 since = client->disconnected_since;
+        const gint64 seen = client->last_seen;
+        if (bin) gst_object_ref(bin);
+        SDL_UnlockMutex(g->clients_mutex);
+        if (!bin) {
+            continue;
+        }
+
+        GstWebRTCPeerConnectionState state = GST_WEBRTC_PEER_CONNECTION_STATE_NEW;
+        g_object_get(bin, "connection-state", &state, NULL);
+        gst_object_unref(bin);
+
+        const int dead = (state == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED ||
+                          state == GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED);
+        const int gone_quiet = (state == GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED &&
+                                since && now - since >= WEBRTC_DISCONNECTED_GRACE_US);
+        /* The one that actually fires. A page says it is still there on
+         * the polls it already makes; silence for this long means it is
+         * not, whatever the connection state claims. */
+        const int silent = seen && (now - seen >= WEBRTC_HEARTBEAT_TIMEOUT_US);
+        if (dead || gone_quiet || silent) {
+            fprintf(stderr, "gst_webrtc: client %d gone (%s), freeing its slot\n", i,
+                    silent ? "silent past the heartbeat timeout"
+                           : gone_quiet ? "disconnected past the grace period"
+                                        : "connection failed or closed");
+            schedule_client_teardown(client);
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
+
 static int gst_thread_main(void *arg) {
     GstWebrtcStream *g = arg;
     /* Private context (not the global default one): this thread must not
@@ -279,6 +375,13 @@ static int gst_thread_main(void *arg) {
     GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(g->pipeline));
     g->bus_watch_id = gst_bus_add_watch(bus, on_bus_message, g);
     gst_object_unref(bus);
+
+    /* Attached here rather than at construction: the source has to live
+     * on this context, and this is the thread that owns it. */
+    GSource *sweep = g_timeout_source_new(WEBRTC_SWEEP_INTERVAL_MS);
+    g_source_set_callback(sweep, sweep_dead_clients, g, NULL);
+    g_source_attach(sweep, g->ctx);
+    g_source_unref(sweep);
 
     g->loop = g_main_loop_new(g->ctx, FALSE);
     g_main_loop_run(g->loop);
@@ -1070,6 +1173,14 @@ static WebrtcClient *take_free_slot(GstWebrtcStream *g) {
             memset(slot, 0, sizeof(*slot));
             slot->in_use = 1;
             slot->g = g;
+            slot->last_seen = g_get_monotonic_time();
+            /* Random rather than the slot index: an id that can be
+             * guessed is an id anyone can use to hang up on somebody
+             * else's session. */
+            for (int k = 0; k < 16; k++) {
+                slot->id[k] = "0123456789abcdef"[g_random_int_range(0, 16)];
+            }
+            slot->id[16] = '\0';
             break;
         }
     }
@@ -1088,6 +1199,45 @@ static WebrtcClient *acquire_client_slot(GstWebrtcStream *g) {
         slot = take_free_slot(g);
     }
     return slot;
+}
+
+/* "I am still here", from a page that holds this id. Returns 1 if the
+ * id matched a live client. */
+int gst_webrtc_stream_client_seen(GstWebrtcStream *g, const char *id) {
+    if (!g || !id || !*id) return 0;
+    int found = 0;
+    SDL_LockMutex(g->clients_mutex);
+    for (int i = 0; i < g->max_clients; i++) {
+        if (g->clients[i].in_use && strcmp(g->clients[i].id, id) == 0) {
+            g->clients[i].last_seen = g_get_monotonic_time();
+            found = 1;
+            break;
+        }
+    }
+    SDL_UnlockMutex(g->clients_mutex);
+    return found;
+}
+
+/* "I am leaving", sent by the page as it is closed or reloaded.
+ *
+ * This is what makes the common case immediate rather than waiting out
+ * the heartbeat timeout, and the common case is most of them: closing a
+ * tab and reloading a page are how a browser client normally ends. */
+int gst_webrtc_stream_client_bye(GstWebrtcStream *g, const char *id) {
+    if (!g || !id || !*id) return 0;
+    WebrtcClient *going = NULL;
+    SDL_LockMutex(g->clients_mutex);
+    for (int i = 0; i < g->max_clients; i++) {
+        if (g->clients[i].in_use && strcmp(g->clients[i].id, id) == 0) {
+            going = &g->clients[i];
+            break;
+        }
+    }
+    SDL_UnlockMutex(g->clients_mutex);
+    if (!going) return 0;
+    fprintf(stderr, "gst_webrtc: a page said goodbye, freeing its slot\n");
+    schedule_client_teardown(going);
+    return 1;
 }
 
 static void release_client_slot(WebrtcClient *client) {
@@ -1220,16 +1370,33 @@ static void schedule_client_teardown(WebrtcClient *client) {
 /* Watches a client's peer-connection state to notice when the browser
  * has gone away.
  *
- * FAILED/CLOSED only, deliberately not DISCONNECTED: that one is
- * routinely transient (a brief network blip) and ICE often recovers from
- * it on its own, so tearing down there would kill sessions that were
- * about to come back. A closed tab reaches FAILED within seconds anyway,
- * once ICE gives up. */
+ * FAILED and CLOSED are immediate. DISCONNECTED is not torn down here
+ * -- it is routinely transient, a brief network blip ICE recovers from
+ * on its own -- but the moment it started is recorded, and the sweep
+ * below ends it if it never recovers.
+ *
+ * That last part is not belt and braces. "A closed tab reaches FAILED
+ * within seconds anyway" was this file's assumption and it is only true
+ * of Chrome: Firefox leaves the connection in DISCONNECTED, where with
+ * no traffic left there is nothing for ICE to give up on, so the slot
+ * was never freed and its tee branch was never unlinked. */
 static void on_connection_state_notify(GstElement *webrtcbin, GParamSpec *pspec, gpointer user_data) {
     (void)pspec;
     WebrtcClient *client = user_data;
+    GstWebrtcStream *g = client->g;
     GstWebRTCPeerConnectionState state = GST_WEBRTC_PEER_CONNECTION_STATE_NEW;
     g_object_get(webrtcbin, "connection-state", &state, NULL);
+
+    SDL_LockMutex(g->clients_mutex);
+    if (state == GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED) {
+        if (!client->disconnected_since) {
+            client->disconnected_since = g_get_monotonic_time();
+        }
+    } else {
+        client->disconnected_since = 0;
+    }
+    SDL_UnlockMutex(g->clients_mutex);
+
     if (state == GST_WEBRTC_PEER_CONNECTION_STATE_FAILED ||
         state == GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED) {
         schedule_client_teardown(client);
@@ -1429,6 +1596,31 @@ static gboolean link_tee_into_webrtcbin(GstElement *pipeline, GstElement *tee, G
         if (payloader) gst_object_unref(payloader);
         return FALSE;
     }
+
+    /* Leaky, like every other queue in this pipeline, and this one is
+     * the one that mattered.
+     *
+     * It was created with no properties at all, so it took GStreamer's
+     * defaults: 200 buffers, a second, ten megabytes -- and leaky=no,
+     * meaning it BLOCKS when full. A tee pushes to its branches one
+     * after another on the encoder's own thread, so a single branch
+     * that stops draining stops the tee, stops vp8enc, and stops the
+     * browser stream for everyone. The queues upstream are leaky, so
+     * frames were then dropped in silence: no error, no memory growth,
+     * just a stream that went to zero frames a second and stayed there
+     * until the program was restarted. That is the freeze.
+     *
+     * Three buffers of slack absorbs jitter without adding latency
+     * worth measuring, and the byte and time limits are disabled so
+     * that count is the only thing that decides. A client that cannot
+     * keep up now loses its own frames, which is the correct blast
+     * radius. */
+    g_object_set(queue,
+                 "leaky", 2 /* downstream: drop the oldest */,
+                 "max-size-buffers", 3,
+                 "max-size-bytes", (guint)0,
+                 "max-size-time", (guint64)0,
+                 NULL);
     g_object_set(payloader, "pt", pt, "mtu", rtp_mtu, NULL);
     gst_bin_add_many(GST_BIN(pipeline), queue, payloader, NULL);
 
@@ -1585,7 +1777,9 @@ void gst_webrtc_stream_set_video_bitrate(GstWebrtcStream *g, int bitrate_kbps) {
 }
 
 char *gst_webrtc_stream_handle_offer(GstWebrtcStream *g, const char *offer_sdp, int may_control,
-                                     const struct sockaddr *peer, socklen_t peer_len) {
+                                     const struct sockaddr *peer, socklen_t peer_len,
+                                     char *out_id, size_t out_id_size) {
+    if (out_id && out_id_size) out_id[0] = '\0';
     if (!g || !offer_sdp) {
         return NULL;
     }
@@ -1798,5 +1992,12 @@ char *gst_webrtc_stream_handle_offer(GstWebrtcStream *g, const char *offer_sdp, 
     g_free(sdp_text);
     gst_webrtc_session_description_free(final_desc);
 
+    /* The page is told which client it is, so it can say "still here"
+     * and, more usefully, "leaving". */
+    if (result && out_id && out_id_size) {
+        SDL_LockMutex(g->clients_mutex);
+        snprintf(out_id, out_id_size, "%s", client->id);
+        SDL_UnlockMutex(g->clients_mutex);
+    }
     return result;
 }
