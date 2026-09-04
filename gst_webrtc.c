@@ -114,6 +114,11 @@ static const char *const H264_ENCODER_PREFERENCE[] = {
 /* How often that is checked. */
 #define WEBRTC_SWEEP_INTERVAL_MS 2000
 
+/* How long the browser encoder may produce nothing, with somebody
+ * watching, before the log says so. Longer than the gap between a
+ * client taking its slot and its first encoded frame. */
+#define VP8_STALL_REPORT_US (4 * G_USEC_PER_SEC)
+
 /* How long a page may go without saying it is still there.
  *
  * Generous on purpose: a browser throttles timers in a background tab,
@@ -186,6 +191,14 @@ struct GstWebrtcStream {
      * colour conversion (RGB -> NV12) kept alive for it. Removed: one
      * chain, one conversion, one format. */
     GstElement *vsrc_vp8, *venc_vp8, *vtee_vp8;
+    /* Frames the browser encoder has produced, counted where they leave
+     * it. Read by the sweep to tell "the host stopped producing" from
+     * "the browser stopped receiving" -- the question every report of a
+     * lost stream has come down to, and one nothing here could answer. */
+    volatile guint64 vp8_frames;
+    guint64 vp8_frames_last_seen;
+    gint64 vp8_stalled_since;
+    int vp8_stall_reported;
     /* What the browser stream is encoded at. Changeable while running;
      * the capture stays 1080p and the scale happens on the way to the
      * encoder, which costs under a millisecond a frame (measured) and
@@ -269,6 +282,8 @@ struct GstWebrtcStream {
 static GstFlowReturn on_switch_video_sample(GstElement *sink, gpointer user_data);
 static GstFlowReturn on_switch_audio_sample(GstElement *sink, gpointer user_data);
 
+static GstPadProbeReturn count_vp8_frame(GstPad *pad, GstPadProbeInfo *info, gpointer user_data);
+
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer user_data) {
     (void)bus;
     GstWebrtcStream *g = user_data;
@@ -313,9 +328,65 @@ static void schedule_client_teardown(WebrtcClient *client);
  * Runs on the private context's loop, which does nothing else: not on
  * the capture thread, which must never block, and not inside a
  * GStreamer signal callback. */
+/* Counts frames on their way out of the browser encoder. A pad probe
+ * rather than an appsink: nothing must be consumed here, only seen. */
+static GstPadProbeReturn count_vp8_frame(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    (void)pad;
+    (void)info;
+    GstWebrtcStream *g = user_data;
+    g->vp8_frames++;
+    return GST_PAD_PROBE_OK;
+}
+
+/* Says so, once, when the browser encoder goes quiet while somebody is
+ * watching -- and again when it comes back.
+ *
+ * This exists because every report of "the stream died" was
+ * indistinguishable from the outside: the picture stops either way,
+ * whether the host stopped encoding or the browser stopped receiving.
+ * The log now names which. */
+static void watch_vp8_output(GstWebrtcStream *g) {
+    const int watchers = gst_webrtc_stream_get_client_count(g, NULL);
+    const guint64 frames = g->vp8_frames;
+    const gint64 now = g_get_monotonic_time();
+
+    if (watchers <= 0) {
+        g->vp8_frames_last_seen = frames;
+        g->vp8_stalled_since = 0;
+        g->vp8_stall_reported = 0;
+        return;
+    }
+    if (frames != g->vp8_frames_last_seen) {
+        if (g->vp8_stall_reported) {
+            fprintf(stderr, "gst_webrtc: the browser encoder is producing again after %.1f s\n",
+                    (double)(now - g->vp8_stalled_since) / G_USEC_PER_SEC);
+        }
+        g->vp8_stalled_since = 0;
+        g->vp8_stall_reported = 0;
+        g->vp8_frames_last_seen = frames;
+        return;
+    }
+    /* Noted at once, said out loud only once it has lasted. A client
+     * takes its slot when its offer is answered, a second or so before
+     * the first frame is encoded for it, and that gap is not a stall. */
+    if (!g->vp8_stalled_since) {
+        g->vp8_stalled_since = now;
+        g->vp8_stall_reported = 0;
+        return;
+    }
+    if (!g->vp8_stall_reported && now - g->vp8_stalled_since >= VP8_STALL_REPORT_US) {
+        g->vp8_stall_reported = 1;
+        fprintf(stderr, "gst_webrtc: the browser encoder has produced nothing for %.1f s, with %d "
+                        "watching -- the stall is HERE, not in the browser\n",
+                (double)(now - g->vp8_stalled_since) / G_USEC_PER_SEC, watchers);
+    }
+}
+
 static gboolean sweep_dead_clients(gpointer user_data) {
     GstWebrtcStream *g = user_data;
     const gint64 now = g_get_monotonic_time();
+
+    watch_vp8_output(g);
 
     for (int i = 0; i < g->max_clients; i++) {
         WebrtcClient *client = &g->clients[i];
@@ -611,6 +682,16 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->vsrc_vp8 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_vp8");
     g->venc_vp8 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_vp8");
     g->vtee_vp8 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vtee_vp8");
+    /* Watched at the tee's input, which is the last point that belongs
+     * to the shared chain: what passes here has been encoded, and what
+     * happens to it afterwards is each client's own business. */
+    if (g->vtee_vp8) {
+        GstPad *sink = gst_element_get_static_pad(g->vtee_vp8, "sink");
+        if (sink) {
+            gst_pad_add_probe(sink, GST_PAD_PROBE_TYPE_BUFFER, count_vp8_frame, g, NULL);
+            gst_object_unref(sink);
+        }
+    }
     g->vscale_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_caps");
     g->browser_width = width;
     g->browser_height = height;
@@ -1597,30 +1678,29 @@ static gboolean link_tee_into_webrtcbin(GstElement *pipeline, GstElement *tee, G
         return FALSE;
     }
 
-    /* Leaky, like every other queue in this pipeline, and this one is
-     * the one that mattered.
+    /* Leaky, so one branch cannot stop the encoder -- but deep enough
+     * that leaking is reserved for a branch that is genuinely stuck.
      *
-     * It was created with no properties at all, so it took GStreamer's
-     * defaults: 200 buffers, a second, ten megabytes -- and leaky=no,
-     * meaning it BLOCKS when full. A tee pushes to its branches one
-     * after another on the encoder's own thread, so a single branch
-     * that stops draining stops the tee, stops vp8enc, and stops the
-     * browser stream for everyone. The queues upstream are leaky, so
-     * frames were then dropped in silence: no error, no memory growth,
-     * just a stream that went to zero frames a second and stayed there
-     * until the program was restarted. That is the freeze.
+     * The queue used to be created with no properties at all, so it
+     * took GStreamer's defaults, and those include leaky=no: it BLOCKS
+     * when full. A tee pushes to its branches one after another on the
+     * encoder's own thread, so a single branch that stopped draining
+     * stopped vp8enc and the browser stream for everybody, silently and
+     * until the program was restarted.
      *
-     * Three buffers of slack absorbs jitter without adding latency
-     * worth measuring, and the byte and time limits are disabled so
-     * that count is the only thing that decides. A client that cannot
-     * keep up now loses its own frames, which is the correct blast
-     * radius. */
-    g_object_set(queue,
-                 "leaky", 2 /* downstream: drop the oldest */,
-                 "max-size-buffers", 3,
-                 "max-size-bytes", (guint)0,
-                 "max-size-time", (guint64)0,
-                 NULL);
+     * The first attempt at fixing that used three buffers, which is
+     * fifty milliseconds at sixty frames a second: any scheduling
+     * hiccup on webrtcbin's side dropped frames, and in VP8 a dropped
+     * frame corrupts everything after it until the next keyframe five
+     * seconds later. What that looks like on screen is a green picture,
+     * because a YUV frame with nothing valid in it is green.
+     *
+     * A second of slack is the right size. Normal jitter never reaches
+     * it, so nothing is dropped in ordinary use; a branch whose peer has
+     * stopped reading fills it and then leaks harmlessly, which is the
+     * only case leaking is for. Latency is bounded by the depth and only
+     * for the client that is behind -- leaky=downstream drops the oldest,
+     * so it stays at the live edge rather than falling further behind. */
     g_object_set(payloader, "pt", pt, "mtu", rtp_mtu, NULL);
     gst_bin_add_many(GST_BIN(pipeline), queue, payloader, NULL);
 
