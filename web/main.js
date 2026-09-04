@@ -19,7 +19,7 @@
  * I on" is answerable by looking, and pinned against version.h and the
  * Android build by a test -- three files giving three answers is worse
  * than none of them giving any. */
-var C2C_VERSION = '1.2.4';
+var C2C_VERSION = '1.1.0';
 
 window.onerror = function (msg, url, line, col, err) {
   var st = document.getElementById('st');
