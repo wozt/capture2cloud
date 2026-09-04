@@ -10,6 +10,7 @@ handshake, the access check and the input path against the real server.
 Never sends a HOME press with a valid token: that presses HOME on the
 console for real. Its refusal path is what matters and needs no token.
 """
+import json
 import socket, struct, sys, time, urllib.request
 
 HOST = "127.0.0.1"
@@ -331,6 +332,51 @@ try:
     c.close()
 except Exception as e:
     check("a shared-settings message arrives unprompted", False, str(e))
+
+group("the two streams do not touch each other")
+# Two encoders, not one: the browsers get theirs and the native clients
+# get theirs, each with its own size, rate and bitrate. Somebody
+# changing the resolution on the page must not change what a phone is
+# watching, nor the reverse -- which is easy to break by wiring a new
+# setting to the wrong encoder, and silent when it happens.
+try:
+    def browser_shared():
+        return json.loads(urllib.request.urlopen(WEB + "/shared", timeout=3).read().decode())
+
+    before = browser_shared()
+
+    c = connect(tok)
+    read_ack(c)
+    p = struct.pack("<HHHH", 854, 480, 30, 2000)
+    c.sendall(frame(MSG_PROFILE, p))
+    time.sleep(2.0)
+
+    after = browser_shared()
+    check("a native client's profile leaves the browser stream alone",
+          (after["height"], after["bitrate_kbps"]) == (before["height"], before["bitrate_kbps"]),
+          f"{before} -> {after}")
+
+    # And the native stream really did move, or the check above would
+    # pass by doing nothing at all.
+    sh = None
+    c.settimeout(5)
+    buf = b""
+    deadline = time.time() + 5
+    while time.time() < deadline and sh is None:
+        buf += c.recv(65536)
+        while len(buf) >= 8:
+            t, fl, _r, size = struct.unpack("<BBHI", buf[:8])
+            if len(buf) < 8 + size:
+                break
+            payload, buf = buf[8:8 + size], buf[8 + size:]
+            if t == MSG_SHARED:
+                sh = struct.unpack("<HHHHBB2x", payload)
+                break
+    check("the native stream did change", sh is not None and sh[1] == 480,
+          sh[1] if sh else "no announcement")
+    c.close()
+except Exception as e:
+    check("a native client's profile leaves the browser stream alone", False, str(e))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
