@@ -17,13 +17,36 @@ controls to match.
 
 ## Shared — one value for everyone
 
-Changing any of these changes what every connected client receives, on
-both transports at once (the browser's WebRTC stream and the native
-binary one are two deliveries of the *same* encode).
+**Shared with whom, exactly.** There are two encodes, not one, and this
+line was wrong here before: the browser's WebRTC stream and the native
+binary stream are produced by **different encoders with their own size,
+frame rate and bitrate**. A player changing the resolution from the web
+page does not touch what the Android and Switch clients receive, and a
+native client asking for 480p30 does not touch the browsers. Verified in
+both directions, and pinned by a test.
+
+So "shared" below means *shared by everyone on the same stream*:
+
+| Stream | Who is on it | Where its settings live |
+|---|---|---|
+| **browser** | every web page | `browser_height`, `bitrate_mbps`; read by `GET /shared` |
+| **native** | Android and Switch clients | `switch_width/height/fps/bitrate`; pushed as `C2S_MSG_SHARED` |
+
+The capture format is the exception that really is global: there is one
+card, and both encoders are fed from it.
+
+**Within the native stream there is one codec for everyone.** The host
+feeds either the VP8 chain or the H.264 one, never both, so a native
+client switching codec switches every native client — which is why the
+codec is in the shared table rather than being a per-client preference.
+Serving VP8 and H.264 natively *at the same time*, each with its own
+size and rate, would be a different host: two chains fed in parallel,
+two profiles, and roughly twice the encoding. It is not what happens
+today.
 
 | Setting | Lives in | Browser | Android | Switch | GTK |
 |---|---|---|---|---|---|
-| **Video codec** (H.264 / VP8) | encoder | — | `codec` | `net_send_codec` | — |
+| **Video codec** (H.264 / VP8) | the native encoder | — | `codec` | `net_send_codec` | — |
 | **Stream height** (1080 / 720 / 480) | encoder | `/resolution` | `height` | profile | `browser_height` |
 | **Stream width** | derived from height | — | — | — | — |
 | **Frame rate** | encoder | — | `fps` | profile | — |
