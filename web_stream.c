@@ -20,7 +20,17 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define WS_ACCEPT_BACKLOG 8
+/* Deeper than it looks like it needs to be, and deliberately.
+ *
+ * The front end used to be one file; it is eleven now, so opening the
+ * page asks for eleven things at once and a browser will happily open
+ * them in parallel. A backlog of 8 left no margin at all, and what a
+ * refused connection looks like from the page is not an error -- it is
+ * a <script> that silently did not load, so half the program is simply
+ * missing. Three hundred parallel requests were served without a loss
+ * at 8, so this is margin rather than a fix, and it costs a few
+ * kilobytes of kernel queue. */
+#define WS_ACCEPT_BACKLOG 32
 #define WS_POLL_TIMEOUT_MS 200
 #define WS_REQUEST_TIMEOUT_S 5
 #define WS_MAX_OFFER_SIZE (1 << 20) /* 1 MiB, very generous for an SDP offer */

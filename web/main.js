@@ -15,6 +15,12 @@
  * test that reaches into those names to check them.
  */
 
+/* Which release this is. Shown in the control bar so "which version am
+ * I on" is answerable by looking, and pinned against version.h and the
+ * Android build by a test -- three files giving three answers is worse
+ * than none of them giving any. */
+var C2C_VERSION = '1.2.3';
+
 window.onerror = function (msg, url, line, col, err) {
   var st = document.getElementById('st');
   if (st) st.textContent = 'JS error: ' + msg + ' @' + line;
@@ -70,6 +76,9 @@ var ltThresholdSlider = document.getElementById('lt-threshold');
 var rtThresholdSlider = document.getElementById('rt-threshold');
 var ltv = document.getElementById('ltv');
 var rtv = document.getElementById('rtv');
+
+var versionEl = document.getElementById('ver');
+if (versionEl) versionEl.textContent = 'v' + C2C_VERSION;
 
 var pc = null;
 

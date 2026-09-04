@@ -13,6 +13,8 @@
 #include <SDL2/SDL.h>
 #include <switch.h>
 
+#include "version.h"
+
 #include "audio.h"
 #include "input.h"
 #include "net.h"
@@ -1367,6 +1369,14 @@ static void draw_menu(int over_stream) {
                 menu_back_label());
         ui_text(g_renderer, UI_FONT_TITLE, back.x + back.w + 20, 34, COL_TEXT,
                 g_category < 0 ? "Capture2Cloud client" : CATEGORIES[g_category].title);
+        /* Beside the title, in the small font: which build this is.
+         * There is no shell here to ask, and "am I running the new one?"
+         * is the first question after copying an .nro to the SD card. */
+        {
+            char ver[32];
+            snprintf(ver, sizeof(ver), "v%s", C2C_VERSION);
+            ui_text(g_renderer, UI_FONT_SMALL, back.x + back.w + 20, 66, COL_DIM, ver);
+        }
     }
 
     const int rows = menu_visible_rows();

@@ -150,6 +150,18 @@ class SettingsPanel(
             textSize = 13f
             setPadding(16, 0, 6, 0)
         })
+        /* Which build this is, read from the package rather than from a
+         * constant: a constant can be edited without rebuilding, and
+         * then it names a version nobody is running. This is the one
+         * that was installed. */
+        top.addView(TextView(context).apply {
+            text = "v" + (runCatching {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName
+            }.getOrNull() ?: "?")
+            setTextColor(DIM)
+            textSize = 11f
+            setPadding(4, 0, 6, 0)
+        })
         body.addView(top)
     }
 
