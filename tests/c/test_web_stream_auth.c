@@ -552,7 +552,7 @@ static void test_app_paths(void) {
     t_begin("app_path / app_dir");
 
     char path[PATH_MAX];
-    app_path(path, sizeof(path), "app.js");
+    app_path(path, sizeof(path), "web/main.js");
 
     /* Must be absolute and rooted at the EXECUTABLE's directory: the app
      * is started via setsid from another directory, so a bare relative
@@ -560,8 +560,8 @@ static void test_app_paths(void) {
      * $HOME would break as soon as the project is built or checked out
      * somewhere else. */
     t_ok("path is absolute", path[0] == '/');
-    t_ok("path ends with the file name", strstr(path, "app.js") != NULL);
-    t_ok("path is not just the bare name", strcmp(path, "app.js") != 0);
+    t_ok("path ends with the file name", strstr(path, "web/main.js") != NULL);
+    t_ok("path is not just the bare name", strcmp(path, "web/main.js") != 0);
     t_ok("path starts with app_dir()", strncmp(path, app_dir(), strlen(app_dir())) == 0);
 
     /* The config file sits under that same directory. */

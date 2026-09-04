@@ -48,6 +48,14 @@ const req = (method, path, headers = '', payload = '') =>
     '/%2e%2e/%2e%2e/etc/passwd', '/./../scripts/.env', '/scripts/.env',
     '/../scripts/.env', '/app.js/../scripts/.env', '/capture2cloud.c',
     '/.env', '/page.html%00.js', '//etc/passwd',
+    /* The front end moved into web/, and a directory is exactly what
+     * invites a server to build a path out of what was asked for. It
+     * does not: the request selects a row from a fixed table or it gets
+     * a 404, so none of these can reach the .env holding the password
+     * the same server checks. */
+    '/web/../scripts/.env', '/web/%2e%2e/scripts/.env',
+    '/web/ui/../../scripts/.env', '/web/../../etc/passwd',
+    '/web/', '/web/main.js/../../scripts/.env', '/web/settings.js%00.css',
   ]) {
     const r = await req('GET', p);
     const leaked = /root:|PLAYER_PASSWORD|HA_TOKEN|#include/.test(r);

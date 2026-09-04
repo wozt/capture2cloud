@@ -106,7 +106,39 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
     return idMap[id];
   }
 
-  const src = fs.readFileSync(srcPath, 'utf8');
+  /* srcPath may be one file or the ordered list the page loads.
+   *
+   * The front end is split across web/, but it is still ONE program in
+   * one scope -- plain scripts, not modules -- so the way to run it
+   * here is the way the browser runs it: concatenated in the order
+   * page.html lists them. Joining them also means this suite keeps
+   * catching load-order mistakes, which is the failure a split like
+   * this one actually risks: a function declaration hoists within a
+   * file and not across two. */
+  const paths = Array.isArray(srcPath) ? srcPath : [srcPath];
+  const src = paths.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
+
+  /* Elements start with the classes page.html gives them.
+   *
+   * Two panels are written `class="hidden"` in the markup and are
+   * therefore shut before a line of script runs. The stub used to
+   * create every element bare, so "is the pad test closed on load?"
+   * was answered not by the page but by whichever piece of script
+   * happened to hide it on the way past -- which made the answer
+   * depend on file order, and a split of this front end changed it.
+   * Reading the markup is both more faithful and no longer a trap. */
+  const html = fs.readFileSync(path.join(__dirname, '..', 'page.html'), 'utf8');
+  const tagRe = /<[a-zA-Z][^>]*>/g;
+  let tag;
+  while ((tag = tagRe.exec(html))) {
+    const id = /\sid="([^"]+)"/.exec(tag[0]);
+    const cls = /\sclass="([^"]+)"/.exec(tag[0]);
+    if (id && cls) {
+      const e = el(id[1]);
+      cls[1].trim().split(/\s+/).forEach((c) => { if (c) e.classList.add(c); });
+      e.className = cls[1];
+    }
+  }
   const ids = new Set();
   const re = /getElementById\(['"]([^'"]+)['"]\)/g;
   let m;

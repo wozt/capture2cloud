@@ -10,237 +10,8 @@
      fills notched screens -- the overlay keeps clear of the notch via
      the safe-area padding on #vgp below. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
-<style>
-html,body{margin:0;height:100%;background:#000;overflow:hidden}
-video,canvas{width:100vw;height:100vh;object-fit:contain;background:#000;display:block}
-#bar{position:fixed;top:0;left:0;right:0;padding:5px 10px;background:rgba(0,0,0,.65);
-     color:#ddd;font:11px monospace;display:flex;flex-direction:column;gap:3px;
-     opacity:0;transition:opacity .2s;pointer-events:none;z-index:5}
-#bar.visible{opacity:1;pointer-events:auto}
-.viewer-hidden{display:none}
-#statsRow,#gpdebugRow,#controlsRow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-
-/* A group is a summary that reads like a button and a panel that opens
-   OVER the video rather than inside the bar -- the bar must not grow
-   downwards as things are opened, since it sits on top of what you are
-   watching. */
-.menu-group{position:relative}
-.menu-group>summary{list-style:none;cursor:pointer;background:#222;color:#ddd;
-     border:1px solid #444;border-radius:4px;padding:3px 8px;white-space:nowrap;
-     font:11px monospace}
-.menu-group>summary::-webkit-details-marker{display:none}
-.menu-group>summary::after{content:' \25be';color:#888}
-.menu-group[open]>summary{background:#333;border-color:#666}
-.menu-group[open]>summary::after{content:' \25b4'}
-.menu-items{position:absolute;top:calc(100% + 4px);left:0;z-index:6;
-     background:rgba(10,10,10,.96);border:1px solid #444;border-radius:5px;
-     padding:8px 10px;display:flex;flex-direction:column;gap:6px;
-     min-width:210px;max-height:70vh;overflow-y:auto}
-#vgp-hint{color:#888;max-width:210px;white-space:normal}
-button{background:#222;color:#ddd;border:1px solid #444;border-radius:4px;padding:3px 8px;cursor:pointer;font:11px monospace}
-select{background:#222;color:#ddd;border:1px solid #444;border-radius:4px;padding:2px 4px;font:11px monospace}
-/* Short enough that a row of them fits, long enough to aim with. */
-input[type=range]{width:84px}
-label{display:flex;gap:6px;align-items:center;white-space:nowrap}
-.menu-items label{justify-content:space-between;gap:10px}
-/* A checkbox belongs against its text, not pushed to the far side of the
-   panel by the same rule that spaces out a slider from its label. */
-.menu-items label:has(input[type=checkbox]){justify-content:flex-start}
-/* Generic fallback for every element app.js hides with .classList
- * toggle('hidden', ...). Without it each element needed its own
- * `#id.hidden{display:none}` rule, and any element whose rule was
- * forgotten simply never hid -- which is how the "log in to play"
- * button stayed visible to players, and how the whole gamepad row
- * stayed visible to viewers who cannot actually use it. The per-id
- * rules below are still required wherever an id-level selector sets
- * `display` (e.g. #auth-row, #rebind), since an id beats a class in
- * CSS specificity. */
-.hidden{display:none}
-#info{color:#8f8;white-space:nowrap}
-#info.hidden,#gpdebug.hidden{display:none}
-#gpdebug{color:#9cf;white-space:nowrap;font-size:11px}
-#gate{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20}
-#gate.hidden{display:none}
-#gate button{font-size:16px;padding:10px 18px}
-
-/* --- virtual on-screen gamepad overlay (touch/multitouch) --- */
-/* box-sizing + safe-area padding: on a notched phone in landscape the
- * notch eats into one side, exactly where the shoulder/trigger column
- * sits. Absolutely positioned children are laid out against their
- * ancestor's PADDING box, so padding here insets the whole pad away
- * from the notch without touching any individual control's rule. */
-#vgp{box-sizing:border-box;
-  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-  position:fixed;inset:0;z-index:15;pointer-events:none;user-select:none;-webkit-user-select:none;
-  --vgp-btn-bg:rgba(255,255,255,.14);--vgp-btn-border:rgba(255,255,255,.4);
-  --vgp-btn-bg-pressed:rgba(255,255,255,.45);--vgp-stick-bg:rgba(255,255,255,.10);
-  --vgp-stick-border:rgba(255,255,255,.3);--vgp-knob-bg:rgba(255,255,255,.35);
-  --vgp-knob-border:rgba(255,255,255,.65)}
-#vgp.hidden{display:none}
-#vgp *{touch-action:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
-.vgp-btn,.vgp-fbtn{position:absolute;pointer-events:auto;display:flex;align-items:center;
-  justify-content:center;background:var(--vgp-btn-bg);border:2px solid var(--vgp-btn-border);
-  border-radius:50%;color:#fff;font:bold 13px sans-serif;box-shadow:0 0 4px rgba(0,0,0,.5)}
-.vgp-btn.pressed,.vgp-fbtn.pressed{background:var(--vgp-btn-bg-pressed)!important}
-
-/* Draggable anchors (whole controls/clusters moved as one unit in edit
- * mode) get a dashed outline as an affordance while editing, and a
- * brighter one while actively being dragged. */
-#vgp.vgp-edit .vgp-anchor{outline:2px dashed rgba(255,230,0,.7);outline-offset:3px}
-.vgp-anchor.dragging{outline:2px solid #ff0!important;z-index:16}
-
-/* --- overlay geometry ---
- * Everything below is expressed as a multiple of ONE unit, --vgp-u,
- * instead of fixed pixel offsets. Two reasons:
- *
- * 1. Fixed offsets didn't shrink on short screens. A phone in landscape
- *    is only ~400px tall, and the old `calc(9vh + 146px)` stacks pushed
- *    the upper cluster off into the settings bar there, while looking
- *    fine on a desktop.
- * 2. With every position derived from the same unit, controls keep
- *    their relative spacing at any size, so "no overlap" holds
- *    everywhere rather than being re-tuned per screen.
- *
- * The unit follows the smaller of viewport height/width so a short OR
- * narrow screen shrinks the whole pad, and is clamped so it never gets
- * unusably tiny or comically large on a big monitor. Column budget per
- * side: shoulders 0.5..2.3u, stick/d-pad cluster 3..6.6u, stick-click
- * 6.8..8u -- which is why nothing collides. Vertically the tallest
- * stack is 4.2u + 4u = 8.2u, well inside a 400px-tall viewport. */
-#vgp{--vgp-u:clamp(22px, min(6.5vh, 4.2vw), 36px)}
-
-.vgp-stick{position:absolute;width:calc(3.6 * var(--vgp-u));height:calc(3.6 * var(--vgp-u));
-  border-radius:50%;pointer-events:auto;
-  background:var(--vgp-stick-bg);border:2px solid var(--vgp-stick-border)}
-.vgp-stick .vgp-knob{position:absolute;left:50%;top:50%;
-  width:calc(1.6 * var(--vgp-u));height:calc(1.6 * var(--vgp-u));
-  margin:calc(-0.8 * var(--vgp-u)) 0 0 calc(-0.8 * var(--vgp-u));
-  border-radius:50%;background:var(--vgp-knob-bg);border:2px solid var(--vgp-knob-border);pointer-events:none}
-
-/* Single touch zone for the whole d-pad (not 4 separate buttons): this
- * is what lets diagonals work naturally -- up/down and left/right are
- * detected independently from the touch position, so e.g. up+right can
- * both be true at once instead of only ever the single nearest button. */
-.vgp-dpad{position:absolute;width:calc(3.3 * var(--vgp-u));height:calc(3.3 * var(--vgp-u));
-  border-radius:50%;pointer-events:auto;
-  background:var(--vgp-stick-bg);border:2px solid var(--vgp-stick-border)}
-.vgp-dpad-arrow{position:absolute;pointer-events:none;
-  width:calc(0.85 * var(--vgp-u));height:calc(0.85 * var(--vgp-u));display:flex;
-  align-items:center;justify-content:center;font-size:calc(0.55 * var(--vgp-u));color:var(--vgp-btn-border)}
-.vgp-dpad-arrow.active{color:#fff;text-shadow:0 0 6px #fff}
-.vgp-dpad-up{left:calc(1.22 * var(--vgp-u));top:calc(0.15 * var(--vgp-u))}
-.vgp-dpad-down{left:calc(1.22 * var(--vgp-u));bottom:calc(0.15 * var(--vgp-u))}
-.vgp-dpad-left{left:calc(0.15 * var(--vgp-u));top:calc(1.22 * var(--vgp-u))}
-.vgp-dpad-right{right:calc(0.15 * var(--vgp-u));top:calc(1.22 * var(--vgp-u))}
-
-/* Left/right columns, from the outer edge inwards:
- *   0.5u  shoulder+trigger+select/start stack
- *   3u    stick / d-pad cluster
- *   6.8u  stick click (L3/R3), BESIDE the stick rather than on top of
- *         it -- it used to overlap, and since it comes later in the DOM
- *         it stole part of the stick's own touch area. */
-#vgp-lstick{left:calc(3 * var(--vgp-u))}
-#vgp-rstick{right:calc(3 * var(--vgp-u))}
-#vgp-dpad{left:calc(3.15 * var(--vgp-u))}
-.vgp-face{position:absolute;right:calc(2.8 * var(--vgp-u));
-  width:calc(4 * var(--vgp-u));height:calc(4 * var(--vgp-u))}
-#vgp-l3{left:calc(6.8 * var(--vgp-u))}
-#vgp-r3{right:calc(6.8 * var(--vgp-u))}
-#vgp-l3,#vgp-r3{width:calc(1.15 * var(--vgp-u));height:calc(1.15 * var(--vgp-u));
-  font-size:calc(0.3 * var(--vgp-u))}
-
-/* Vertical placement. Symmetric (PlayStation-style): both sticks low,
- * d-pad and face buttons above them. Asymmetric (Xbox/Nintendo-style):
- * only the LEFT side swaps -- the stick moves above the d-pad -- since
- * the right side (face buttons above stick) is already the same in both
- * real-world families. L3/R3 ride at the same height as their own
- * stick, so they follow it when the sides swap. */
-#vgp-lstick,#vgp-rstick{bottom:calc(0.4 * var(--vgp-u))}
-#vgp-dpad,.vgp-face{bottom:calc(4.2 * var(--vgp-u))}
-#vgp-l3,#vgp-r3{bottom:calc(0.9 * var(--vgp-u))}
-#vgp.vgp-asym #vgp-lstick{bottom:calc(4.2 * var(--vgp-u))}
-#vgp.vgp-asym #vgp-dpad{bottom:calc(0.4 * var(--vgp-u))}
-#vgp.vgp-asym #vgp-l3{bottom:calc(4.7 * var(--vgp-u))}
-
-.vgp-fbtn{width:calc(1.4 * var(--vgp-u));height:calc(1.4 * var(--vgp-u));font-size:calc(0.53 * var(--vgp-u))}
-.vgp-face .vgp-face-top{left:calc(1.3 * var(--vgp-u));top:0}
-.vgp-face .vgp-face-bottom{left:calc(1.3 * var(--vgp-u));bottom:0}
-.vgp-face .vgp-face-left{left:0;top:calc(1.3 * var(--vgp-u))}
-.vgp-face .vgp-face-right{right:0;top:calc(1.3 * var(--vgp-u))}
-
-/* Shoulders/triggers and Select/Start used to sit at the TOP of the
- * screen -- out of the way on a real controller, but on a touchscreen
- * that's exactly where this page's settings bar lives, so they blocked
- * it. On a phone held in landscape, thumbs live at the bottom corners,
- * so these now stack in a single column at each outer edge:
- * Select/Start on top, then the shoulder, then the trigger under it --
- * all within one thumb's reach, and clear of the stick/d-pad cluster.
- * Only Home/Guide stays centered: it opens the console's system menu,
- * so a deliberate small reach guards against accidental taps -- drag it
- * elsewhere with "move buttons" if you'd rather have it closer. */
-.vgp-btn.vgp-shoulder{width:calc(1.8 * var(--vgp-u));height:calc(1.1 * var(--vgp-u));
-  border-radius:calc(0.22 * var(--vgp-u));font-size:calc(0.36 * var(--vgp-u))}
-#vgp-lb,#vgp-lt,#vgp-select{left:calc(0.5 * var(--vgp-u))}
-#vgp-rb,#vgp-rt,#vgp-start{right:calc(0.5 * var(--vgp-u))}
-#vgp-lt,#vgp-rt{bottom:calc(0.4 * var(--vgp-u))}
-#vgp-lb,#vgp-rb{bottom:calc(1.7 * var(--vgp-u))}
-#vgp-select,#vgp-start{bottom:calc(3 * var(--vgp-u));
-  width:calc(1.8 * var(--vgp-u));height:calc(0.9 * var(--vgp-u));
-  border-radius:calc(0.45 * var(--vgp-u));font-size:calc(0.3 * var(--vgp-u))}
-#vgp-guide{width:calc(1 * var(--vgp-u));height:calc(1 * var(--vgp-u));
-  left:calc(50% - 0.5 * var(--vgp-u));bottom:calc(0.4 * var(--vgp-u));font-size:calc(0.42 * var(--vgp-u))}
-
-#vgp-layout-row.hidden,#vgp-symmetric-row.hidden,#vgp-edit-row.hidden,#vgp-reset.hidden,
-#vgp-color-row.hidden,#vgp-opacity-row.hidden,#rebind-btn.hidden{display:none}
-#auth-row.hidden,#wake-console.hidden{display:none}
-#auth-row{display:flex;gap:6px;align-items:center}
-#auth-state{color:#fc8}
-#auth-state.player{color:#8f8}
-
-/* --- controller test popup --- */
-#padtest{position:fixed;inset:0;z-index:26;background:rgba(0,0,0,.8);
-  display:flex;align-items:center;justify-content:center}
-#padtest.hidden{display:none}
-#padtest-box{background:#181818;border:1px solid #444;border-radius:8px;padding:14px 16px;
-  color:#ddd;font:12px monospace;max-width:95vw;max-height:92vh;overflow:auto}
-#padtest-box h3{margin:0 0 10px;font-size:14px;color:#fff}
-#padtest-top{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
-#padtest-source{color:#9cf}
-#padtest-svg{display:block;width:min(560px,88vw);height:auto;
-  background:#101010;border:1px solid #2a2a2a;border-radius:6px}
-/* Everything is drawn faintly and lights up when pressed: the shape
- * stays readable while the active inputs are unmistakable. */
-.pt-body{fill:#1e1e1e;stroke:#3a3a3a;stroke-width:2}
-.pt-btn{fill-opacity:.18;stroke:#666;stroke-width:1.5;transition:fill-opacity .04s}
-.pt-btn.on{fill-opacity:1;stroke:#fff}
-.pt-label{fill:#bbb;font:bold 11px sans-serif;text-anchor:middle;dominant-baseline:central;pointer-events:none}
-.pt-btn.on + .pt-label{fill:#000}
-.pt-well{fill:#000;fill-opacity:.35;stroke:#555;stroke-width:1.5}
-.pt-knob{fill:#888;stroke:#ccc;stroke-width:1.5}
-.pt-knob.on{fill:#4caf50;stroke:#fff}
-.pt-trigger-fill{fill:#4caf50;fill-opacity:.85}
-#padtest-readout{margin-top:8px;color:#9cf;font-size:11px;white-space:pre-wrap;min-height:2.4em}
-#padtest-close{margin-top:10px}
-
-/* --- rebind panel: shared by "real gamepad" and "keyboard/mouse" modes --- */
-#rebind{position:fixed;inset:0;z-index:25;background:rgba(0,0,0,.75);
-  display:flex;align-items:center;justify-content:center}
-#rebind.hidden{display:none}
-#rebind-box{background:#181818;border:1px solid #444;border-radius:8px;padding:14px 16px;
-  max-height:80vh;overflow-y:auto;min-width:260px;max-width:90vw;color:#ddd;font:12px monospace}
-#rebind-box h3{margin:0 0 10px;font-size:14px;color:#fff}
-#rebind-profile-row{display:flex;gap:6px;align-items:center;margin-bottom:10px}
-.rebind-row{display:flex;align-items:center;justify-content:space-between;gap:10px;
-  padding:4px 0;border-bottom:1px solid #2a2a2a}
-.rebind-row .rb-name{min-width:60px;color:#ccc}
-.rebind-row .rb-value{flex:1;color:#9cf;text-align:right;margin-right:8px;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.rebind-row button.listening{background:#664;border-color:#aa4}
-.rebind-row .rb-mouse{min-width:120px;font-size:11px}
-.rebind-row .rb-value{min-width:90px}
-#rebind-close{margin-top:12px}
-#rebind-note{color:#888;font-size:11px;margin-top:8px}
-</style></head>
+<link rel="stylesheet" href="/web/styles/app.css">
+</head>
 <body>
 <video id="v" autoplay playsinline muted></video>
 <canvas id="c" style="display:none"></canvas>
@@ -381,5 +152,18 @@ label{display:flex;gap:6px;align-items:center;white-space:nowrap}
     </div></details>
   </div>
 </div>
-<script src="/app.js"></script>
+<!-- Plain scripts in one shared scope, loaded in an order that matters:
+     a function declaration hoists within a file and not across two, so
+     anything called as a file loads has to be defined in a file already
+     loaded. tests/run_tests.js pins this list and this order. -->
+<script src="/web/main.js"></script>
+<script src="/web/settings.js"></script>
+<script src="/web/ui/controls.js"></script>
+<script src="/web/ui/overlay.js"></script>
+<script src="/web/authentication.js"></script>
+<script src="/web/gamepad.js"></script>
+<script src="/web/keyboard.js"></script>
+<script src="/web/ui/panels.js"></script>
+<script src="/web/touchpad.js"></script>
+<script src="/web/webrtc.js"></script>
 </body></html>

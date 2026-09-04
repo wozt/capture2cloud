@@ -24,7 +24,7 @@
 #define WS_POLL_TIMEOUT_MS 200
 #define WS_REQUEST_TIMEOUT_S 5
 #define WS_MAX_OFFER_SIZE (1 << 20) /* 1 MiB, very generous for an SDP offer */
-#define WS_MAX_STATIC_FILE_SIZE (4 << 20) /* 4 MiB cap when serving page.html/app.js from disk */
+#define WS_MAX_STATIC_FILE_SIZE (4 << 20) /* 4 MiB cap when serving the page and web/ from disk */
 
 /* --- "viewer by default, log in to play" ---
  * Anyone who loads the page can watch; driving the console requires
@@ -189,7 +189,7 @@ static void send_204(int fd) {
     send_all(fd, response, sizeof(response) - 1);
 }
 
-/* Serves page.html/app.js straight from disk, next to this source file.
+/* Serves page.html and web/ straight from disk, next to this source file.
  *
  * Editing the front-end used to mean re-running an escaping script that
  * regenerated two big C string literals and splicing them back into this
@@ -263,8 +263,47 @@ static void send_html_page(int fd) {
     send_static(fd, "page.html", "text/html; charset=utf-8");
 }
 
-static void send_app_js(int fd) {
-    send_static(fd, "app.js", "application/javascript; charset=utf-8");
+/* The front end, as a fixed list rather than a path taken from the
+ * request.
+ *
+ * The page asks for /web/gamepad.js and the like, and the obvious way to
+ * answer is to append what was asked for to the program's directory.
+ * That is also how a request for /web/../scripts/.env gets answered,
+ * which is the file holding the password this server checks -- so the
+ * request never reaches the filesystem. It selects a row here, or it
+ * gets a 404. Adding a file to the front end means adding a line here,
+ * which is a small price for a whole class of bug that cannot happen.
+ *
+ * The order is page.html's; it is not used here, but keeping the two
+ * lists in the same order makes a missing entry visible by eye. */
+static const struct {
+    const char *url;
+    const char *file;
+    const char *type;
+} WS_STATIC_FILES[] = {
+    { "/web/main.js",           "web/main.js",           "application/javascript; charset=utf-8" },
+    { "/web/settings.js",       "web/settings.js",       "application/javascript; charset=utf-8" },
+    { "/web/ui/controls.js",    "web/ui/controls.js",    "application/javascript; charset=utf-8" },
+    { "/web/ui/overlay.js",     "web/ui/overlay.js",     "application/javascript; charset=utf-8" },
+    { "/web/authentication.js", "web/authentication.js", "application/javascript; charset=utf-8" },
+    { "/web/gamepad.js",        "web/gamepad.js",        "application/javascript; charset=utf-8" },
+    { "/web/keyboard.js",       "web/keyboard.js",       "application/javascript; charset=utf-8" },
+    { "/web/ui/panels.js",      "web/ui/panels.js",      "application/javascript; charset=utf-8" },
+    { "/web/touchpad.js",       "web/touchpad.js",       "application/javascript; charset=utf-8" },
+    { "/web/webrtc.js",         "web/webrtc.js",         "application/javascript; charset=utf-8" },
+    { "/web/styles/app.css",    "web/styles/app.css",    "text/css; charset=utf-8" },
+};
+#define WS_STATIC_FILE_COUNT ((int)(sizeof(WS_STATIC_FILES) / sizeof(WS_STATIC_FILES[0])))
+
+/* Returns 1 if the path named one of them and it has been answered. */
+static int send_front_end_file(int fd, const char *path) {
+    for (int i = 0; i < WS_STATIC_FILE_COUNT; i++) {
+        if (strcmp(path, WS_STATIC_FILES[i].url) == 0) {
+            send_static(fd, WS_STATIC_FILES[i].file, WS_STATIC_FILES[i].type);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Reads PLAYER_PASSWORD from the .env, or returns 0 if it's absent or
@@ -882,8 +921,8 @@ static int client_thread(void *arg) {
 
         if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0)) {
             send_html_page(fd);
-        } else if (strcmp(method, "GET") == 0 && strcmp(path, "/app.js") == 0) {
-            send_app_js(fd);
+        } else if (strcmp(method, "GET") == 0 && send_front_end_file(fd, path)) {
+            /* answered by the table above */
         } else if (strcmp(method, "GET") == 0 && strcmp(path, "/auth-status") == 0) {
             handle_auth_status(fd);
         } else if (strcmp(method, "GET") == 0 && strcmp(path, "/resolution") == 0) {
