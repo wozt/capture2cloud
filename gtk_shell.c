@@ -2,6 +2,7 @@
 
 #include "app_config.h"
 #include "gamepad_bridge.h" /* the output-protocol names shown in the combo */
+#include "version.h"
 
 #include <SDL2/SDL.h>
 #include <gtk/gtk.h>
@@ -415,7 +416,15 @@ static void build_settings_window(GtkShell *shell) {
      * to be set rather than left to the static initialiser. */
     g_c.replug_pending = -1;
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), "Capture2Cloud settings");
+    /* The version is in the title bar, where a window says what it is.
+     * Every other client shows it somewhere; this one was the one left
+     * out, and it is the window most likely to be open when the
+     * question "which build is this machine running" comes up. */
+    {
+        char title[64];
+        snprintf(title, sizeof(title), "Capture2Cloud settings — v%s", C2C_VERSION);
+        gtk_window_set_title(GTK_WINDOW(win), title);
+    }
     gtk_window_set_default_size(GTK_WINDOW(win), 520, 520);
     g_signal_connect(win, "delete-event", G_CALLBACK(on_settings_delete), shell);
 
@@ -574,6 +583,21 @@ static void build_settings_window(GtkShell *shell) {
                         "Stops and starts this program, keeping its pid and its log. "
                         "The one thing that has always brought the sound back when it "
                         "stopped arriving."));
+
+    /* And again in the window, in small print beside the status: a title
+     * bar can be hidden by a tiling window manager, and then the number
+     * would be nowhere. */
+    {
+        char ver[96];
+        snprintf(ver, sizeof(ver), "<small><span foreground=\"#888888\">version %s</span></small>",
+                 C2C_VERSION);
+        GtkWidget *label = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(label), ver);
+        gtk_widget_set_halign(label, GTK_ALIGN_START);
+        gtk_widget_set_margin_start(label, 14);
+        gtk_widget_set_margin_bottom(label, 2);
+        gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+    }
 
     g_c.status_label = gtk_label_new("");
     gtk_widget_set_halign(g_c.status_label, GTK_ALIGN_START);
