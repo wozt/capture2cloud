@@ -44,3 +44,12 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+
+# Everything to do with visualising this project: rendered diagrams, dot
+# sources, pipeline dumps from GST_DEBUG_DUMP_DOT_DIR, whatever a graph
+# tool leaves behind. Kept out of the repository deliberately -- these
+# are generated, they go stale the moment the code moves, and a stale
+# picture of an architecture is worse than no picture. Regenerate them
+# instead; viz/README.md says how.
+/viz/
+
