@@ -9,24 +9,24 @@
 #include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
 
-#define VPX_CODEC_DISABLE_COMPAT 1
-#include <vpx/vp8dx.h>
-#include <vpx/vpx_decoder.h>
 
 /*
- * Two decoders, one interface.
+ * One decoder: H.264 on the console's own video engine.
  *
  * The Tegra X1 has NVDEC, a dedicated video decode block, and the ffmpeg
- * that devkitPro ships carries averne's nvtegra backend for it --
- * `vp8_nvtegra` among others. Decoding in software on three A57 cores
- * while that sits idle is the reason this could not hold 30 fps at 360p.
+ * that devkitPro ships carries averne's nvtegra backend for it.
+ * Decoding in software on three A57 cores while that sits idle is the
+ * reason this client could not hold 30 fps at 360p.
  *
- * libvpx stays as the fallback, because a client that shows nothing is
- * worse than one that shows a slow picture, and there is no way to know
- * from here whether every firmware exposes the engine.
+ * There used to be a second path. The backend lists `vp8_nvtegra`, so
+ * VP8 looked free, and libvpx could fall back to the CPU if it was not.
+ * Neither held up: the VP8 picture never worked here, and the fallback
+ * was three cores doing slowly what the engine does for nothing in
+ * H.264. Both are gone. A codec entry that cannot produce a picture is
+ * not a choice -- it is a way to break the client from its own menu.
  */
 
-typedef enum { DECODER_NONE, DECODER_NVDEC, DECODER_SOFTWARE } DecoderKind;
+typedef enum { DECODER_NONE, DECODER_NVDEC } DecoderKind;
 
 static DecoderKind g_kind = DECODER_NONE;
 
@@ -38,9 +38,15 @@ static AVFrame *g_hw_frame = NULL;
 static AVFrame *g_sw_frame = NULL;
 
 /* --- software fallback --- */
-static vpx_codec_ctx_t g_vpx;
-static int g_vpx_ready = 0;
-static enum AVCodecID g_codec_id = AV_CODEC_ID_VP8;
+/* H.264 and nothing else.
+ *
+ * VP8 was offered here because the Tegra's engine lists vp8_nvtegra and
+ * because libvpx could fall back to the CPU. Neither survived contact:
+ * the picture did not work, and the software path was three cores doing
+ * badly what the engine does for free in H.264. A codec entry that
+ * cannot produce a picture is not a choice, it is a way to break the
+ * client from its own menu. */
+static const enum AVCodecID g_codec_id = AV_CODEC_ID_H264;
 
 static SDL_Renderer *g_renderer = NULL;
 static SDL_Texture *g_texture = NULL;
@@ -137,12 +143,7 @@ const char *video_decoder_name(void) {
     static char name[128];
     switch (g_kind) {
         case DECODER_NVDEC:
-            snprintf(name, sizeof(name), "NVDEC hardware (%s)",
-                     g_codec_id == AV_CODEC_ID_H264 ? "H.264" : "VP8");
-            return name;
-        case DECODER_SOFTWARE:
-            snprintf(name, sizeof(name), "libvpx software -- %s",
-                     g_reason[0] ? g_reason : "no reason recorded");
+            snprintf(name, sizeof(name), "NVDEC hardware (H.264)");
             return name;
         default:
             snprintf(name, sizeof(name), "no decoder -- %s",
@@ -269,58 +270,29 @@ static int init_hardware(enum AVCodecID codec_id) {
     return 0;
 }
 
-static int init_software(void) {
-    vpx_codec_dec_cfg_t cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    /* Three of the four cores; the fourth is the system's. */
-    cfg.threads = 3;
-    cfg.w = (unsigned)g_width;
-    cfg.h = (unsigned)g_height;
-    if (vpx_codec_dec_init(&g_vpx, vpx_codec_vp8_dx(), &cfg, 0) != VPX_CODEC_OK) {
-        printf("vpx: %s\n", vpx_codec_error(&g_vpx));
-        return -1;
-    }
-    g_vpx_ready = 1;
-    return 0;
-}
-
-int video_init(SDL_Renderer *renderer, int width, int height, int codec) {
+int video_init(SDL_Renderer *renderer, int width, int height) {
     g_renderer = renderer;
     g_width = width;
     g_height = height;
     g_have_picture = 0;
     g_reason[0] = '\0';
-    g_codec_id = (codec == VIDEO_CODEC_H264) ? AV_CODEC_ID_H264 : AV_CODEC_ID_VP8;
 
-    if (init_hardware(g_codec_id) == 0) {
-        g_kind = DECODER_NVDEC;
-    } else {
-        printf("video: hardware decode unavailable (%s), using software\n", g_reason);
-        if (g_codec_id != AV_CODEC_ID_VP8) {
-            /* The software fallback here is libvpx, which is VP8 only.
-             * An H.264 stream with no engine to decode it has nowhere to
-             * go, and pretending otherwise would show a black screen
-             * with no explanation. */
-            /* Not built from g_reason into itself: overlapping source
-             * and destination in snprintf is undefined. */
-            char why[sizeof(g_reason)];
-            snprintf(why, sizeof(why), "%s", g_reason);
-            snprintf(g_reason, sizeof(g_reason), "%.60s + no software H.264", why);
-            g_kind = DECODER_NONE;
-            return -1;
-        }
-        if (init_software() != 0) {
-            g_kind = DECODER_NONE;
-            return -1;
-        }
-        g_kind = DECODER_SOFTWARE;
+    /* No fallback, on purpose. The engine decodes H.264 or this client
+     * shows nothing, and says why: a CPU fallback for H.264 would be
+     * three cores producing a slideshow, which looks like a broken
+     * stream rather than an unsupported one. */
+    if (init_hardware(g_codec_id) != 0) {
+        printf("video: hardware decode unavailable (%s)\n", g_reason);
+        g_kind = DECODER_NONE;
+        return -1;
     }
+    g_kind = DECODER_NVDEC;
 
     /* A first texture at the announced size so there is something to
      * draw immediately; the decode path resizes it if the stream turns
      * out to differ. */
     g_width = g_height = 0;
-    if (ensure_texture(width, height, g_kind == DECODER_NVDEC) != 0) {
+    if (ensure_texture(width, height, 1) != 0) {
         return -1;
     }
     printf("video: %dx%d via %s\n", width, height, video_decoder_name());
@@ -337,10 +309,6 @@ void video_exit(void) {
     if (g_packet) av_packet_free(&g_packet);
     if (g_hw_frame) av_frame_free(&g_hw_frame);
     if (g_sw_frame) av_frame_free(&g_sw_frame);
-    if (g_vpx_ready) {
-        vpx_codec_destroy(&g_vpx);
-        g_vpx_ready = 0;
-    }
     g_kind = DECODER_NONE;
 }
 
@@ -420,40 +388,11 @@ static int decode_avcodec(const uint8_t *data, uint32_t size) {
     return produced;
 }
 
-static int decode_software(const uint8_t *data, uint32_t size) {
-    if (vpx_codec_decode(&g_vpx, data, size, NULL, 0) != VPX_CODEC_OK) {
-        /* One bad frame is not a reason to tear anything down: the next
-         * keyframe recovers, and the host sends one on request. */
-        g_failed++;
-        return 0;
-    }
-    vpx_codec_iter_t iter = NULL;
-    vpx_image_t *img = vpx_codec_get_frame(&g_vpx, &iter);
-    if (!img) {
-        return 0;
-    }
-    if (ensure_texture((int)img->d_w, (int)img->d_h, 0) != 0) {
-        g_failed++;
-        return 0;
-    }
-    SDL_UpdateYUVTexture(g_texture, NULL,
-                         img->planes[VPX_PLANE_Y], img->stride[VPX_PLANE_Y],
-                         img->planes[VPX_PLANE_U], img->stride[VPX_PLANE_U],
-                         img->planes[VPX_PLANE_V], img->stride[VPX_PLANE_V]);
-    g_decoded++;
-    g_have_picture = 1;
-    return 1;
-}
-
 int video_decode(const uint8_t *data, uint32_t size) {
     if (!g_texture || !data || !size) {
         return 0;
     }
-    switch (g_kind) {
-        case DECODER_NVDEC:    return decode_avcodec(data, size);
-        case DECODER_SOFTWARE: return decode_software(data, size);
-        default:               return 0;
-    }
+    return (g_kind == DECODER_NVDEC) ? decode_avcodec(data, size) : 0;
 }
 
 /* Brightness and contrast, done by the renderer.

@@ -17,7 +17,7 @@ So the host gains a **second, native path** alongside WebRTC, for clients
 that are not browsers:
 
     browser  ──HTTP /offer──▶ WebRTC (ICE, DTLS-SRTP, VP8+Opus)   unchanged
-    Switch   ──TCP──────────▶ length-prefixed VP8 + Opus frames
+    Switch   ──TCP──────────▶ length-prefixed H.264 + Opus frames
 
 Same encoders, same `tee` in the GStreamer pipeline — only the transport
 differs. The browser path is untouched.
@@ -36,19 +36,28 @@ for free.
 
 devkitPro's ffmpeg carries averne's `nvtegra` backend, the same one
 Moonlight-Switch uses, and it ships with `vp8_nvtegra`, `h264_nvtegra`,
-`hevc_nvtegra` and `vp9_nvtegra` already built. VP8 being among them is
-what makes this free: the host stream did not have to change codec.
+`hevc_nvtegra` and `vp9_nvtegra` already built.
+
+**`vp8_nvtegra` being on that list is not the same as VP8 working**, and
+this file used to read as though it were. It never produced a picture
+here. The VP8 path is gone, along with the libvpx CPU fallback that
+backed it -- three A57 cores doing slowly what the engine does for
+nothing in H.264. This client is H.264 only: the host runs a VP8 chain
+and an H.264 chain on demand, so asking for H.264 takes nothing from
+anyone watching the other one.
 
 These are **hwaccels, not decoders in their own right**. There is no
-`vp8_nvtegra` to look up by name; asking for one returns nothing and the
-fallback then runs in software while looking like it succeeded. The
+`h264_nvtegra` to look up by name; asking for one returns nothing and
+the fallback then runs in software while looking like it succeeded. The
 ordinary decoder is opened with `avcodec_find_decoder()`, an
 `AV_HWDEVICE_TYPE_NVTEGRA` device is attached, and a `get_format`
 callback returns `AV_PIX_FMT_NVTEGRA` -- that callback is what actually
 engages the engine.
 
-The host can also encode H.264 (`C2S_MSG_CODEC`, and the Codec entry in
-the menu), which is the engine's native case. Two things are needed for
+H.264 is what the client asks for as it connects (`C2S_MSG_CODEC`), and
+the engine's native case. There is no menu entry for it any more: a
+codec choice that cannot produce a picture is not a choice, it is a way
+to break the client from its own menu. Two things are needed for
 it to show a picture rather than a black screen: SPS/PPS repeated ahead
 of every keyframe (`h264parse config-interval=-1` on the host), and a
 keyframe forced the moment the codec changes -- otherwise the reopened

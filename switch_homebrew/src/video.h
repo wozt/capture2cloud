@@ -24,7 +24,9 @@
 
 typedef enum { VIDEO_CODEC_VP8 = 1, VIDEO_CODEC_H264 = 3 } VideoCodec;
 
-int  video_init(SDL_Renderer *renderer, int width, int height, int codec);
+/* H.264 only: the console decodes it on its video engine, and the VP8
+ * path this used to offer never produced a picture. */
+int  video_init(SDL_Renderer *renderer, int width, int height);
 void video_exit(void);
 
 /* Decodes one encoded frame and updates the texture. Returns 1 when a

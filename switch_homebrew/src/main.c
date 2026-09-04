@@ -125,7 +125,6 @@ typedef enum {
     MENU_AUTOLOGIN,
     MENU_PROFILE,
     MENU_BITRATE,
-    MENU_CODEC,
     MENU_LSTICK_DEAD,
     MENU_LSTICK_RANGE,
     MENU_LSTICK_DIAG,
@@ -177,7 +176,7 @@ typedef struct {
  * simply forgotten, which reads as the controls being broken. */
 static const MenuAction CAT_CONNECTION_ITEMS[] = {
     MENU_CONNECT, MENU_HOST, MENU_PORT, MENU_AUTOLOGIN, MENU_FORGET_PASSWORD};
-static const MenuAction CAT_STREAM_ITEMS[] = {MENU_PROFILE, MENU_BITRATE, MENU_CODEC};
+static const MenuAction CAT_STREAM_ITEMS[] = {MENU_PROFILE, MENU_BITRATE};
 static const MenuAction CAT_TOUCH_ITEMS[] = {
     MENU_TOUCHPAD, MENU_TOUCH_EDIT, MENU_TOUCH_COLOUR, MENU_TOUCH_OPACITY, MENU_TOUCH_RESET};
 static const MenuAction CAT_STICKS_ITEMS[] = {
@@ -238,10 +237,13 @@ static const int BITRATES[] = {0, 1000, 2000, 4000, 6000, 10000};
 #define BITRATE_COUNT ((int)(sizeof(BITRATES) / sizeof(BITRATES[0])))
 static int g_bitrate_index = 0;
 
-/* H.264 first: it is what the console's video engine decodes, and that
- * is the whole point of offering the choice. VP8 stays because it needs
- * no second encoder on the host and works with the software fallback. */
-static int g_codec = VIDEO_CODEC_H264;
+/* No codec setting: this client is H.264 and only H.264.
+ *
+ * The choice existed because the host encoded one native stream and VP8
+ * cost it nothing, and because the Tegra backend lists vp8_nvtegra so
+ * the decode looked free. It was not -- the VP8 picture never worked
+ * here. The host runs both chains on demand now, so asking for H.264
+ * takes nothing from anyone else. */
 
 /* The values the two stick settings step through. Cycling a short list
  * beats a slider on a screen driven by the very stick being adjusted. */
@@ -317,7 +319,6 @@ static void load_config(void) {
         else if (strcmp(key, "rstick_diagonal") == 0) cfg_rdiag = atoi(value);
         else if (strcmp(key, "profile") == 0) g_profile = atoi(value);
         else if (strcmp(key, "bitrate") == 0) g_bitrate_index = atoi(value);
-        else if (strcmp(key, "codec") == 0) g_codec = atoi(value);
         else if (strcmp(key, "adapt") == 0) g_adapt_enabled = atoi(value) != 0;
         else if (strcmp(key, "version") == 0) cfg_version = atoi(value);
         else if (strcmp(key, "volume") == 0) g_saved_volume = atoi(value);
@@ -329,7 +330,6 @@ static void load_config(void) {
      * an index out of range would read past the end of a table. */
     if (g_profile < 0 || g_profile >= (int)(sizeof(PROFILES) / sizeof(*PROFILES))) g_profile = 1;
     if (g_bitrate_index < 0 || g_bitrate_index >= (int)(sizeof(BITRATES) / sizeof(*BITRATES))) g_bitrate_index = 0;
-    if (g_codec != VIDEO_CODEC_VP8 && g_codec != VIDEO_CODEC_H264) g_codec = VIDEO_CODEC_H264;
     /* Version 1 wrote the volume on a 0-200 scale where 100 was the
      * stream's own level; it now runs 0-100 with that level at 25, for
      * the same range of loudness. Left alone, everyone's sound would
@@ -433,7 +433,6 @@ static void save_config(void) {
     }
     fprintf(f, "profile=%d\n", g_profile);
     fprintf(f, "bitrate=%d\n", g_bitrate_index);
-    fprintf(f, "codec=%d\n", g_codec);
     fprintf(f, "adapt=%d\n", g_adapt_enabled);
     fprintf(f, "volume=%d\n", audio_volume());
     fprintf(f, "muted=%d\n", audio_is_muted());
@@ -527,11 +526,6 @@ static void menu_label(int index, char *out, size_t out_size, char *detail, size
             } else {
                 snprintf(detail, detail_size, "auto (%d kbps)", PROFILES[g_profile].kbps);
             }
-            break;
-        case MENU_CODEC:
-            snprintf(out, out_size, "Video codec");
-            snprintf(detail, detail_size, "%s",
-                     g_codec == VIDEO_CODEC_H264 ? "H.264 (hardware decode)" : "VP8");
             break;
         case MENU_LSTICK_DIAG:
         case MENU_RSTICK_DIAG: {
@@ -705,8 +699,7 @@ static void start_decoders_if_needed(void) {
      * menu rather than the one actually arriving would decode an H.264
      * stream as VP8 whenever the two disagreed; the preference is asked
      * for below instead, and applied when the host announces it. */
-    if (video_init(g_renderer, n->width, n->height,
-                   n->video_codec ? n->video_codec : VIDEO_CODEC_VP8) == 0 &&
+    if (video_init(g_renderer, n->width, n->height) == 0 &&
         audio_init(n->audio_rate ? n->audio_rate : 48000,
                    n->audio_channels ? n->audio_channels : 2) == 0) {
         g_decoders_ready = 1;
@@ -731,9 +724,10 @@ static void start_decoders_if_needed(void) {
          * settings instead (C2S_MSG_SHARED) and the menu moves to them;
          * changing one by hand afterwards still changes it for that
          * group. */
-        if (n->video_codec != g_codec) {
-            net_send_codec(g_codec);
-        }
+        /* Said out loud rather than relying on the host's default:
+         * this client has one decoder, and the host having chosen
+         * something else is a black screen. */
+        net_send_codec(VIDEO_CODEC_H264);
     } else {
         printf("decoders failed to start\n");
     }
@@ -781,7 +775,6 @@ static void adapt_profile(void) {
         printf("adapt: %s\n", g_login_message);
         net_send_profile(PROFILES[g_profile].w, PROFILES[g_profile].h,
                          PROFILES[g_profile].fps, current_bitrate());
-        net_send_codec(g_codec);
     }
     g_measured_fps = achieved;
 }
@@ -800,9 +793,8 @@ static void adapt_profile(void) {
 static void adopt_shared(const C2sShared *sh) {
     if (!sh) return;
 
-    if (sh->video_codec == VIDEO_CODEC_VP8 || sh->video_codec == VIDEO_CODEC_H264) {
-        g_codec = sh->video_codec;
-    }
+    /* The codec is not adopted: there is only one this client can
+     * decode, and it asked for it. */
 
     if (sh->width > 0 && sh->height > 0 && sh->fps > 0) {
         int best = -1, best_cost = 0;
@@ -841,7 +833,7 @@ static void menu_activate(int index) {
     /* Which entries change something worth remembering. Written once at
      * the end rather than in each case, so a new setting cannot be added
      * and quietly not persisted. */
-    int persists = (index == MENU_HOST || index == MENU_PORT || index == MENU_PROFILE || index == MENU_BITRATE || index == MENU_CODEC ||
+    int persists = (index == MENU_HOST || index == MENU_PORT || index == MENU_PROFILE || index == MENU_BITRATE ||
                     index == MENU_MUTE || index == MENU_VOLUME_DOWN || index == MENU_VOLUME_UP ||
                     index == MENU_LOGIN || index == MENU_FORGET_PASSWORD ||
                     index == MENU_AUTOLOGIN || index == MENU_DIAGNOSTICS ||
@@ -986,12 +978,6 @@ static void menu_activate(int index) {
             g_bitrate_index = (g_bitrate_index + 1) % BITRATE_COUNT;
             net_send_profile(PROFILES[g_profile].w, PROFILES[g_profile].h,
                              PROFILES[g_profile].fps, current_bitrate());
-            break;
-        case MENU_CODEC:
-            g_codec = (g_codec == VIDEO_CODEC_H264) ? VIDEO_CODEC_VP8 : VIDEO_CODEC_H264;
-            net_send_codec(g_codec);
-            /* The decoder is rebuilt when the host announces the change,
-             * not here: the switch takes effect some frames later. */
             break;
         case MENU_LSTICK_DEAD:
         case MENU_RSTICK_DEAD: {
@@ -1760,7 +1746,7 @@ int main(int argc, char **argv) {
                 video_exit();
                 g_await_keyframe = 1;
                 decoded_here = skipped_here = have_key = 0;
-                if (video_init(g_renderer, info.width, info.height, info.video_codec) != 0) {
+                if (video_init(g_renderer, info.width, info.height) != 0) {
                     g_decoders_ready = 0;
                     snprintf(g_login_message, sizeof(g_login_message),
                              "no decoder for this stream");
