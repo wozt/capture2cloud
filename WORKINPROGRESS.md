@@ -204,6 +204,28 @@ the first rebind would quietly redefine "default" for that pad.
   offset is now *measured* (the old one read two bytes short), a failed
   read zeroes the state, and the passthrough merge is live: someone at
   the console plays alongside whoever is on the page.
+- **The page read `C2sHelloAck` at the wrong offsets, and it was
+  silent.** `audio_rate` sits at byte 14; the page read 16-bit at 18,
+  which is `reserved2` — always zero, and zero is exactly how the
+  protocol says "this host sends no sound". So the audio decoder was
+  never started and the WebSocket path played nothing, with no error
+  anywhere. Same family as the GCAPI report-id bug above: a struct read
+  by counting, where counting wrong looks like valid data.
+  `tests/run_tests.js` now computes the layout from `c2s_protocol.h` and
+  fails if the two drift.
+- **The browser's settings only reached one of its two encoders.**
+  `set_browser_resolution()` wrote `vscale_caps` and
+  `set_video_bitrate()` wrote `venc_vp8` — both on the WebRTC chain — so
+  on the WebSocket transport the resolution dropdown and the bitrate
+  slider did nothing at all. They drive `vscale_web264_caps` and
+  `venc_web_h264` as well now, and announce the change to the connected
+  pages. One control, one transport running: a slider that moves only
+  the encoder nobody is watching is a slider that does nothing.
+- **Unchecking vsync on the WebSocket path was a black screen.**
+  `setVsync(false)` hands the display to the `<video>` element, which on
+  that transport has no source — the decoder draws into the canvas.
+  Re-checking it brought the picture back, which is what made it look
+  like a vsync bug rather than a surface-ownership one.
 - **The GMainContext isolation never worked.**
   `g_main_context_push_thread_default()` acquires the context, and the
   gst thread already owns it — GLib said `assertion 'acquired_context'

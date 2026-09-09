@@ -994,6 +994,87 @@ group('the page and the test suite agree on what to load', () => {
   check('every file listed exists', missing.join(','), '');
 });
 
+group('the websocket handshake is read where the struct actually puts it', () => {
+  // C2sHelloAck is a packed struct and the page reads it by counting
+  // bytes, which is silent when it counts wrong: reading audio_rate
+  // four bytes late lands in reserved2, which is zero, which is
+  // indistinguishable from a host that is sending no sound. That is
+  // exactly what happened -- the page played nothing over the
+  // WebSocket and said nothing about it.
+  //
+  // So the layout is computed from the header rather than written down
+  // here. Add a field to the struct and this test moves with it; get
+  // the JS out of step with it and this fails.
+  const header = fs.readFileSync(
+    path.join(__dirname, '..', 'c2s_protocol.h'), 'utf8');
+  const body = /typedef struct __attribute__\(\(packed\)\) \{([^}]*)\} C2sHelloAck;/
+    .exec(header);
+  check('the ack struct is still in the header', !!body, true);
+
+  const WIDTH = { uint8_t: 1, uint16_t: 2, uint32_t: 4 };
+  const offset = {};
+  let at = 0;
+  body[1].split('\n').forEach((line) => {
+    const m = /^\s*(uint\d+_t)\s+(\w+)(?:\[(\d+)\])?\s*;/.exec(line);
+    if (!m) return;
+    offset[m[2]] = at;
+    at += WIDTH[m[1]] * (m[3] ? Number(m[3]) : 1);
+  });
+  check('the fields the page reads are all there',
+    ['may_control', 'width', 'height', 'audio_rate', 'audio_channels']
+      .every((f) => typeof offset[f] === 'number'), true);
+
+  // Build one exactly as the host does, then hand it to the page.
+  const ack = new Uint8Array(8 + at);
+  ack[0] = 27;                                   // C2S_MSG_HELLO_ACK
+  new DataView(ack.buffer).setUint32(4, at, true);
+  const f = (name) => 8 + offset[name];
+  ack[f('may_control')] = 1;
+  new DataView(ack.buffer).setUint16(f('width'), 1920, true);
+  new DataView(ack.buffer).setUint16(f('height'), 1080, true);
+  new DataView(ack.buffer).setUint16(f('audio_rate'), 48000, true);
+  ack[f('audio_channels')] = 2;
+
+  const s = createSandbox(APP_JS);
+  s.wsOnMessage(ack);
+  check('the sample rate is read, not zero', s.wsAudioRate, 48000);
+  check('the channel count is read', s.wsAudioChannels, 2);
+  check('being granted control is read', s.playerToken !== undefined, true);
+
+  // The rate is what decides whether sound is set up at all, so the
+  // real assertion is that a decoder now exists.
+  check('a decoder was started', s.audioDecoders.length, 1);
+  check('configured for the rate the host announced',
+    s.audioDecoders[0].configured.sampleRate, 48000);
+  check('and for its channel count',
+    s.audioDecoders[0].configured.numberOfChannels, 2);
+  check('as bare Opus packets', s.audioDecoders[0].configured.codec, 'opus');
+});
+
+group('the canvas stays the surface on the websocket path', () => {
+  // The <video> element has no source on this transport -- the decoder
+  // draws into the canvas. Unchecking vsync used to hand the display
+  // back to that empty element, which is a black screen, and checking
+  // it again is what brought the picture back.
+  const s = createSandbox(APP_JS);
+  s.wsSocket = { readyState: 1 };
+  check('the page agrees the websocket is carrying it', s.wsIsActive(), true);
+
+  s.setVsync(false);
+  check('the canvas is still shown', s.canvas.style.display, 'block');
+  check('the empty video element is not', s.video.style.display, 'none');
+
+  s.setVsync(true);
+  check('and turning it back on changes nothing', s.canvas.style.display, 'block');
+
+  // On WebRTC the box means what it always meant.
+  s.wsSocket = null;
+  s.setVsync(false);
+  check('the video element is used again once WebRTC is back',
+    s.video.style.display, 'block');
+  check('and the canvas is put away', s.canvas.style.display, 'none');
+});
+
 group('player token storage', () => {
   // A token left over from a previous page load is picked up on start.
   const s = createSandbox(APP_JS, null, { 'capture2cloud_player_token': 'deadbeef' });

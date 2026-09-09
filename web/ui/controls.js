@@ -296,6 +296,23 @@ function stopFrames() {
 }
 function setVsync(enabled) {
   vsyncBox.checked = enabled;
+  /*
+   * On the WebSocket path the canvas is the ONLY surface there is: the
+   * <video> element has no source, so handing it the display is a black
+   * screen -- which is what unchecking this box used to do, and why
+   * re-checking it brought the picture back.
+   *
+   * The box is left alone rather than disabled: what it asks for
+   * (one draw per decoded frame) is what the decoder already does here,
+   * so it is a setting with nothing left to change on this transport,
+   * not a setting that is unavailable.
+   */
+  if (typeof wsIsActive === 'function' && wsIsActive()) {
+    stopFrames();
+    video.style.display = 'none';
+    canvas.style.display = 'block';
+    return;
+  }
   if (enabled) {
     video.style.display = 'none';
     canvas.style.display = 'block';
