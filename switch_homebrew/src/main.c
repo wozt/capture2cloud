@@ -219,10 +219,17 @@ static int g_category = -1;
  * 480p60 first because it is the one that certainly works, including in
  * applet mode where the HOME menu is still resident and taking its
  * share. */
+/* 848 rather than the 854 that 16:9 asks for, in both 480p rows: H.264
+ * codes in blocks of sixteen and 854 is 53.4 of them, so the picture
+ * would be coded at 864 with ten columns marked to be ignored. ffmpeg
+ * honours that and this client would never have noticed -- a browser on
+ * the same host did not, and showed a green stripe down the side. The
+ * width is a whole number of blocks here too, so there is nothing left
+ * for anyone to honour. */
 static const struct { int w, h, fps, kbps; const char *label; } PROFILES[] = {
     {640, 360, 30, 1500, "360p30"},
-    {854, 480, 30, 2500, "480p30"},
-    {854, 480, 60, 4000, "480p60"},
+    {848, 480, 30, 2500, "480p30"},
+    {848, 480, 60, 4000, "480p60"},
     {1280, 720, 30, 4000, "720p30"},
     {1280, 720, 60, 6000, "720p60"},
 };
