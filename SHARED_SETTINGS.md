@@ -17,11 +17,11 @@ controls to match.
 
 ## Shared — one value for everyone
 
-**Shared with whom, exactly.** There are two encodes, not one, and this
-line was wrong here before: the browser's WebRTC stream and the native
-binary stream are produced by **different encoders with their own size,
-frame rate and bitrate**. A player changing the resolution from the web
-page does not touch what the Android and Switch clients receive, and a
+**Shared with whom, exactly.** There is more than one encode, and this
+line was wrong here before: the browsers' stream and the native binary
+stream are produced by **different encoders with their own size, frame
+rate and bitrate**. A player changing the resolution from the web page
+does not touch what the Android and Switch clients receive, and a
 native client asking for 480p30 does not touch the browsers. Verified in
 both directions, and pinned by a test.
 
@@ -29,9 +29,18 @@ So "shared" below means *shared by everyone on the same stream*:
 
 | Stream | Who is on it | Where its settings live |
 |---|---|---|
-| **browser** | every web page | `browser_height`, `bitrate_mbps`; read by `GET /shared` |
+| **browser** | every web page | `browser_height`, `bitrate_mbps`; read by `GET /shared`, and pushed as `C2S_MSG_SHARED` to the pages on the WebSocket |
 | **native VP8** | the native clients that asked for VP8 | `switch_*[0]`; pushed as `C2S_MSG_SHARED` to that group |
 | **native H.264** | the native clients that asked for H.264 | `switch_*[1]`; pushed as `C2S_MSG_SHARED` to that group |
+
+**The browser row is two encoders, and that is deliberate.** WebRTC is
+served VP8 and the WebSocket is served H.264, because they are two
+deliveries of two different encodes -- but they are **one row** here:
+they carry the same height and the same bitrate, and the host runs only
+one of them at a time. Driving only one of the two is what made the
+resolution dropdown and the bitrate slider do nothing for anybody on
+the WebSocket. Keeping them equal also means switching transport does
+not silently change the picture.
 
 The capture format is the exception that really is global: there is one
 card, and both encoders are fed from it.
@@ -59,6 +68,7 @@ shared one — the one row that moved out of the table below.
 | **Stream width** | derived from height | — | — | — | — |
 | **Frame rate** | encoder | — | `fps` | profile | — |
 | **Bitrate** (and *automatic*, which sets it) | encoder | `/quality` | `bitrateMbps` | profile | `bitrate_mbps` |
+| **Transport** (WebRTC / WebSocket) | the host: it runs one | `/transport` | — | — | — |
 | **Capture format** (MJPEG / raw YUYV) | capture card | `/capture-format` | — | — | `capture_mjpeg` |
 | **Adapter output protocol** (xb360 / switch / ps…) | the adapter's own memory | — | — | — | `output_protocol` |
 | **Stream enabled**, **web port**, **native port** | the servers | — | — | — | `stream_enabled`, `web_port`, `switch_port` |
@@ -77,6 +87,12 @@ Three notes on that table.
 - **Ports and stream-enabled** are shared in the strongest sense — they
   take the stream away — and are deliberately not exposed to clients at
   all.
+- **The transport is shared because there is one host.** It runs WebRTC
+  or the WebSocket, never both, so a page cannot hold an opinion of its
+  own: the others would be left waiting on an encoder that had stopped.
+  `WEB_TRANSPORT` in the `.env` only picks what it starts on. Native
+  clients are unaffected — they have their own port and their own
+  protocol, and never went through either of these.
 
 ## Not shared — per client, per device
 
@@ -139,12 +155,23 @@ their saved profile and codec the instant they were accepted, which is
 the failure at the top of this file: starting a client changed the
 stream for everyone already watching.
 
-**Browsers** poll `GET /shared` every two seconds, because a page holds
-no socket to the host but the WebRTC one, and putting settings through
-that would tie them to a stream that may not be up yet. Two seconds is
-far below the rate at which anyone changes a setting by hand. The page
-no longer pushes its stored bitrate on load, nor its stored capture
-format on becoming a player.
+**Browsers** poll `GET /shared` every two seconds. A page on WebRTC
+holds no socket to the host but the peer connection itself, and putting
+settings through that would tie them to a stream that may not be up
+yet; two seconds is far below the rate at which anyone changes a
+setting by hand. The poll is also how *any* page learns the transport
+has been switched, which is the one thing that cannot arrive over a
+socket that is about to stop.
+
+A page on the **WebSocket** does hold a socket, so it is *also* pushed
+`C2S_MSG_SHARED` the moment something changes, exactly as the Android
+and Switch clients are — the same message, the same struct, and the
+same `applyShared()` the poll feeds, so a slider being held is left
+alone on either path. It moves the menus at once instead of within two
+seconds.
+
+The page no longer pushes its stored bitrate on load, nor its stored
+capture format on becoming a player.
 
 **The GTK window** reconciles once a second against the encoder and the
 capture device themselves — not against what it last asked for — so a

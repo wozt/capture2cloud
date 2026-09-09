@@ -284,6 +284,22 @@ the first rebind would quietly redefine "default" for that pad.
   `gamepadNeedsXYSwap()` keys on the pad; the likely root cause is the
   Linux xpad driver's button order. That same Xbox Series X|S pad also
   reports LT/RT as axes 4/5 rather than buttons 6/7.
+- **The tray menu needs the button and the timestamp it is handed.**
+  KDE has no XEmbed tray: `xembedsniproxy` republishes the
+  `GtkStatusIcon` as a StatusNotifierItem, so a right click arrives as
+  a *synthesised* X11 button press with no real event behind it.
+  `gtk_menu_popup_at_pointer(menu, NULL)` asks GTK to find that event,
+  finds none, and takes the menu's pointer grab with `GDK_CURRENT_TIME`
+  -- which loses to the grab plasmashell already holds. The menu drew
+  and highlighted but never saw the button release that becomes
+  `activate`, so *every* item did nothing; Quit was simply the one
+  anybody noticed, Settings being reachable by left-clicking the icon
+  instead. `popup-menu` hands over `button` and `activate_time` for
+  exactly this, and they were being discarded with a `(void)` cast.
+  Use `gtk_menu_popup()` with both, plus
+  `gtk_status_icon_position_menu`. Also: `gtk_menu_new()` returns a
+  floating reference `gtk_menu_popup()` does not adopt, so a menu built
+  per right click and never destroyed leaks one per click.
 - **Find instances by walking `/proc`**, not by pid file — a deleted pid
   file used to orphan a running instance, and the second copy failed
   with "device accepts neither YUYV nor MJPEG", which sends you

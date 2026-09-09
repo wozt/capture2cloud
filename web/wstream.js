@@ -257,6 +257,25 @@ function wsOnMessage(bytes) {
         (granted ? ' -- player' : ' -- viewer'));
     setPlayerUi(granted);
     if (wsAudioRate > 0) wsStartAudio();
+  } else if (type === WS_MSG_SHARED) {
+    /*
+     * The settings this page does not own alone, pushed the moment they
+     * change rather than found by the two-second poll.
+     *
+     * C2sShared, packed: width 0, height 2, fps 4, bitrate 6,
+     * video_codec 8, capture_mjpeg 9. No transport field -- which one
+     * the host runs is not a property of the stream, and still arrives
+     * through /shared.
+     *
+     * applyShared() is the same one the poll calls, so a slider being
+     * held is left alone here exactly as it is there.
+     */
+    var sv = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    applyShared({
+      height: sv.getUint16(2, true),
+      bitrate_kbps: sv.getUint16(6, true),
+      capture: body[9] ? 'mjpeg' : 'yuyv',
+    });
   } else if (type === WS_MSG_STREAM_INFO) {
     /* The host saying what it is sending now. The decoder is rebuilt at
      * the next keyframe rather than here: the change takes effect some
@@ -266,8 +285,6 @@ function wsOnMessage(bytes) {
     wsDecoder = null;
     wsFrames = 0;
   }
-  /* SHARED and AUDIO are read by the same page in the same way as
-   * everywhere else; the spike leaves them for the next step. */
 }
 
 /*
