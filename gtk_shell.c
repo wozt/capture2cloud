@@ -48,6 +48,11 @@ struct GtkShell {
      * threads, could ping-pong. */
     int loading;
 
+    /* The tray menu, kept so the previous one can be destroyed. It is
+     * rebuilt on every right click because it shows a checkbox whose
+     * state may have changed since the last one. */
+    GtkWidget *menu;
+
     /* The controllers the program can see. Copied in under the lock and
      * rebuilt into the list on the GTK thread. */
     char controllers[8][96];
@@ -646,7 +651,19 @@ static void on_icon_popup(GtkStatusIcon *icon, guint button, guint activate_time
                           gpointer user_data) {
     GtkShell *shell = user_data;
 
+    /* The one from the last right click. gtk_menu_new() hands back a
+     * floating reference that gtk_menu_popup() does not take over, so a
+     * menu built per click and never destroyed is a menu leaked per
+     * click. */
+    if (shell->menu) {
+        gtk_widget_destroy(shell->menu);
+        g_object_unref(shell->menu);   /* the ref_sink below took one */
+        shell->menu = NULL;
+    }
+
     GtkWidget *menu = gtk_menu_new();
+    g_object_ref_sink(menu);
+    shell->menu = menu;
 
     GtkWidget *show = gtk_menu_item_new_with_label("Show capture");
     gtk_widget_set_tooltip_text(show,
@@ -676,10 +693,29 @@ static void on_icon_popup(GtkStatusIcon *icon, guint button, guint activate_time
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit);
 
     gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), NULL);
-    (void)icon;
-    (void)button;
-    (void)activate_time;
+
+    /*
+     * gtk_menu_popup(), with the button and the timestamp this signal
+     * was handed -- not gtk_menu_popup_at_pointer(), which was here and
+     * which cannot work under the tray this actually runs on.
+     *
+     * KDE has no XEmbed tray of its own: xembedsniproxy takes this icon
+     * and republishes it as a StatusNotifierItem, so a right click on it
+     * reaches this program as a SYNTHESISED X11 button press. There is
+     * no real current event behind it, and popup_at_pointer asks GTK to
+     * go and find one -- it finds nothing, and takes the menu's pointer
+     * grab with GDK_CURRENT_TIME. A grab with no timestamp does not win
+     * against what plasmashell is already holding, so the menu appeared,
+     * highlighted under the pointer, and never saw the button release
+     * that becomes "activate". Every item did nothing; Quit was simply
+     * the one anybody noticed.
+     *
+     * The two values that fix it arrive as arguments to this very
+     * function, and were being discarded.
+     */
+    gtk_menu_popup(GTK_MENU(menu), NULL, NULL,
+                   gtk_status_icon_position_menu, icon,
+                   button, activate_time);
 }
 
 static void on_icon_activate(GtkStatusIcon *icon, gpointer user_data) {
@@ -848,6 +884,15 @@ static int gtk_thread_main(void *arg) {
 
     g_timeout_add(200, on_tick, shell);
     gtk_main();
+
+    /* On this thread, because it is this thread's widget: the shell is
+     * torn down from the main one, which must not destroy something the
+     * GTK loop could still have been showing a moment ago. */
+    if (shell->menu) {
+        gtk_widget_destroy(shell->menu);
+        g_object_unref(shell->menu);
+        shell->menu = NULL;
+    }
     return 0;
 }
 
@@ -930,6 +975,9 @@ void gtk_shell_stop(GtkShell *shell) {
         return;
     }
     shell->running = 0;
+    /* The menu is the GTK thread's; dropping it here, before the join,
+     * would be this thread destroying a widget the other one may still
+     * be showing. It goes when that thread's loop ends. */
     if (shell->thread) {
         SDL_WaitThread(shell->thread, NULL);
     }
