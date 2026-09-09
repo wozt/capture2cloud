@@ -160,6 +160,14 @@ loginBtn.onclick = function () {
       } catch (e) {}
       setPlayerUi(true);
       log('logged in, reconnecting as player...');
+      /* The token is part of the WebSocket's URL, so a session that has
+       * just been granted needs a new socket to carry it. */
+      if (typeof wsIsActive === 'function' && wsIsActive()) {
+        stopWsStream();
+        wsLeaving = false;
+        startWsStream();
+        return;
+      }
       /* The viewer/player decision is made server-side when the
        * connection is negotiated, so an existing connection stays a
        * viewer forever -- reconnect to come back as a player. */

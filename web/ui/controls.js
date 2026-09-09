@@ -259,6 +259,10 @@ var rafId = null;
 var haveRvfc = typeof video.requestVideoFrameCallback === 'function';
 
 function drawFrame() {
+  /* Not while the WebSocket path owns the canvas: it draws decoded
+   * frames there itself, and a second painter alternates an old picture
+   * with a new one. */
+  if (typeof wsIsActive === 'function' && wsIsActive()) return;
   if (video.videoWidth) {
     if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
       canvas.width = video.videoWidth;

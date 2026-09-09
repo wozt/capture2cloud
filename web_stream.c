@@ -1062,8 +1062,18 @@ static int client_thread(void *arg) {
         char path[256] = {0};
         sscanf(line, "%7s %255s", method, path);
 
+        /*
+         * The query is kept, not just cut off: a WebSocket is opened by
+         * the browser's own constructor, which cannot be given headers,
+         * so the session token has nowhere else to travel. Every other
+         * endpoint still takes it in X-Player-Token.
+         */
         char *query = strchr(path, '?');
-        if (query) *query = '\0';
+        char query_buf[128] = {0};
+        if (query) {
+            snprintf(query_buf, sizeof(query_buf), "%s", query + 1);
+            *query = '\0';
+        }
 
         long content_length = 0;
         char token[WS_TOKEN_HEX_LEN + 1] = {0};
@@ -1101,6 +1111,20 @@ static int client_thread(void *arg) {
 
         if (client_id[0]) {
             gst_webrtc_stream_client_seen(ws->webrtc, client_id);
+        }
+
+        /* ?token=... , for the one request that cannot carry a header. */
+        if (!token[0] && query_buf[0]) {
+            const char *at = strstr(query_buf, "token=");
+            if (at && (at == query_buf || at[-1] == '&')) {
+                char tok[WS_TOKEN_HEX_LEN + 1] = {0};
+                size_t k = 0;
+                for (at += 6; *at && *at != '&' && k < WS_TOKEN_HEX_LEN; at++) {
+                    tok[k++] = *at;
+                }
+                tok[k] = '\0';
+                snprintf(token, sizeof(token), "%s", tok);
+            }
         }
 
         if (strcmp(method, "GET") == 0 && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0)) {
