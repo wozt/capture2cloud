@@ -1,121 +1,95 @@
+<img src="assets/icon-256.png" width="96" align="left" alt="">
+
 # Capture2Cloud
 
-Play your game console from a browser, on any device, over your network.
+**Play your game console from a browser, a phone, or another Switch —
+anywhere on your network.**
 
-Capture2Cloud captures HDMI from a USB capture card, streams it to a
-browser with WebRTC at low latency, and relays the browser's input back
-to the console through a USB adapter — so a phone, tablet or laptop
-becomes a working controller for real hardware.
+<br clear="left">
 
-> **Status:** working personal project, not a polished product. It runs
-> daily on the setup it was built for. See
-> [WORKINPROGRESS.md](WORKINPROGRESS.md) for the detailed state, known
-> limitations and what's next.
+A USB capture card takes the HDMI out of a console; this streams it to
+whatever you are holding, and sends your buttons back to the console
+through a USB adapter that it sees as an ordinary controller. Nothing is
+installed on the console and nothing is modified on it.
+
+> **Status:** a working personal project, not a product. It runs daily on
+> the setup it was built for. [WORKINPROGRESS.md](WORKINPROGRESS.md) has
+> the honest state of things — what is measured, what is guessed, and
+> what is still wrong.
 
 ---
 
-## What it does
+## What you get
 
-- **Low-latency video/audio** — V4L2 capture (raw YUYV by default, MJPEG
-  for bandwidth-limited hosts), VP8 video and Opus audio over WebRTC.
-  Multiple viewers share a single encode.
-- **Play from the browser** — a real gamepad, an on-screen touch pad, or
-  keyboard and mouse. Input travels over a WebRTC DataChannel to a
-  ConsoleTuner adapter (Titan One and relatives) plugged into the
-  console, which the console sees as an ordinary controller.
-- **Watch or play** — anyone with the link can watch; controlling the
-  console requires a password. Enforced server-side, not just hidden in
-  the UI.
-- **Native window too** — the capture also shows in a local SDL window
-  with a small GTK control bar, which is handy for screen sharing over
-  Discord and similar.
-- **Wake the console** — optional: power-cycles a Home Assistant smart
-  plug, since cutting and restoring power wakes some consoles from
-  sleep.
-- **Three clients, one host** — the browser, a Nintendo Switch homebrew
-  and a native Android app, and they can all be connected at once. The
-  two native ones skip WebRTC entirely and take a small binary protocol
-  straight off a socket, which on a local network is the same picture
-  without the jitter buffer.
+**A picture and a sound, with as little delay as the hardware allows.**
+The card's frames are encoded once and shared by everyone watching, so a
+second viewer costs bandwidth rather than a processor core.
 
-### On-screen touch controls
+**Something to play with, whatever you are holding.** A real controller
+plugged into your phone or laptop, a touch pad drawn over the picture,
+or the keyboard and mouse. All three end up as the same twenty-one bytes
+by the time they reach the console.
 
-A transparent, multitouch overlay in the style of RetroArch: two sticks,
-a d-pad with real diagonals, face buttons, shoulders and triggers.
-Xbox / PlayStation / Nintendo skins, symmetric or asymmetric stick
-placement, adjustable colour and opacity, and a "move buttons" mode that
-lets you drag any control where your thumbs actually are — saved per
-browser.
+**Watch, or play.** Anyone with the link can watch. Driving the console
+needs the password, and that is checked on the host — not hidden in the
+page, where hiding it would mean anyone who opens the developer tools is
+a player.
 
-### Keyboard, mouse and remapping
+**Three clients at once.** The browser, an Android app, and a Nintendo
+Switch homebrew, all connected together if you like. Two people can
+watch while a third plays.
 
-Keyboard and mouse can drive the virtual pad (mouse on the right stick
-via Pointer Lock), with named, editable binding profiles. Real gamepads
-get their own remapping panel — press a button, bind it — stored per
-controller, because browsers report different controllers differently
-and no single hardcoded mapping fits them all.
+**A window on the machine itself**, with a tray icon and a settings
+window — handy for sharing the screen over Discord, and the only place
+some of the more administrative settings live.
+
+**Waking the console**, optionally, by power-cycling a Home Assistant
+smart plug — because cutting and restoring power is what wakes some
+consoles from sleep.
 
 ---
 
 ## How it fits together
 
 ```
-                                          WebRTC        browser
- HDMI ──► USB capture card ──► Capture2Cloud ──┤
-                                    │          └──────  Switch homebrew
-                                    │        (binary)   Android app
-                                    │                        │
-                                    │      gamepad state     │
-                                    │  ◄─────────────────────┘
-                                    ▼
-                            USB adapter (Titan One)
-                                    │
-                                    ▼
-                                 console
+                          ┌── WebRTC ──────────────┐
+   HDMI                   │   or WebSocket         ▼
+    │                     │                     browser
+    ▼                     │
+ capture card ──► Capture2Cloud ──── TCP ───►  Android app
+                          │                   Switch homebrew
+                          ▲                        │
+                          │      your buttons      │
+                          └────────────────────────┘
+                          │
+                          ▼
+                  USB adapter (Titan One)
+                          │
+                          ▼
+                       console
 ```
 
-The console is driven by a real USB adapter that emulates a controller,
-so no modification or homebrew is needed on the console side.
-
-Which controller the adapter pretends to be is set from the settings
-window or `TITAN_OUTPUT_PROTOCOL` in the `.env` — it can present itself
-as a Switch Pro Controller, an Xbox pad or a DualShock, and the value
-lives in the adapter's own memory. A change only takes effect once the
-adapter has been unplugged from the console and plugged back in; the
-settings window says so and waits for it.
+The console is driven by a real adapter pretending to be a controller,
+which is why nothing has to change on the console. Which controller it
+pretends to be — Switch Pro, Xbox pad, DualShock — is a setting; it is
+written into the adapter's own memory, so it survives everything, and it
+only takes effect once the adapter has been unplugged from the console
+and back in. The settings window says so and waits for it.
 
 ---
 
-## Requirements
+## What you need
 
-**Hardware**
-
-- A USB HDMI capture card (UVC/V4L2 compatible — developed against a
-  MACROSILICON USB3 device)
-- A ConsoleTuner adapter — Titan One, Cronus, CronusMAX — if you want to
-  *control* the console. Without one, everything still works as a
-  view-only stream.
-- Linux with X11 (the local window uses SDL2 + GTK3 and an X-specific
-  docking hint)
-
-**Software** — on Debian/Ubuntu and derivatives, one script handles it:
-
-```sh
-./scripts/install_deps.sh
-```
-
-It installs the build tools, SDL2/GTK3/PulseAudio, the GStreamer stack
-(including the `nice` plugin WebRTC needs for ICE), libusb and
-`v4l-utils`; adds a udev rule so the gamepad adapter is reachable
-without root; and creates `scripts/.env` from the template. Add `--dev`
-for the browser-test tooling, or `--no-udev` to skip the USB rule.
-
-On other distributions the script prints the list of equivalent
-packages to install by hand.
+- **A USB HDMI capture card** that Linux sees as a webcam (UVC/V4L2).
+  Developed against a MACROSILICON USB3 device.
+- **A ConsoleTuner adapter** — Titan One, Cronus, CronusMAX — if you want
+  to *play*. Without one everything still works as a view-only stream.
+- **Linux with X11.** The local window uses SDL2, GTK3 and an
+  X-specific hint.
 
 ---
 
-## Installing
+## Getting started
 
 ```sh
 git clone <this-repo> capture2cloud
@@ -124,373 +98,162 @@ cd capture2cloud
 $EDITOR scripts/.env
 ```
 
-At minimum set `VIDEO_DEVICE` and `AUDIO_SOURCE` for your capture card:
+The script installs everything, adds a udev rule so the adapter works
+without root, and copies `scripts/.env.example` to `scripts/.env`. On a
+distribution it does not know, it prints the equivalent package list
+instead of guessing.
+
+Two things to set, and one you should:
 
 ```sh
-v4l2-ctl --list-devices     # find the video device
-pactl list short sources    # find the audio source
+v4l2-ctl --list-devices     # which /dev/video* is the card
+pactl list short sources    # which source is its sound
 ```
 
-Prefer a stable `/dev/v4l/by-id/...` path — plain `/dev/videoN` numbers
-change across reboots.
+```ini
+VIDEO_DEVICE=/dev/video0
+AUDIO_SOURCE=alsa_input.usb-MACROSILICON...
+PLAYER_PASSWORD=something                # the one you should
+```
 
-Then build and run:
+**Set the password.** Without it, anyone who opens the page can drive
+the console — and so can any website you happen to visit, through a
+cross-origin request that reaches the "wake the console" button.
+
+Then start it:
 
 ```sh
-gcc -O2 -Wall -Wextra -o capture2cloud \
-  capture2cloud.c video_capture.c audio_capture.c gtk_shell.c \
-  web_stream.c gst_webrtc.c gamepad_bridge.c app_config.c \
-  switch_stream.c local_pad.c \
-  $(pkg-config --cflags --libs sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 \
-    x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 \
-    gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0) -lm
-
-./capture2cloud                # local window + GTK control bar
-./capture2cloud --headless     # no window; the web page is the interface
-./capture2cloud --help
+./toggle_capture2cloud.sh              # a window on this machine
+./toggle_capture2cloud_headless.sh     # no window; the page is the interface
 ```
 
-Two launchers sit one directory up. Both build if needed, share the same
-build recipe and device checks, and toggle — run one again to stop it:
-
-| | |
-| --- | --- |
-| `toggle_capture2cloud.sh` | Local window plus a GTK control bar. Convenient to bind to a keyboard shortcut. |
-| `toggle_capture2cloud_headless.sh` | No window at all. For SSH, a systemd unit, or a machine with no desktop. |
-
-They refuse to start while the other is running: only one instance can
-hold the capture card and the port. Stopping works off the process table
-rather than a pid file, so an instance whose pid file was lost is still
-found and stopped.
-
-Everything is resolved relative to the binary, so the directory can live
-anywhere and be renamed freely.
-
-### USB permissions
-
-`install_deps.sh` sets this up. If you skipped it, the adapter's USB
-device is root-only by default; grant access to the `plugdev` group:
-
-```sh
-echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2508", MODE="0660", GROUP="plugdev"' | \
-  sudo tee /etc/udev/rules.d/99-capture2cloud-adapter.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -aG plugdev "$USER"   # then log out and back in
-```
-
-### Adapter one-time setup
-
-ConsoleTuner adapters need their output profile configured **once** with
-the vendor's GTuner software (Windows, or a VM) before software
-injection has any effect. Without it the USB writes succeed but the
-console ignores them. The setting persists on the device afterwards.
+Both are toggles: run one again to stop it. Open
+`http://<this-machine>:5080` from anything on the network.
 
 ---
 
-## Using it
+## Playing
 
-1. Start the app, then enable **Stream → Stream to browser** from the
-   control bar (or set `WEB_AUTOSTART=1`). In `--headless` there is no
-   control bar, so the stream always starts on its own.
-2. Open `http://<this-machine>:5080` on any device on the network.
-3. Click **start stream** to allow playback with sound.
-4. To control the console, click **log in to play** and enter
-   `PLAYER_PASSWORD`. Then pick your input from the *gamepad* dropdown:
-   a detected controller, **Virtual buttons (touch)**, or
-   **Keyboard/mouse**.
+Click **start stream**, then **log in to play** and type the password.
+Pick your input from the *gamepad* dropdown: a controller it detected,
+**Virtual buttons (touch)**, or **Keyboard/mouse**.
 
-Without a password set, control is open to anyone who opens the page --
-including a cross-origin POST from any site the user visits, which can
-reach `/wake` and power-cycle the console. Set `PLAYER_PASSWORD`.
+**The touch pad** is a transparent overlay: two sticks, a d-pad with
+real diagonals, face buttons, shoulders and triggers, in Xbox,
+PlayStation or Nintendo lettering. A "move buttons" mode lets you drag
+any control to where your thumbs actually are, and remembers it.
 
-On the machine itself there is an icon in the notification area. Right
-click gives *Settings*, *Send controller input* and *Quit*; the settings
-window mirrors the page's controls, grouped the same way. Nothing there
-asks for a password: the person at that keyboard is at the machine the
-console is plugged into, and a login would guard a door they are standing
-behind.
+**Real controllers get their own remapping panel** — press a button,
+bind it — kept per controller, because browsers describe the same pad
+differently depending on the day and no single mapping fits them all.
 
-The video window is an ordinary window with its own decorations. It used
-to be borderless with a GTK menu bar glued above it, following its moves,
-mirroring its minimise and faking a fullscreen by moving both -- a great
-deal of machinery to imitate one window out of two, fighting the window
-manager the whole way. Closing it now hides it rather than quitting:
-closing a monitor is not stopping a capture other people are watching.
-
-**Show capture** in the tray menu brings the video window back: after
-closing it by accident, after minimising it, or from headless, where
-there was none to begin with. The same path in all three cases, because
-those states look different and are not. Headless initialises SDL without
-video at all, so asking for a window there adds the subsystem first --
-everything else has been running the whole time; this only adds somewhere
-to look. The speakers here come with it: they are opened on demand rather
-than only at startup, since a picture with no sound is half a capture.
-
-Closing the window closes them again -- a hidden window still making
-noise is a program you cannot find. Minimising does not: that is for
-getting it out of the way while still listening.
-
-Being open and being silent are two different things. Muting an open
-stream is instant and keeps the device alive; closing it is what headless
-does, and what a mute button should never do -- tearing a device down and
-building it again to answer a question about volume.
-
-**serve to switch** turns the console's server on and off, separately
-from the web one because they are separate servers -- and a session with
-nobody on a Switch has no reason to hold a port open. `SWITCH_AUTOSTART`
-in the .env says which way it starts; 1 by default.
-
-The page's viewer count includes console clients. It only ever counted
-browsers, so someone watching on the Switch was invisible and the page
-said nobody was connected while somebody plainly was. The limit shown is
-both servers' summed: leaving the denominator at the browser's would have
-been closer to what it used to say, but a count that could read 12/8 is
-worse than one whose bottom half moved.
-
-The console's port is settable from the same window and defaults to
-5081. It is its own port because the two streams are two servers -- the
-browser's is HTTP, the console's a small binary protocol -- and moving
-one has no reason to move the other. Changing it disconnects whatever is
-connected, since a listening socket cannot be moved, so it has to be
-changed on the console as well; the client has a field for it.
-
-The tray icon is there in headless mode too: headless means no video
-window, not no desk. The launcher passes a display through when there is
-one, and over ssh or from a unit file the program says once that it has
-no tray and carries on capturing.
-
-A controller plugged into this machine can drive the console directly,
-which until now needed a browser open on the machine the console is next
-to. It is one more source into the same merge the browser and the console
-client use, so several hands combine rather than fight. Off in headless
-mode, where the local speakers are not opened either -- nobody is sitting
-at a machine with no screen, and the stream is unaffected since that
-output only ever fed a monitor.
-
-The control bar is one line: mute, volume, and who you are. Everything
-else lives in a group -- *stream*, *picture*, *controls*, *touch pad*,
-*console* -- that opens over the video, one at a time. The volume slider
-reads 0-100%, where 100% is four times the stream's own level; turning it
-down is done by the video element itself, so zero is silent whether or
-not the amplification graph is running.
-
-The capture format defaults to **YUYV**, measured at 149% of a core
-against 186% for MJPEG on the whole process at 1080p60 with a browser and
-the console both watching. MJPEG costs a JPEG decode that YUYV does not;
-what it buys is a fraction of the bytes over USB, which matters if the
-USB3 path is shared. Switchable live from the page, and the choice is
-remembered per browser.
-
-MJPEG frames are decoded straight into the JPEG's own YUV planes rather
-than into RGB. Everything downstream wants YUV, so decoding to RGB meant
-converting it back -- a colour-space round trip over two million pixels,
-sixty times a second, to undo what libjpeg had just done. Measured at
-1080p60 with a browser and the console both connected, the whole process
-went from 226% of a core to 155%.
-
-H.264 for the Switch client is encoded on a GPU when one can do it --
-both of this machine's can -- preferring the integrated one, which is
-idle while the discrete card drives the display. It costs 47% of a core
-at 720p60 against 243% for x264. `SWITCH_H264_ENCODER` in the .env forces
-a particular one (`x264enc` to stay on the CPU). VP8 has no hardware
-encoder on AMD and stays on the CPU.
-
-Nothing is logged on a cycle. The adapter's report rate, the capture's
-frame gaps, the SDP of every negotiation, the "this client's link is
-behind" line -- all of them are behind `VERBOSE=1` in the .env. What is
-left is errors, connections and state changes, which is a few dozen lines
-for a whole session. The log and pid files live in `/dev/shm`, which is
-RAM on every Linux system; `/tmp` only sometimes is.
-
-The adapter's live report rate is readable at `GET /gamepad-rate` instead
--- one number, no authentication, and the way to see from outside that
-input is actually reaching the console.
-
-Five failed logins stop attempts for everyone for 30 seconds, so a weak
-password is not brute-forceable at speed; it is still worth changing from
-the `changeme` default. Traffic is plain HTTP, so passwords and session
-tokens cross the network in clear unless a tunnel (Tailscale) or a TLS
-reverse proxy carries them.
-
-**restart server** in the *console* group stops and starts the capture
-program, keeping its pid, its arguments and its log. Sound has been seen
-to stop arriving with everything still claiming to work, and this is the
-one thing that has always brought it back -- so it is a button rather
-than a trip to the machine. The page waits for the server to answer
-again and reloads itself; measured, the whole thing takes under two
-seconds. Players only, refused server-side. The Switch client has the
-same entry, and reconnects on its own.
-
-Several players can be logged in at once, and their input is combined
-rather than fought over: a button is pressed if anyone is pressing it,
-and a stick takes the largest deflection anyone is giving it. Whoever
-sent last used to win outright, which sounds like a hand-over and is not
-one -- the page sends its state on every animation frame whether or not
-anything changed, so a second person merely having it open wrote zeroes
-over the first person's input sixty times a second. A player who
-disconnects releases what they were holding.
-
-A viewer who has not logged in gets the picture and the sound, and
-nothing else: no gamepad controls, no video settings, and no controller
-detection at all. Refused server-side, not merely hidden — gamepad input,
-`/wake` and `/quality` all check the session. The bitrate in particular is
-shared: one encoder feeds every client, so it is not a viewer's to change.
-
-### Settings several people share
-
-One capture card, one encoder, one adapter — so the resolution, the
-frame rate, the bitrate, the codec and the capture format are the
-connection's, not any one client's. A client that joins is **told** what
-everyone is already watching and moves its own controls to match, rather
-than pushing what it had saved: starting a client used to change the
-picture for people already connected, silently. Changing one of these on
-purpose still changes it for everyone, and every other client's sliders
-and dropdowns follow within a second or two.
-
-The native side is **two streams**: the host runs a VP8 chain and an
-H.264 one, and a client is sent whichever it asked for. Two encoders and
-never more — one per codec, each shared by everyone on it — and a chain
-nobody is watching is not fed at all, so it costs nothing. The two are
-independent: someone on VP8 dropping to 480p30 leaves the H.264 viewers
-alone, menus included. Picking a codec is therefore each client's own
-choice.
-
-Volume, the picture adjustments, the virtual pad and the stick shaping
-are nobody else's business and are never sent anywhere. The full split,
-and why it falls where it does, is in
-[SHARED_SETTINGS.md](SHARED_SETTINGS.md).
-
-### Remote access
-
-Only the page and the initial handshake go over HTTP; the actual media
-and input travel peer-to-peer over UDP. Reaching it from outside your
-network therefore needs more than a reverse proxy — see the "remote
-access" goal in [WORKINPROGRESS.md](WORKINPROGRESS.md).
+**Keyboard and mouse** drive the same virtual pad, the mouse on the
+right stick through pointer lock, with named binding profiles.
 
 ---
 
-## Configuration
+## Two ways the page can receive the stream
 
-Everything lives in `scripts/.env` (git-ignored), read by both the
-application and the shell scripts. See
-[`scripts/.env.example`](scripts/.env.example) for the annotated list.
+The page can take the video either way, and the choice is a setting in
+its own menu — one or the other, for everybody, switchable while
+running. `WEB_TRANSPORT` in the `.env` only decides which one the host
+*starts* on.
 
-| Key | Purpose |
-| --- | --- |
-| `VIDEO_DEVICE` | V4L2 capture device |
-| `AUDIO_SOURCE` | PulseAudio source for capture audio |
-| `CAPTURE_FORMAT` | `mjpeg` (default; less USB bandwidth, ~50 points of a core more for the decode) or `yuyv` (raw, lowest CPU). Also switchable while running, from the page, and remembered per browser. |
-| `GAMEPAD_DEDUP` | Only send a controller report when the state changes, plus a keepalive (default 1). `0` sends on every pass, as it used to. |
-| `LOCAL_PLAYBACK` | Also play the captured audio on this machine (default 1) |
-| `LOCAL_SINK` | Play on this output rather than the system default. Worth setting where the default is a virtual device: sound that goes into one and never comes out the other side looks exactly like sound this program failed to produce. |
-| `SWITCH_PORT` / `SWITCH_AUTOSTART` | Port for the native clients, and whether that server starts on launch |
-| `TITAN_OUTPUT_PROTOCOL` | What the adapter pretends to be: `auto`, `switch`, `xb360`, `ps4`… Written into the adapter, so it only needs setting once. |
-| `GAMEPAD_USB_VID` / `_PID` | Force a specific adapter (default: auto-detect) |
-| `WEB_PORT` / `WEB_AUTOSTART` | Web server port, and whether it starts on launch |
-| `MAX_CLIENTS` | Simultaneous browser clients (capped at 32) |
-| `RTP_MTU` | `auto` sizes packets to the link toward each client; a number forces it |
-| `KEYFRAME_MAX_DIST` | Frames between forced keyframes (300 = one every 5s at 60fps) |
-| `PLAYER_PASSWORD` | Password to control the console; empty = open |
-| `HA_URL` / `HA_TOKEN` / `HA_PLUG_ENTITY` | Home Assistant, for waking the console |
+**WebRTC** is the default and the faster of the two. Its media travels
+peer-to-peer over UDP, so a lost packet costs one frame and nothing
+waits for it.
+
+**WebSocket** carries the same protocol the Android and Switch clients
+speak, and the browser decodes it with WebCodecs. It is ordinary web
+traffic, which is the whole point: Cloudflare, Nginx and Authelia relay
+it without being told anything, where WebRTC's media never touches the
+HTTP chain at all and needs STUN — possibly TURN — to leave the house.
+
+The trade is TCP's, and it is real: a lost packet stalls everything
+behind it instead of costing one frame. On a good link you will not
+notice; on a lossy one you swap artefacts for pauses, which is the wrong
+way round for something you are playing. Hence a choice, not a
+replacement.
+
+Each of these is its own encode, made only while somebody is watching
+it. A path nobody is on costs nothing.
 
 ---
 
 ## The other two clients
 
-Both speak the host's own protocol over a socket rather than WebRTC.
-That is worth having on a local network: WebRTC brings a jitter buffer,
-congestion control and its own idea of when to drop a frame, which is
-exactly right over the open internet and pure latency on a phone sitting
-on the same wifi as the host.
+Both skip the browser entirely and read the host's own protocol off a
+socket, which on a local network is the same picture without a jitter
+buffer.
 
-### Switch homebrew — `switch_homebrew/`
+**`switch_homebrew/`** — H.264 at 720p60, decoded on the console's own
+video engine, with an on-screen touch pad and the same settings as the
+page. Copy the `.nro` to `/switch/` on the SD card.
 
-```sh
-cd switch_homebrew && make        # needs devkitPro with libnx
-```
+**`android/`** — the same stream and the same menu, with hardware
+H.264, Bluetooth and USB-OTG controllers, movable on-screen buttons and
+an automatic bitrate. Install the `.apk` from a release.
 
-Copy `capture2switch.nro` to `/switch/` on the SD card. The host address
-and port are typed on the console's own keyboard, under `connection`.
-H.264 is decoded on the console's hardware at 720p60.
+Both are in every [release](../../releases), built and signed.
 
-### Android — `android/`
+---
 
-```sh
-cd android && ./gradlew assembleDebug     # needs the Android SDK, API 36
-./gradlew test                            # JVM tests, no device needed
-```
+## Settings several people share
 
-Mirrors the page's settings, and offers the same two ways in: the direct
-path, or HTTP like the browser. Video and audio are decoded by
-MediaCodec. The codec buttons say `HW` or `SW` for the device in hand,
-because whether a phone decodes VP8 in silicon is a property of that
-phone and is better read than discovered.
+There is one capture card and one adapter, so some settings belong to
+whoever is connected rather than to whoever changed them last. A client
+that joins is **told** what everyone is watching and moves its own
+controls to match, rather than pushing what it had saved and changing
+the picture for people already there.
+
+Volume, the picture adjustments, the touch pad and the stick shaping are
+nobody else's business and are never sent anywhere.
+
+[SHARED_SETTINGS.md](SHARED_SETTINGS.md) has the full split and why it
+falls where it does.
+
+---
+
+## Configuration
+
+Everything lives in `scripts/.env`, which is git-ignored and read by
+both the program and the shell scripts.
+[`scripts/.env.example`](scripts/.env.example) is the annotated list;
+these are the ones worth knowing about.
+
+| Key | What it does |
+| --- | --- |
+| `VIDEO_DEVICE`, `AUDIO_SOURCE` | Which card, and which of its sounds |
+| `PLAYER_PASSWORD` | The password to play. Empty means anyone can. |
+| `CAPTURE_FORMAT` | `yuyv` (raw, least processor) or `mjpeg` (least USB bandwidth). Also switchable from the page. |
+| `WEB_TRANSPORT` | `webrtc` or `ws` — which one the page starts on |
+| `WEB_PORT`, `WEB_AUTOSTART` | The page's port, and whether it starts on launch |
+| `SWITCH_PORT`, `SWITCH_AUTOSTART` | The same, for the Android and Switch clients |
+| `TITAN_OUTPUT_PROTOCOL` | What the adapter pretends to be: `auto`, `switch`, `xb360`, `ps4`… |
+| `LOCAL_SINK` | Play the sound on this output rather than the system default — worth setting where the default is a virtual device, since sound that vanishes into one looks exactly like sound this program failed to produce |
+| `HA_URL`, `HA_TOKEN`, `HA_PLUG_ENTITY` | Home Assistant, for waking the console |
 
 ---
 
 ## Development
 
 ```sh
-./tests/run_all.sh          # C unit tests + JavaScript suite
-cd android && ./gradlew test # the Android client's own, on the JVM
+./tests/run_all.sh          # everything: C, JavaScript, the protocol, the attack suite
 ```
 
-`run_all.sh` prints where the time went, per suite, and runs everything
-at `nice -n 19` so it cannot take a core from a live encode.
+The launchers rebuild whenever a source is newer than the binary, so
+there is usually nothing to compile by hand. `page.html` and the files
+under `web/` are served straight from disk: edit, refresh, done.
 
-Browser tests need the app running, plus a one-time
-`npm install && npx playwright install chromium`:
+The front end is eleven plain scripts sharing one scope, not modules,
+and the order `page.html` loads them in is part of the program — a
+declaration hoists within a file and not across two. A test compares
+that order against the one the suite runs them in, because a file added
+to one list and not the other passes here and breaks in a browser.
 
-```sh
-node tests/browser/smoke.js          # page loads, WebRTC connects, frames arrive
-node tests/browser/ui_shots.js       # renders the UI and screenshots it
-node tests/browser/watch_frames.js   # gaps between presented frames (hitches)
-node tests/browser/measure_latency.js # browser-side latency budget
-node tests/browser/ice_candidates.js  # what each side offers for connectivity
-node tests/security/attack.js         # attack traffic against a running instance
-```
-
-The measurement scripts are how the hitch and latency questions in
-WORKINPROGRESS.md were settled — worth reaching for before changing
-anything that claims to affect smoothness or delay.
-
-### The front end
-
-`page.html` and the files under `web/` are served straight from disk —
-edit and refresh the browser, no rebuild.
-
-```
-web/
-├── main.js            the elements, looked up once; loaded first
-├── settings.js        what the browser remembers, versioned
-├── ui/controls.js     the control bar: sound, picture, bitrate, format
-├── ui/overlay.js      the stats row and the numbers in it
-├── authentication.js  viewer by default, player on request
-├── gamepad.js         real controllers, shaping, and the merge
-├── keyboard.js        keyboard and mouse as a controller
-├── ui/panels.js       the rebind panel and the controller test
-├── touchpad.js        the on-screen pad
-├── webrtc.js          the connection; loaded last, it starts the stream
-└── styles/app.css
-```
-
-These are **plain scripts sharing one scope, not modules**, and the
-order above is the order `page.html` loads them in — which is part of
-the program, since a function declaration hoists within a file and not
-across two. `tests/run_tests.js` pins both the list and the order and
-runs the files concatenated, so a file added to one list and not the
-other fails there rather than in somebody's browser.
-
-The server does **not** build a path out of what was requested: a
-request selects a row from a fixed table in `web_stream.c` or gets a
-404. Adding a file to the front end means adding a line there. That is
-the price of `/web/../scripts/.env` — the file holding the password this
-same server checks — being unreachable by construction rather than by
-careful escaping.
-
-Architecture, protocol notes and the reasoning behind the trickier parts
-(latency, the GCAPI wire format, threading) are documented in
-[WORKINPROGRESS.md](WORKINPROGRESS.md) and in comments next to the code
+The architecture, the protocol, and the reasoning behind the parts that
+look strange — latency, the GCAPI wire format, the threading — are in
+[WORKINPROGRESS.md](WORKINPROGRESS.md) and in comments beside the code
 they explain.
 
 ---
