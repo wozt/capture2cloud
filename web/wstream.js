@@ -38,6 +38,11 @@ var wsCtx2d = null;
 var wsFrames = 0;
 var wsKeyframes = 0;
 var wsBytes = 0;
+var wsLastStatsAt = 0;
+var wsLastStatsBytes = 0;
+var wsLastStatsFrames = 0;
+var wsKbps = 0;
+var wsFps = 0;
 var wsDropped = 0;
 var wsLastKeyRequest = 0;
 /* Four frames is about a sixteenth of a second at sixty: deep enough to
@@ -460,3 +465,27 @@ function applyTransport(which) {
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   });
 });
+
+/*
+ * What this transport is doing, in the same words the other one uses.
+ *
+ * The stats line reads the peer connection, and on this path there is
+ * none -- so it kept showing the last thing WebRTC had said, which was
+ * "VP8" over a stream that had been H.264 for several minutes. A line
+ * that is stale is worse than one that is blank: it is believed.
+ */
+function wsStatsLine() {
+  var now = Date.now();
+  if (wsLastStatsAt && now > wsLastStatsAt) {
+    var dt = (now - wsLastStatsAt) / 1000;
+    wsKbps = Math.round(((wsBytes - wsLastStatsBytes) * 8) / 1000 / dt);
+    wsFps = Math.round((wsFrames - wsLastStatsFrames) / dt);
+  }
+  wsLastStatsAt = now;
+  wsLastStatsBytes = wsBytes;
+  wsLastStatsFrames = wsFrames;
+
+  var size = canvas.width + 'x' + canvas.height;
+  return 'h264(ws) ' + size + ' ' + wsFps + 'fps ' + wsKbps + 'kbps' +
+         (wsDropped ? '  ' + wsDropped + ' dropped' : '');
+}
