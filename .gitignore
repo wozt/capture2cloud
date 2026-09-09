@@ -57,3 +57,12 @@ android/local.properties
 # Generated for the C language server so code-graph tools can resolve
 # this project. Machine-specific paths; regenerate rather than commit.
 /compile_commands.json
+
+# Superseded material kept on disk only: the previous 1004-line
+# WORKINPROGRESS.md before it was condensed, and the standalone capture
+# experiment this project grew out of. Deliberately not pushed -- they
+# are history, not documentation, and the summary that replaced them
+# links here rather than carrying the detail. Anything genuinely needed
+# from them is also in git history (up to 0abbbb3), so ignoring them
+# loses nothing that cannot be recovered with `git show`.
+/legacy/
