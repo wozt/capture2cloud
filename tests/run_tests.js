@@ -1051,6 +1051,61 @@ group('the websocket handshake is read where the struct actually puts it', () =>
   check('as bare Opus packets', s.audioDecoders[0].configured.codec, 'opus');
 });
 
+group('logging in replaces the socket rather than adding one', () => {
+  // The token travels in the WebSocket's URL, so becoming a player
+  // means a new socket. Closing the old one is asynchronous, though:
+  // its onclose lands well after the replacement is live, and it used
+  // to null wsSocket (the NEW one), clear the NEW ping timer and
+  // schedule a reconnect -- leaving the second socket open, decoding
+  // into the same canvas, with nothing left holding a reference to it.
+  // Three clients on the host for one tab, and a picture alternating
+  // between two decoders. A page refresh appeared to fix it because it
+  // dropped everything at once.
+  const ack = (rate) => {
+    const m = new Uint8Array(8 + 20);
+    m[0] = 27;
+    const v = new DataView(m.buffer);
+    v.setUint32(4, 20, true);
+    m[8 + 6] = 1;
+    v.setUint16(8 + 8, 1920, true);
+    v.setUint16(8 + 10, 1080, true);
+    v.setUint16(8 + 14, rate, true);
+    m[8 + 16] = 2;
+    return m;
+  };
+
+  const s = createSandbox(APP_JS);
+  s.startWsStream();
+  check('one socket to start with', s.sockets.length, 1);
+  const first = s.sockets[0];
+  first.fireOpen();
+  first.fireMessage(ack(48000));
+  check('the handshake was read', s.wsAudioRate, 48000);
+
+  // What loginBtn does once the password is accepted.
+  s.stopWsStream();
+  s.wsLeaving = false;
+  s.playerToken = 'cafebabe';
+  s.startWsStream();
+  check('a second socket', s.sockets.length, 2);
+  const second = s.sockets[1];
+  check('carrying the token', /token=cafebabe/.test(second.url), true);
+  check('and the first was asked to close', first.closed, true);
+  second.fireOpen();
+
+  // Now the browser gets round to reporting the first one shut.
+  first.fireClose();
+  check('the live socket is untouched', s.wsSocket === second, true);
+  check('no third socket was opened', s.sockets.length, 2);
+  s.runPendingTimers();
+  check('and none once the reconnect would have fired', s.sockets.length, 2);
+
+  // Nor may the dead one still reach the decoder: two painters on one
+  // canvas is exactly what the flicker was.
+  first.fireMessage(ack(24000));
+  check('a message from the replaced socket is ignored', s.wsAudioRate, 48000);
+});
+
 group('the canvas stays the surface on the websocket path', () => {
   // The <video> element has no source on this transport -- the decoder
   // draws into the canvas. Unchecking vsync used to hand the display

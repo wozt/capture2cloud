@@ -251,8 +251,24 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
         void init;
         return dec;
       },
+      /* Enough of it for startWsStream() to get past its capability
+       * check; the decoding itself is the browser's business, not
+       * this suite's. */
+      VideoDecoder: function () {
+        const dec = {
+          state: 'unconfigured',
+          decodeQueueSize: 0,
+          configure() { dec.state = 'configured'; },
+          decode() {},
+          close() { dec.state = 'closed'; }
+        };
+        return dec;
+      },
       innerHeight: 800
     },
+    /* Where the page thinks it is served from -- the WebSocket URL is
+     * built out of this. */
+    location: { protocol: 'http:', host: '127.0.0.1:5080', href: 'http://127.0.0.1:5080/' },
     document: documentStub,
     localStorage: localStorageStub,
     // Separate from localStorage on purpose: app.js keeps the player
@@ -326,6 +342,30 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
     }
   };
   sandbox.fetchCalls = [];
+  /* Every socket the page opened, in order, each one drivable: a test
+   * can fire a close on one that has already been replaced, which is
+   * the whole difficulty with this transport -- closing is
+   * asynchronous, so the dead socket's handlers run after its
+   * successor is live. */
+  sandbox.sockets = [];
+  sandbox.WebSocket = function (url) {
+    const s = {
+      url,
+      readyState: 0,
+      sent: [],
+      closed: false,
+      binaryType: '',
+      send(d) { s.sent.push(d); },
+      close() { s.closed = true; s.readyState = 3; },
+      /* What the browser would call. Deliberately NOT called by
+       * close(): that is the bug's whole shape. */
+      fireOpen() { s.readyState = 1; if (s.onopen) s.onopen(); },
+      fireClose() { s.readyState = 3; if (s.onclose) s.onclose(); },
+      fireMessage(bytes) { if (s.onmessage) s.onmessage({ data: bytes.buffer }); }
+    };
+    sandbox.sockets.push(s);
+    return s;
+  };
   /* Every AudioDecoder the page built, so a test can ask whether the
    * handshake actually started one and with what. */
   sandbox.audioDecoders = [];
@@ -335,6 +375,7 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
    * both places -- otherwise the guard passes and the call throws,
    * which no browser would ever do. */
   sandbox.AudioDecoder = sandbox.window.AudioDecoder;
+  sandbox.VideoDecoder = sandbox.window.VideoDecoder;
   sandbox.pendingTimeouts = [];
   /* Runs what is queued now. The real timer will also fire later; every
    * callback here is idempotent enough for that not to matter. */
