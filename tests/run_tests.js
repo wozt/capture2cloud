@@ -609,6 +609,66 @@ group('controller test popup', () => {
   check('no longer suppressing', s.inputIsSuppressed(), false);
 });
 
+group('every control on the page is remembered', () => {
+  // The complaint that started this: a handful of settings were not
+  // kept. Rather than list them by hand, the page is asked -- every
+  // control that changes a preference must write one, and the only
+  // thing deliberately never stored is the password.
+  const s = createSandbox(APP_JS);
+  s.setPlayerUi(true);
+
+  // Which group of the control bar was open.
+  const group = s.menuGroups[1];
+  group.open = true;
+  group.dispatch('toggle', {});
+  check('the open menu group is written', s.settings.openGroup, group.id);
+  group.open = false;
+  group.dispatch('toggle', {});
+  check('and closing it is written too', s.settings.openGroup, null);
+
+  // ...and restored, by id rather than by position.
+  const back = createSandbox(APP_JS, {
+    'capture2cloud_settings': JSON.stringify({
+      settingsVersion: 4, openGroup: s.menuGroups[2].id })
+  });
+  check('the group reopens on the next load', back.menuGroups[2].open, true);
+  check('and no other one does',
+    back.menuGroups.filter((g) => g.open).length, 1);
+
+  // Fullscreen follows the document, not the click: leaving with Escape
+  // never goes through the checkbox.
+  s.document.dispatch('fullscreenchange', {});
+  check('fullscreen is recorded from the real state',
+    s.settings.fullscreen, false);
+
+  // The transport is kept as a record.
+  s.transportSelect.value = 'ws';
+  s.transportSelect.onchange({ target: s.transportSelect });
+  check('the transport is written', s.settings.transport, 'ws');
+});
+
+group('the password is the one thing never written down', () => {
+  // Everything else on the page is a preference; this is a credential.
+  // It is typed, exchanged for a token, and forgotten -- the token
+  // living in sessionStorage so it dies with the tab, and never in the
+  // settings blob that outlives it.
+  const s = createSandbox(APP_JS);
+  s.setPlayerUi(false);
+  s.prompt = () => 'hunter2';
+  s.loginBtn.onclick();
+
+  // It really did go out, so this is not passing by doing nothing.
+  const login = s.fetchCalls.find((c) => c.url === '/login');
+  check('the password was sent to /login', login && login.options.body, 'hunter2');
+
+  // And it is nowhere in what outlives the tab. Checked against the raw
+  // stored text, not the in-memory object, since that is what persists.
+  const stored = s.localStorage.getItem('capture2cloud_settings') || '';
+  check('nothing stored contains it', stored.indexOf('hunter2'), -1);
+  check('nor does the live settings object',
+    JSON.stringify(s.settings).indexOf('hunter2'), -1);
+});
+
 group('settings persistence', () => {
   const s = createSandbox(APP_JS);
   // saveSettings must update BOTH localStorage and the live `settings`
