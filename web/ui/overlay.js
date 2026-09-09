@@ -36,6 +36,14 @@ var lastStatsTime = 0;
 var lastAudioBytes = 0;
 var lastAudioPackets = 0;
 function updateStats() {
+  /* The WebSocket path has no peer connection to ask, so it reports for
+   * itself -- and reports at all, rather than leaving the last thing
+   * WebRTC said standing over a stream it is no longer carrying. */
+  if (typeof wsIsActive === 'function' && wsIsActive()) {
+    infoEl.textContent = wsStatsLine() + '  viewers ' + connectedClients +
+                         '  gamepad: ' + currentGamepadStatus + '  v' + C2C_VERSION;
+    return;
+  }
   if (!pc) return;
   pc.getStats(null)
     .then(function (stats) {

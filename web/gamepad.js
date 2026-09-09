@@ -499,7 +499,17 @@ function sendGamepadState() {
       gpDebugEl.textContent = '';
     }
   }
-  if (!gamepadChannel || gamepadChannel.readyState !== 'open') return;
+  /*
+   * A transport, whichever it is. This asked for the DataChannel and
+   * returned when there was not one -- so on the WebSocket path the pad
+   * was never even READ, let alone sent, and the send further down that
+   * knows about both transports was never reached.
+   */
+  if (typeof wsIsActive === 'function' && wsIsActive()) {
+    /* the WebSocket carries it; fall through and build the state */
+  } else if (!gamepadChannel || gamepadChannel.readyState !== 'open') {
+    return;
+  }
   var s = gamepadState;
   s.fill(0);
   var settling =
