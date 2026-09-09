@@ -894,10 +894,21 @@ static GstFlowReturn on_switch_audio_sample(GstElement *sink, gpointer user_data
     return GST_FLOW_OK;
 }
 
+static void announce_shared_slot(GstWebrtcStream *g, int slot);
+static void on_switch_keyframe_request(void *ctx);
+
 /* Changes the size the BROWSER stream is encoded at, while running. The
- * capture and the native branch are untouched. */
+ * capture and the two native branches are untouched.
+ *
+ * BOTH browser chains, not just the WebRTC one. The page has a single
+ * resolution control and the host runs one transport at a time, so
+ * driving only the VP8 chain is a control that does nothing for
+ * whoever is on the WebSocket -- which is exactly how it behaved. They
+ * are kept at the same size rather than tracked separately so that
+ * switching transport does not also change the picture.
+ */
 void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int width, int height) {
-    if (!g || !g->vscale_caps || width <= 0 || height <= 0) {
+    if (!g || width <= 0 || height <= 0) {
         return;
     }
     if (g->browser_width == width && g->browser_height == height) {
@@ -905,16 +916,37 @@ void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int width, int
     }
     /* Rewriting the filter is the whole change: videoscale renegotiates
      * with the encoder, which is the supported way to do this while
-     * running. */
+     * running. The appsrc keeps feeding 1080p either way -- the scale
+     * happens inside the pipeline, which is why nothing here touches
+     * how the chain is fed. */
     GstCaps *caps = gst_caps_new_simple("video/x-raw",
                                         "width", G_TYPE_INT, width,
                                         "height", G_TYPE_INT, height, NULL);
-    g_object_set(g->vscale_caps, "caps", caps, NULL);
+    if (g->vscale_caps) {
+        g_object_set(g->vscale_caps, "caps", caps, NULL);
+    }
+    if (g->vscale_web264_caps) {
+        g_object_set(g->vscale_web264_caps, "caps", caps, NULL);
+    }
     gst_caps_unref(caps);
 
     g->browser_width = width;
     g->browser_height = height;
-    fprintf(stderr, "gst_webrtc: browser stream now %dx%d\n", width, height);
+    g->switch_width[SS_STREAM_WEB] = width;
+    g->switch_height[SS_STREAM_WEB] = height;
+
+    /* The WebSocket clients are told, the way the native ones are: their
+     * decoder is configured for a size and has no other way to learn it
+     * changed. A keyframe with it, so the new size arrives in a frame
+     * they can actually start from rather than at the next scheduled
+     * one, five seconds later. */
+    if (g->switch_out) {
+        switch_stream_announce_stream(g->switch_out, SS_STREAM_WEB,
+                                      (uint16_t)width, (uint16_t)height);
+        announce_shared_slot(g, SS_STREAM_WEB);
+        on_switch_keyframe_request(g);
+    }
+    fprintf(stderr, "gst_webrtc: browser streams now %dx%d\n", width, height);
 }
 
 int gst_webrtc_stream_get_video_bitrate(GstWebrtcStream *g) {
@@ -1938,6 +1970,18 @@ void gst_webrtc_stream_set_video_bitrate(GstWebrtcStream *g, int bitrate_kbps) {
     g->video_bitrate_kbps = bitrate_kbps;
     if (g->venc_vp8) {
         g_object_set(g->venc_vp8, "target-bitrate", bitrate_kbps * 1000, NULL);
+    }
+    /* The browser's other encoder, for the same reason the resolution
+     * reaches it: one slider on the page, one transport running, and a
+     * slider that moves only the encoder nobody is watching is a slider
+     * that does nothing. Note the units differ -- vp8enc takes bits per
+     * second, both H.264 encoders take kbps. */
+    if (g->venc_web_h264) {
+        g_object_set(g->venc_web_h264, "bitrate", bitrate_kbps, NULL);
+    }
+    g->switch_bitrate_kbps[SS_STREAM_WEB] = bitrate_kbps;
+    if (g->switch_out) {
+        announce_shared_slot(g, SS_STREAM_WEB);
     }
     fprintf(stderr, "gst_webrtc: video bitrate: %d kbps\n", bitrate_kbps);
 }

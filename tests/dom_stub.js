@@ -234,6 +234,23 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
           close: () => Promise.resolve()
         };
       },
+      /* Enough of WebCodecs for the WebSocket path's SOUND to be
+       * started under test. Without it wsStartAudio() returns at its
+       * first line and a handshake that never starts the decoder looks
+       * exactly like one that does. */
+      AudioDecoder: function (init) {
+        const dec = {
+          state: 'unconfigured',
+          configured: null,
+          decoded: 0,
+          configure(cfg) { dec.configured = cfg; dec.state = 'configured'; },
+          decode() { dec.decoded++; },
+          close() { dec.state = 'closed'; }
+        };
+        sandbox.audioDecoders.push(dec);
+        void init;
+        return dec;
+      },
       innerHeight: 800
     },
     document: documentStub,
@@ -309,6 +326,15 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
     }
   };
   sandbox.fetchCalls = [];
+  /* Every AudioDecoder the page built, so a test can ask whether the
+   * handshake actually started one and with what. */
+  sandbox.audioDecoders = [];
+  /* In a browser `window` IS the global object, so code that tests
+   * `'AudioDecoder' in window` and then says `new AudioDecoder(...)`
+   * reaches one thing. Here they are two, so the constructor is put in
+   * both places -- otherwise the guard passes and the call throws,
+   * which no browser would ever do. */
+  sandbox.AudioDecoder = sandbox.window.AudioDecoder;
   sandbox.pendingTimeouts = [];
   /* Runs what is queued now. The real timer will also fire later; every
    * callback here is idempotent enough for that not to matter. */

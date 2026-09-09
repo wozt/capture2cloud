@@ -235,11 +235,23 @@ function wsOnMessage(bytes) {
   } else if (type === WS_MSG_HELLO_ACK) {
     var b = new DataView(body.buffer, body.byteOffset, body.byteLength);
     var granted = body[6] === 1;
-    /* The ack carries the sound's shape too: a rate of zero means the
+    /*
+     * The ack carries the sound's shape too: a rate of zero means the
      * host is sending none, and drawing a volume control for that would
-     * be a control that does nothing. */
-    wsAudioChannels = body[17] || 2;
-    wsAudioRate = b.getUint16(18, true);
+     * be a control that does nothing.
+     *
+     * These offsets are C2sHelloAck's, counted rather than guessed, and
+     * getting them wrong is silent: reading the rate four bytes late
+     * lands in reserved2, which is zero, which reads exactly like a
+     * host sending no sound at all -- so the decoder was simply never
+     * started and the page played nothing. The layout is packed:
+     *   magic 0..3, version 4, accepted 5, may_control 6, reserved 7,
+     *   width 8..9, height 10..11, video_codec 12, audio_codec 13,
+     *   audio_rate 14..15, audio_channels 16, reserved2 17..19.
+     * tests/run_tests.js pins it.
+     */
+    wsAudioChannels = body[16] || 2;
+    wsAudioRate = b.getUint16(14, true);
     log('connected over the websocket, ' +
         b.getUint16(8, true) + 'x' + b.getUint16(10, true) +
         (granted ? ' -- player' : ' -- viewer'));
@@ -428,9 +440,11 @@ function stopWsStream() {
   if (wsDecoder) { try { wsDecoder.close(); } catch (e) {} }
   wsDecoder = null;
   wsFrames = 0;
-  /* The video element is the WebRTC path's surface; hand it back. */
-  canvas.style.display = 'none';
-  video.style.display = 'block';
+  /* Hand the surface back to whichever one the vsync setting asks for,
+   * rather than to the video element unconditionally: with vsync on,
+   * that left the canvas hidden and its draw loop stopped, so the
+   * WebRTC picture came back to an element nobody was showing. */
+  setVsync(vsyncBox.checked);
 }
 
 /*
