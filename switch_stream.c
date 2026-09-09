@@ -42,13 +42,15 @@
 
 /*
  * Four was sized for native clients, back when a browser could not
- * reach this transport at all. A browser can now, and a page that is
- * reloaded takes a slot until it is noticed gone -- so four was a
- * server that refused the fourth reload of the afternoon. Twelve costs
- * an array; the encoders are shared, so the cost of a client is
- * bandwidth rather than a core.
+ * reach this transport at all. A browser can now, and a reloaded page
+ * holds a slot until it is noticed gone -- so four was a server that
+ * refused the fourth reload of the afternoon.
+ *
+ * Eight, not more. The encoders are shared, so a client costs bandwidth
+ * rather than a core, but every one of them is a full stream going out
+ * of this machine and there is no point pretending otherwise.
  */
-#define SS_MAX_CLIENTS 12
+#define SS_MAX_CLIENTS 8
 
 /* A client that has said nothing for this long is gone, whatever the
  * socket thinks. Every client pings -- the page included, which is not
