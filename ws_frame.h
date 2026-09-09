@@ -17,8 +17,8 @@
  *
  * What that buys is not elegance. The media in the WebRTC path travels
  * peer-to-peer over UDP and never touches the HTTP chain, which is why
- * it does not survive a reverse proxy: see the "remote access" note in
- * WORKINPROGRESS.md. A WebSocket over HTTPS is ordinary web traffic that
+ * it does not survive a reverse proxy: see the STUN item under "still
+ * open" in WORKINPROGRESS.md. A WebSocket over HTTPS is ordinary web traffic that
  * Cloudflare, Nginx and Authelia relay without being told anything.
  *
  * The cost is TCP's, and it is real: a lost packet stalls everything
