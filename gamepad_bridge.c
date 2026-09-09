@@ -563,9 +563,8 @@ static void read_real_controller_state(void) {
     /* Whenever we don't get a fresh, well-formed report, fall back to "no
      * button held" rather than leaving g_real_state at whatever it was --
      * silently keeping a stale value here is what let a single bad/garbage
-     * read latch a button as permanently pressed until the next good read
-     * (this is currently moot since the merge that consumes g_real_state
-     * is disabled above, but keep this correct for when it's re-enabled). */
+     * read latch a button as permanently pressed until the next good
+     * read -- which the merge below would then hold down forever. */
     /* Nothing this pass is the normal case, not an error: the adapter
      * simply had no new report ready within the three milliseconds we
      * are willing to wait. The previous state stands until it goes

@@ -6,11 +6,16 @@ For what the project is and how to install it, see [README.md](README.md).
 
 Low-latency HDMI/USB capture for screen sharing/cloud gaming: V4L2 capture
 + SDL2 rendering + PulseAudio audio in a native window, with a web
-streaming mode (WebRTC) to watch/play remotely from a browser, and a
-gamepad bridge to relay input all the way to a real console via a
-ConsoleTuner adapter (Titan One).
+streaming mode to watch/play remotely from a browser, and a gamepad
+bridge to relay input all the way to a real console via a ConsoleTuner
+adapter (Titan One).
 
-## Current state (2026-08-28)
+Three clients read that stream: the browser (over WebRTC *or* a
+WebSocket -- a live setting, see below), an Android app, and a Nintendo
+Switch homebrew, the last two over the binary TCP protocol in
+`c2s_protocol.h`.
+
+## Current state (2026-09-09)
 
 ### Working
 - Native SDL2 capture + display, docked GTK control window (menu to
@@ -18,6 +23,16 @@ ConsoleTuner adapter (Titan One).
   (`scripts/.env`).
 - WebRTC streaming: VP8 video + Opus audio, multi-client (each client
   gets its own RTP payloader).
+- **Two transports for the page, and three encodes.** The browser can
+  take the video over WebRTC or over a WebSocket carrying the same
+  messages the phone and the console read, decoded with WebCodecs;
+  `WEB_TRANSPORT` in the `.env` picks only what the host *starts* on,
+  after which it is a shared, players-only setting in the page's menu.
+  See "The page's second transport" below for why, and for what TCP
+  costs. The three streams (the console's 720p H.264, the native VP8,
+  the browser's 1080p H.264) are each fed **only while somebody is
+  watching**, so a path with no audience costs nothing: measured at 4%
+  of a core idle against 18.5% with one WebSocket client.
 - **YUYV capture by default** (`CAPTURE_FORMAT` in the .env, `mjpeg`
   still selectable). Measured on the reference card at 1080p60 before
   committing to it -- benchmarks in the session history:
@@ -53,7 +68,7 @@ ConsoleTuner adapter (Titan One).
   with its hum filtering in `audio_capture.c`, leaving ~400 lines of
   orchestration. Both expose an opaque handle instead of sharing file-
   scope globals.
-- Web page (`page.html`/`app.js`): volume control (up to 400% via Web
+- Web page (`page.html` + `web/`): volume control (up to 400% via Web
   Audio, but **the Web Audio API is avoided below 100%** — it cuts sound
   on Chromium for this WebRTC stream, cause not understood), vsync, video
   quality, collapsible stats (video/audio/gamepad), explicit gamepad
@@ -64,9 +79,12 @@ ConsoleTuner adapter (Titan One).
   with the current send loop (see "Key technical findings" below) — do
   not touch `send_thread_main()`'s loop structure without testing
   before/after very carefully, latency is particularly sensitive there.
-  Real-controller passthrough merge exists in the code
-  (`read_real_controller_state()`) but is currently **disabled** — see
-  below; adjustable per-trigger thresholds (LT/RT) and a right-stick
+  Real-controller passthrough **works**: `read_real_controller_state()`
+  is merged into `output[]` in `send_thread_main()`, so someone holding
+  a controller plugged into the adapter's own port plays alongside
+  whoever is on the page (a button is pressed if anyone presses it, and
+  the largest deflection wins for a stick). Adjustable per-trigger
+  thresholds (LT/RT) and a right-stick
   up/down invert toggle are exposed on the web page, since some gamepads
   (e.g. Xbox Series X|S observed here) expose LT/RT as extra axes instead
   of standard buttons.
@@ -77,7 +95,7 @@ ConsoleTuner adapter (Titan One).
   stick layout, and a free "move buttons" repositioning mode (saved in
   `localStorage`). A real gamepad, if connected, stays active
   simultaneously and is additively merged with touch input (see
-  `combineVirtualGamepadState()` in `app.js`) — the on-screen
+  `combineVirtualGamepadState()` in `web/gamepad.js`) — the on-screen
   buttons/sticks also visually reflect real-gamepad input even without
   any touch.
 - **Per-gamepad rebind profiles** (`gamepad-select` → pick a real
@@ -85,7 +103,7 @@ ConsoleTuner adapter (Titan One).
   each `GAMEPAD_XB360_*` slot is no longer hardcoded -- it's a profile
   stored per gamepad id (`settings.gamepadProfiles[gp.id]` in
   `localStorage`), editable via a "click listen, then press/move the
-  input" panel (`buildStateFromGamepad()` in `app.js`). A gamepad never
+  input" panel (`buildStateFromGamepad()` in `web/gamepad.js`). A gamepad never
   rebound behaves exactly as before (the default profile is the
   previously-hardcoded mapping). Motivated directly by this session: the
   Xbox Series X|S controller here needs its own X/Y compensation; a PS5
@@ -114,7 +132,7 @@ ConsoleTuner adapter (Titan One).
   `$HOME/scripts/capture2cloud/...` (wrong for any other checkout).
   Verified by copying the whole directory to `/tmp`, renaming both the
   directory and the binary, and launching it from `/`: it found its own
-  `page.html`, `app.js` and `.env` correctly.
+  `page.html`, its `web/` files and the `.env` correctly.
   - The old second config source, `~/.config/capture2cloud.conf`, is
     gone: it silently took precedence over the `.env`, so changing
     `WEB_PORT` appeared to do nothing -- two files disagreeing about one
@@ -122,11 +140,13 @@ ConsoleTuner adapter (Titan One).
     keys (`web_port`, `web_enabled`) are now `WEB_PORT` / `WEB_AUTOSTART`
     in the `.env`.
 - **The front-end is served from disk**, not from the binary:
-  `send_static()` in `web_stream.c` reads `page.html`/`app.js` (located
-  relative to that file's own `__FILE__` path, so the working directory
-  doesn't matter) on each request. **Editing the front-end no longer
-  needs a recompile** -- save the file, refresh the browser. The binary
-  therefore needs those two files present next to `web_stream.c`;
+  `send_static()` in `web_stream.c` reads `page.html` and the files
+  under `web/` on each request, resolved from the running executable.
+  **Editing the front-end no longer needs a recompile** -- save the
+  file, refresh the browser. Which paths may be served is a whitelist,
+  `WS_STATIC_FILES[]`, not a path join: a request names one of the
+  entries or it gets a 404, so no amount of `../` reaches anything the
+  table does not list. The binary therefore needs those files present;
   missing/unreadable ones give a 404 plus an explicit
   `web_stream: cannot read <path>` on stderr. There is deliberately no
   compiled-in fallback copy (the previous `HTML_PAGE_BODY`/`APP_JS_BODY`
@@ -173,13 +193,9 @@ ConsoleTuner adapter (Titan One).
       it from CSS.
     - Setup, once: `npm install` in `capture2cloud/`, then `npx
       playwright install chromium`.
-    - **Each run consumes one of the 8 `MAX_CLIENTS` slots for good**
-      (see "no cleanup on client disconnect" below), so after a handful
-      of runs `/offer` starts returning 400 and the app must be
-      restarted. Annoying enough during browser testing that fixing the
-      cleanup is now worth more than it looked.
   - **JS suite** (`tests/run_tests.js`, standalone: `node
-    tests/run_tests.js`): executes the real `app.js` under Node against
+    tests/run_tests.js`): executes the real front-end files under Node
+    against
     a minimal DOM/localStorage/Gamepad API stub (`tests/dom_stub.js`),
     covering keyboard mode, gamepad/keyboard rebind profiles,
     per-controller profile isolation, the virtual-overlay merge, video
@@ -192,7 +208,7 @@ ConsoleTuner adapter (Titan One).
     report-id byte for C) -- worth re-checking that way for any new test
     added, since a test that can't fail is worse than no test.
 - **Versioned settings schema**: `SETTINGS_VERSION` + `migrateSettings()`
-  in `app.js`. Bump the version and add a migration step whenever the
+  in `web/settings.js`. Bump the version and add a migration step whenever the
   *shape* of a stored value changes (renamed key, number becoming an
   object, profile format change); simply adding a new key needs no bump,
   since every reader already defaults when its key is absent. Storage
@@ -222,8 +238,11 @@ ConsoleTuner adapter (Titan One).
   - Flow: `POST /login` (body = password) returns a 64-hex-char session
     token from `/dev/urandom`, kept in memory server-side only (dies with
     the process) and in the tab's `sessionStorage` client-side
-    (deliberately *not* in the persisted settings blob). `app.js` sends
-    it as an `X-Player-Token` header on `POST /offer`; `may_control` is
+    (deliberately *not* in the persisted settings blob). The page sends
+    it as an `X-Player-Token` header on `POST /offer` -- and in the
+    WebSocket's **query string** on the other transport, because a
+    browser's `WebSocket` constructor takes no headers, and without it
+    the host could only ever see a viewer; `may_control` is
     decided **once there**, at negotiation time, and baked into the
     client — never re-checked per gamepad message, so the input hot path
     keeps its latency. `GET /auth-status` ("required"/"open") tells the
@@ -279,24 +298,22 @@ ConsoleTuner adapter (Titan One).
   "pressed" forever afterwards — any further real press/release was
   invisible to the game since, from its point of view, the button never
   went back up. Fixed by (1) building `output[]` from the virtual/browser
-  state only for now (real-controller merge disabled), and (2) making
+  state only at the time, and (2) making
   `read_real_controller_state()` always zero `g_real_state` on any
   failed/short/malformed read instead of keeping a stale value, for
-  whenever the merge is re-enabled. `read_real_controller_state()` is
+  the merge. `read_real_controller_state()` is
   still called every loop iteration to keep `send_thread_main()`'s exact
   USB transfer timing (the "perfect latency" checkpoint untouched). User-
   confirmed fixed in-game.
 
 ### Known broken / limited
-- **Real-controller passthrough is disabled** (see the fix note above) —
-  the console currently only reacts to the browser/virtual gamepad, not
-  to a real controller plugged into the Titan One's controller port.
-  Re-enable the merge in `send_thread_main()` only once
-  `GCAPI_REPORT_INPUT_OFFSET` has been verified against this exact
-  firmware (see Goals below) — and when doing so, still don't touch
-  `send_thread_main()`'s loop structure (no sleep/condvar with a fixed
-  delay), since that is exactly what caused the latency regressions
-  during this session.
+- ~~Real-controller passthrough is disabled~~ -- **done, and confirmed
+  in use.** `GCAPI_REPORT_INPUT_OFFSET` was measured rather than
+  derived (the old value read two bytes short, which is what made
+  "back" read a constant 10 and latch), and the merge is back in
+  `send_thread_main()`'s `output[]`. Its loop structure was **not**
+  touched: no sleep, no condvar, no fixed delay, since that is exactly
+  what caused the latency regressions.
 - ~~No cleanup of `WebrtcClient`/webrtcbin on client disconnect~~ —
   **done.** `teardown_client()` releases the tee pads and removes the
   client's elements from the live pipeline; `on_connection_state_notify`
@@ -306,19 +323,10 @@ ConsoleTuner adapter (Titan One).
 
 ## Goals going forward
 
-1. **Verify the passthrough-merge byte offset, then re-enable the merge**
-   (real-controller passthrough is fully disabled right now): determine
-   the real offset of `GCAPI_REPORT` inside a `GPPKG_INPUT_REPORT` report
-   via a targeted USB capture (press ONE known button at a time, compare
-   which bytes change — same method that found the original write bug;
-   see the `/tmp/titan_gtuner_capture.pcapng` capture generated during a
-   real GTuner + MaxAim DI session as a reference, if still available).
-   Once the right offset is confirmed, adjust `read_real_controller_state()`
-   and put the `g_real_state` addition back into `send_thread_main()`'s
-   `output[]` computation, **without changing the loop's structure**
-   (no sleep/condvar with a fixed delay — the current latency comes
-   specifically from there being no artificial pause anywhere in that
-   loop).
+1. ~~Verify the passthrough-merge byte offset, then re-enable the
+   merge~~ -- **done.** The offset was found the same way the original
+   write bug was: a targeted USB capture, one known button at a time,
+   comparing which bytes moved.
 
 2. **Control from the capture app itself, as an option**: be able to
    drive the virtual gamepad directly from `capture2cloud` (local SDL/GTK
@@ -329,19 +337,26 @@ ConsoleTuner adapter (Titan One).
    browser path.
 
 3. **Remote access (Nginx Proxy Manager + Authelia + Cloudflare) needs a
-   STUN server, on both ends.** `app.js` creates
+   STUN server, on both ends.** `web/webrtc.js` creates
    `new RTCPeerConnection({ iceServers: [] })` -- no STUN/TURN at all --
    and `webrtcbin` isn't given one server-side either
    (`gst_webrtc_stream_handle_offer()` in `gst_webrtc.c`). This works
    today only because tests happen on the same LAN (both peers exchange
    host candidates directly). The HTTP signaling itself (`page.html`,
-   `/app.js`, `POST /offer`, `POST /quality`) is plain HTTP, no
-   WebSocket -- it should pass through Nginx Proxy Manager/Authelia/
-   Cloudflare without any special config. The actual media (video/audio
-   RTP + the gamepad DataChannel) is a separate direct peer-to-peer ICE/
-   UDP connection that never goes through that HTTP chain at all, so a
-   remote (non-LAN) client will very likely fail to connect without a
-   STUN server on both sides.
+   the `web/` files, `POST /offer`, `POST /quality`) is plain HTTP -- it
+   should pass through Nginx Proxy Manager/Authelia/Cloudflare without
+   any special config. The actual media (video/audio RTP + the gamepad
+   DataChannel) is a separate direct peer-to-peer ICE/UDP connection
+   that never goes through that HTTP chain at all, so a remote
+   (non-LAN) client will very likely fail to connect without a STUN
+   server on both sides.
+   - **The WebSocket transport is the way around this**, and was built
+     for it: it is ordinary web traffic on the same port, so the whole
+     chain relays it with nothing explained to it and no STUN or TURN
+     is involved at all. It is not free -- see the section below for
+     what TCP costs on a lossy link -- but it is the path that works
+     from outside today, and the STUN work below stays worth doing for
+     the lower-latency option.
    - Confirmed: home network here is a normal NAT (not CGNAT) -- STUN +
      a forwarded UDP port range should be enough, no TURN relay needed.
    - A first attempt (public STUN in `iceServers` + `stun-server` on
@@ -362,7 +377,8 @@ ConsoleTuner adapter (Titan One).
 
 4. **Make mouse-driven stick movement feel more analog, less robotic**:
    the keyboard/mouse mode above already has a basic self-centering
-   decay (`MOUSE_DECAY = 0.85` per frame in `app.js`) rather than a raw
+   decay (`MOUSE_DECAY = 0.85` per frame in `web/keyboard.js`) rather
+   than a raw
    1:1 mapping, but it hasn't been tuned or evaluated with an actual
    controller in hand yet -- sensitivity/decay constants are current
    first guesses. Also still open: whether identical repeated stick
@@ -423,7 +439,7 @@ ConsoleTuner adapter (Titan One).
   `localStorage` correctly but the very next read would still see the
   pre-rebind (stale in-memory) value, silently discarding it. Fixed by
   having `saveSettings()` also mirror the patch into the live `settings`
-  object. Caught by actually executing `app.js` under Node with a
+  object. Caught by actually executing the front-end under Node with a
   minimal DOM/`localStorage`/Gamepad API stub and running through
   rebind scenarios end-to-end (mode switch, key/button capture, save,
   re-read) -- worth doing again for any future feature that, like this
@@ -466,7 +482,7 @@ ConsoleTuner adapter (Titan One).
   buttons and 6 axes (standard mapping normally has 17 buttons/4 axes):
   LT/RT come back as axes 4/5 (range -1.00 to 1.00) rather than standard
   buttons 6/7, and X/Y come back transposed — both compensated for in
-  `app.js`.
+  `web/gamepad.js`.
 - **Correction (confirmed on real hardware):** the X/Y transposition is
   NOT the GCAPI/console translation, as first assumed here — it is that
   controller misreporting its own buttons. Applying it to every gamepad
@@ -885,3 +901,104 @@ one -- which then looks exactly like a broken endpoint returning 403.
 That is what a `/reset-dongle` "failure" turned out to be during this
 session. The suite now waits the lockout out at its own start; a manual
 `curl` after a run still has to.
+
+## The page's second transport
+
+The page can now take the stream over a WebSocket instead of WebRTC --
+one or the other, switchable while running.
+
+### Why
+
+WebRTC's media travels peer-to-peer over UDP and never touches the HTTP
+chain. That is what keeps its latency honest and what makes a lost
+packet cost one frame instead of stalling everything behind it -- and it
+is also why it does not survive a reverse proxy (see goal 3 above): the
+signalling is relayed and then the stream fails. Reaching it from
+outside needs STUN, and possibly a TURN relay.
+
+The second path carries the protocol the Android and Switch clients
+already speak, over a WebSocket, and the browser decodes it with
+WebCodecs. Above the handshake **one binary frame is exactly one
+protocol message**, header and payload, in the layout the TCP framing
+uses -- the page reads the bytes the console reads. To Cloudflare, Nginx
+or Authelia it is ordinary web traffic that needs nothing explained to
+it.
+
+The cost is TCP's, and it is real: a lost packet stalls what is behind
+it instead of costing one frame, so a lossy link trades artefacts for
+pauses. That is the wrong way round for something being played on, which
+is why this is a choice and not a replacement.
+
+`ws_frame.c` is the handshake and the framing, verified against RFC
+6455's own test vector. It rejects an unmasked client frame rather than
+accepting it leniently, and bounds the announced payload length before
+believing it -- a length is a promise from the other end, and it arrives
+before the bytes do.
+
+### How it is chosen
+
+`WEB_TRANSPORT` in the `.env` picks what the host **starts** on; after
+that it is a setting in the page's menu, players-only and shared,
+because there is one host running one of the two. Other pages follow
+within a poll of `/shared` rather than being left on an encoder that has
+stopped.
+
+### A third encoder, and only while it is watched
+
+The browsers cannot share the console's H.264 -- a handheld screen and a
+monitor are not the same picture -- so this one is 1080p, on the same GPU
+encoder. It is fed exactly as the other two are: the appsrc is not fed
+while nobody is on it, so the unused path costs nothing. Measured: 4% of
+a core idle, 18.5% with one WebSocket client, and the WebRTC encoder
+never runs while it has no audience.
+
+The routing key inside the native transport stops being the codec and
+becomes the **stream**, because two codecs could not describe three
+audiences: the browsers' H.264 and the console's are the same codec at
+different sizes.
+
+### The console and the phone come first
+
+Browsers and native clients briefly shared one pool of eight slots,
+which meant a page reconnecting in a loop could fill it and leave the
+Switch and the phone refused with "the host closed the connection". At
+most four of the eight may be browsers now (`SS_MAX_WS_CLIENTS`). A
+browser has a second transport available; a console does not.
+
+### Also
+
+- The pad works on the WebSocket path, as the same input message the
+  other clients send. The session token travels in the WebSocket's query
+  string, because the browser's WebSocket constructor takes no headers --
+  without it the host could only ever see a viewer, and input from a
+  viewer is refused, correctly.
+- The stats line reports for whichever transport is running instead of
+  leaving the last thing WebRTC said standing over a stream it is no
+  longer carrying.
+- Frames are dropped when the decoder falls more than four behind, with
+  a keyframe asked for at most once a second: `decode()` queues rather
+  than blocks, so a browser that cannot keep up at 1080p60 otherwise
+  grows a queue that never drains.
+
+### Still open
+
+- A SIGSEGV in `pthread_detach` seen once under a reconnect storm, **not
+  reproduced since** -- 69 adoptions under AddressSanitizer produced no
+  report. The trigger may well have gone with the single-socket guard
+  that stopped the page opening a new connection every two seconds.
+- Whether 1080p60 is too much to decode in Firefox on modest hardware; a
+  720p browser stream is the fallback if so.
+- Windows: still blocked, see the notes on the port.
+
+## The front end is eleven files now, and the order matters
+
+`app.js` was one file; it is now `web/`, eleven plain scripts sharing one
+scope. Not modules -- they are `<script src>` tags and they rely on each
+other's globals, so **the order `page.html` loads them in is part of the
+program**: a declaration hoists within a file and not across two.
+
+That order is duplicated in two places by necessity -- `page.html`'s
+tags, `WS_STATIC_FILES[]` in `web_stream.c` for what may be served, and
+the list `tests/run_tests.js` concatenates. A test compares them,
+because a file added to one list and not the others passes the suite and
+breaks in a browser, which is the worst shape a failure can take.
