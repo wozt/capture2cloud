@@ -48,6 +48,10 @@ var WS_MAX_DECODE_QUEUE = 4;
  * onclose does not helpfully reconnect the path we are leaving. */
 var wsLeaving = false;
 var wsPingTimer = null;
+/* The reconnect that is already scheduled. Without this the two-second
+ * retry and the two-second /shared poll both saw a null socket and both
+ * opened one -- which is how one tab became three clients. */
+var wsRetryTimer = null;
 
 /* True while the WebSocket path is the one carrying the picture. Read by
  * the control bar, which otherwise reaches for the <video> element -- and
@@ -337,6 +341,10 @@ function wsOnAudio(data) {
 }
 
 function startWsStream() {
+  /* One at a time, always: a second socket is a second decoder drawing
+   * into the same canvas, and a second client on the host's count. */
+  if (wsSocket) return;
+  if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
   if (!('VideoDecoder' in window)) {
     log('this browser has no WebCodecs, so it cannot decode this stream');
     return;
@@ -346,9 +354,28 @@ function startWsStream() {
    * thing to fit. */
   video.style.display = 'none';
   canvas.style.display = 'block';
+  /*
+   * And stop the vsync path, which draws the <video> element into this
+   * same canvas on its own schedule. Two drawers on one canvas is what
+   * the flicker between an old frame and a new one was: each was
+   * painting over the other, one of them from a video element with
+   * nothing in it.
+   */
+  stopFrames();
   wsCtx2d = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
+  /*
+   * The token goes in the query, which is the only place it can go: the
+   * browser's WebSocket constructor takes no headers, so X-Player-Token
+   * -- how every other request here identifies itself -- is not
+   * available. Without it the host can only see a viewer, which is why
+   * the pad did nothing: input is refused server-side, exactly as it is
+   * for a viewer on the other transport.
+   */
   var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  if (playerToken) {
+    url += '?token=' + encodeURIComponent(playerToken);
+  }
   wsSocket = new WebSocket(url);
   wsSocket.binaryType = 'arraybuffer';
   wsSocket.onopen = function () {
@@ -372,7 +399,11 @@ function startWsStream() {
     wsSocket = null;
     if (wsLeaving) return;
     log('websocket closed, reconnecting...');
-    setTimeout(function () { if (!wsLeaving) startWsStream(); }, 2000);
+    if (wsRetryTimer) clearTimeout(wsRetryTimer);
+    wsRetryTimer = setTimeout(function () {
+      wsRetryTimer = null;
+      if (!wsLeaving) startWsStream();
+    }, 2000);
   };
   wsSocket.onerror = function () { log('websocket failed'); };
   wsSocket.onmessage = function (ev) { wsOnMessage(new Uint8Array(ev.data)); };
@@ -382,6 +413,7 @@ function startWsStream() {
  * to WebRTC and this page is following it. */
 function stopWsStream() {
   wsLeaving = true;
+  if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
   if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
   if (wsAudioDecoder) { try { wsAudioDecoder.close(); } catch (e) {} }
   wsAudioDecoder = null;
@@ -408,7 +440,7 @@ function applyTransport(which) {
   if (transportSelect && transportSelect.value !== which) {
     transportSelect.value = which;
   }
-  if (wantWs && !wsSocket) {
+  if (wantWs && !wsSocket && !wsRetryTimer) {
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     wsLeaving = false;
     startWsStream();

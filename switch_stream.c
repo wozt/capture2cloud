@@ -52,6 +52,18 @@
  */
 #define SS_MAX_CLIENTS 8
 
+/*
+ * And at most this many of them may be browsers.
+ *
+ * Sharing one pool was wrong, and it broke the thing that matters most:
+ * a page that reconnects in a loop filled all eight slots, and the
+ * console and the phone -- which have nowhere else to go -- were then
+ * refused with "the host closed the connection". A browser has another
+ * transport available and a native client does not, so when the two
+ * compete the browser is the one that waits.
+ */
+#define SS_MAX_WS_CLIENTS 4
+
 /* A client that has said nothing for this long is gone, whatever the
  * socket thinks. Every client pings -- the page included, which is not
  * optional: a browser that is only watching sends nothing at all, so
@@ -520,12 +532,16 @@ int switch_stream_adopt_websocket(SwitchStream *s, int fd, int may_control) {
     if (!s || fd < 0) return -1;
 
     SDL_LockMutex(s->mutex);
-    int index = -1;
+    int index = -1, browsers = 0;
     for (int i = 0; i < SS_MAX_CLIENTS; i++) {
-        if (!s->clients[i].in_use) { index = i; break; }
+        if (s->clients[i].in_use && s->clients[i].is_ws) browsers++;
+        if (index < 0 && !s->clients[i].in_use) index = i;
     }
-    if (index < 0) {
+    if (index < 0 || browsers >= SS_MAX_WS_CLIENTS) {
         SDL_UnlockMutex(s->mutex);
+        fprintf(stderr, "switch_stream: a browser was refused (%d already, %d slots free) -- "
+                        "the console and the phone come first\n",
+                browsers, index < 0 ? 0 : 1);
         return -1;
     }
 
