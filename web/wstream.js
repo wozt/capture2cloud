@@ -25,6 +25,7 @@ var WS_MSG_AUDIO = 2;
 var WS_MSG_STREAM_INFO = 21;
 var WS_MSG_SHARED = 26;
 var WS_MSG_HELLO_ACK = 27;
+var WS_MSG_PING = 17;
 
 var wsSocket = null;
 var wsDecoder = null;
@@ -35,6 +36,25 @@ var wsBytes = 0;
 /* Set while a deliberate switch is tearing the socket down, so its
  * onclose does not helpfully reconnect the path we are leaving. */
 var wsLeaving = false;
+var wsPingTimer = null;
+
+var wsAudioDecoder = null;
+var wsAudioChannels = 2;
+var wsAudioRate = 48000;
+var wsAudioPackets = 0;
+/* When the next packet is due, on the context's own clock. */
+var wsNextAudioAt = 0;
+/*
+ * How far ahead of "now" a packet is scheduled.
+ *
+ * Behind, and the schedule stutters on every packet that arrives
+ * fractionally late. Ahead, and the lead quietly becomes latency --
+ * which on a stream being played on is the thing being paid for. Forty
+ * milliseconds absorbs the jitter of a LAN; past a hundred and fifty the
+ * schedule is rebuilt rather than allowed to drift.
+ */
+var WS_AUDIO_LEAD = 0.04;
+var WS_AUDIO_MAX_LEAD = 0.15;
 
 /*
  * The codec string, read out of the stream rather than assumed.
@@ -141,13 +161,21 @@ function wsOnMessage(bytes) {
 
   if (type === WS_MSG_VIDEO) {
     wsOnVideo(body, (flags & 1) !== 0);
+  } else if (type === WS_MSG_AUDIO) {
+    wsOnAudio(body);
   } else if (type === WS_MSG_HELLO_ACK) {
     var b = new DataView(body.buffer, body.byteOffset, body.byteLength);
     var granted = body[6] === 1;
+    /* The ack carries the sound's shape too: a rate of zero means the
+     * host is sending none, and drawing a volume control for that would
+     * be a control that does nothing. */
+    wsAudioChannels = body[17] || 2;
+    wsAudioRate = b.getUint16(18, true);
     log('connected over the websocket, ' +
         b.getUint16(8, true) + 'x' + b.getUint16(10, true) +
         (granted ? ' -- player' : ' -- viewer'));
     setPlayerUi(granted);
+    if (wsAudioRate > 0) wsStartAudio();
   } else if (type === WS_MSG_STREAM_INFO) {
     /* The host saying what it is sending now. The decoder is rebuilt at
      * the next keyframe rather than here: the change takes effect some
@@ -159,6 +187,93 @@ function wsOnMessage(bytes) {
   }
   /* SHARED and AUDIO are read by the same page in the same way as
    * everywhere else; the spike leaves them for the next step. */
+}
+
+/*
+ * A context and a gain, whichever path made them.
+ *
+ * The WebRTC path builds its graph from the <video> element, which has
+ * nothing in it here -- but the GAIN is the same gain either way, so
+ * applyVolume() keeps working across a switch without knowing which
+ * transport is running. Reusing it is not a shortcut: two gains would
+ * mean a volume slider that moves one of them.
+ */
+function wsEnsureAudioGraph() {
+  if (!audioCtx) {
+    try {
+      /*
+       * "interactive", not a latencyHint of 0. Zero asks for a
+       * 128-frame buffer -- under three milliseconds -- which underruns
+       * on any pause of the main thread, and the canvas is drawn on that
+       * same thread. The milliseconds it saves are spent on glitches.
+       */
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)(
+        { sampleRate: 48000, latencyHint: 'interactive' });
+    } catch (e) {
+      log('audio: ' + e);
+      return false;
+    }
+  }
+  if (!gainNode) {
+    gainNode = audioCtx.createGain();
+    gainNode.connect(audioCtx.destination);
+  }
+  applyVolume();
+  return true;
+}
+
+function wsStartAudio() {
+  if (wsAudioDecoder || !('AudioDecoder' in window)) return;
+  if (!wsEnsureAudioGraph()) return;
+
+  wsNextAudioAt = 0;
+  wsAudioDecoder = new AudioDecoder({
+    output: function (data) {
+      var channels = data.numberOfChannels;
+      var buffer = audioCtx.createBuffer(channels, data.numberOfFrames, 48000);
+      for (var c = 0; c < channels; c++) {
+        var plane = new Float32Array(data.numberOfFrames);
+        data.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+        buffer.copyToChannel(plane, c);
+      }
+      data.close();
+
+      var src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(gainNode);
+      var now = audioCtx.currentTime;
+      if (wsNextAudioAt < now + 0.02 || wsNextAudioAt > now + WS_AUDIO_MAX_LEAD) {
+        wsNextAudioAt = now + WS_AUDIO_LEAD;
+      }
+      src.start(wsNextAudioAt);
+      wsNextAudioAt += buffer.duration;
+    },
+    error: function (e) { log('audio: ' + e.message); },
+  });
+  /* No description: the host sends bare Opus packets rather than the Ogg
+   * encapsulation, which is what WebCodecs takes when none is given. */
+  wsAudioDecoder.configure({
+    codec: 'opus',
+    sampleRate: 48000,
+    numberOfChannels: wsAudioChannels || 2,
+  });
+}
+
+function wsOnAudio(data) {
+  if (!wsAudioDecoder || wsAudioDecoder.state !== 'configured') return;
+  /* A browser makes no sound until the page has been touched, so the
+   * context is nudged rather than left quietly suspended. */
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  wsAudioPackets++;
+  try {
+    wsAudioDecoder.decode(new EncodedAudioChunk({
+      type: 'key',            /* every Opus packet stands alone */
+      timestamp: wsAudioPackets * 20000,
+      data: data,
+    }));
+  } catch (e) {
+    log('audio decode: ' + e.message);
+  }
 }
 
 function startWsStream() {
@@ -176,8 +291,24 @@ function startWsStream() {
   var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
   wsSocket = new WebSocket(url);
   wsSocket.binaryType = 'arraybuffer';
-  wsSocket.onopen = function () { log('websocket open, waiting for a keyframe...'); };
+  wsSocket.onopen = function () {
+    log('websocket open, waiting for a keyframe...');
+    /*
+     * A ping every two seconds, because a page that is only watching
+     * says nothing at all -- and the host drops a client that has been
+     * silent for ten. Without this a viewer is disconnected and
+     * reconnected for as long as they watch.
+     */
+    if (wsPingTimer) clearInterval(wsPingTimer);
+    wsPingTimer = setInterval(function () {
+      if (!wsSocket || wsSocket.readyState !== 1) return;
+      var h = new Uint8Array(8);
+      h[0] = WS_MSG_PING;
+      wsSocket.send(h);
+    }, 2000);
+  };
   wsSocket.onclose = function () {
+    if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
     wsSocket = null;
     if (wsLeaving) return;
     log('websocket closed, reconnecting...');
@@ -191,6 +322,10 @@ function startWsStream() {
  * to WebRTC and this page is following it. */
 function stopWsStream() {
   wsLeaving = true;
+  if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
+  if (wsAudioDecoder) { try { wsAudioDecoder.close(); } catch (e) {} }
+  wsAudioDecoder = null;
+  wsAudioPackets = 0;
   if (wsSocket) { try { wsSocket.close(); } catch (e) {} }
   wsSocket = null;
   if (wsDecoder) { try { wsDecoder.close(); } catch (e) {} }

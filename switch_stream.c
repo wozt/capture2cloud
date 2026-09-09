@@ -40,10 +40,21 @@
 #define SS_STREAM_WEB  2  /* browsers over the WebSocket, H.264, bigger */
 #define SS_STREAM_COUNT 3
 
-#define SS_MAX_CLIENTS 4
+/*
+ * Four was sized for native clients, back when a browser could not
+ * reach this transport at all. A browser can now, and a page that is
+ * reloaded takes a slot until it is noticed gone -- so four was a
+ * server that refused the fourth reload of the afternoon. Twelve costs
+ * an array; the encoders are shared, so the cost of a client is
+ * bandwidth rather than a core.
+ */
+#define SS_MAX_CLIENTS 12
 
 /* A client that has said nothing for this long is gone, whatever the
- * socket thinks. The client pings every 2 s, so this is generous. */
+ * socket thinks. Every client pings -- the page included, which is not
+ * optional: a browser that is only watching sends nothing at all, so
+ * without a ping it would be dropped and reconnected every ten seconds
+ * for as long as somebody watched it. */
 #define SS_IDLE_TIMEOUT_MS 10000
 
 /* Per-client receive buffer. Only input, pings and the handshake arrive
