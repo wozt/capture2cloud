@@ -1051,6 +1051,49 @@ group('the websocket handshake is read where the struct actually puts it', () =>
   check('as bare Opus packets', s.audioDecoders[0].configured.codec, 'opus');
 });
 
+group('shared settings arrive pushed on the websocket, not only polled', () => {
+  // A page on this transport holds a socket to the host, so it is told
+  // the moment a setting changes instead of finding out within two
+  // seconds. The message is the same C2S_MSG_SHARED the Android and
+  // Switch clients get; it used to be defined and then ignored.
+  const s = createSandbox(APP_JS);
+  s.setPlayerUi(true);
+  s.startWsStream();
+  s.sockets[0].fireOpen();
+
+  const shared = (height, kbps, mjpeg) => {
+    const m = new Uint8Array(8 + 12);
+    m[0] = 26;
+    const v = new DataView(m.buffer);
+    v.setUint32(4, 12, true);
+    v.setUint16(8 + 0, height === 1080 ? 1920 : height === 720 ? 1280 : 854, true);
+    v.setUint16(8 + 2, height, true);
+    v.setUint16(8 + 4, 60, true);
+    v.setUint16(8 + 6, kbps, true);
+    m[8 + 8] = 3;             // H.264
+    m[8 + 9] = mjpeg ? 1 : 0;
+    return m;
+  };
+
+  s.sockets[0].fireMessage(shared(720, 6000, true));
+  check('the resolution follows', s.resolutionSelect.value, '720');
+  check('the bitrate follows', s.quality.value, '6');
+  check('the label follows', s.qv.textContent, '6 Mbps');
+  check('the capture format follows', s.captureFormatSelect.value, 'mjpeg');
+
+  // And following it must not bounce back, or two clients would correct
+  // each other for ever.
+  check('following posts nothing',
+    !!s.fetchCalls.find((c) => c.options && c.options.method === 'POST'), false);
+
+  // A control someone is still holding is left alone, same rule as the
+  // polled path -- they are the same function.
+  s.quality.value = '20';
+  s.sendQuality();
+  s.sockets[0].fireMessage(shared(480, 2000, false));
+  check('a just-touched control is left alone', s.quality.value, '20');
+});
+
 group('logging in replaces the socket rather than adding one', () => {
   // The token travels in the WebSocket's URL, so becoming a player
   // means a new socket. Closing the old one is asynchronous, though:
