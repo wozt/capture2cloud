@@ -113,7 +113,20 @@ typedef enum {
      * from STREAM_INFO, which says "re-initialise your decoder now" and
      * must stay exactly that: this one moves sliders and changes no
      * pictures. */
-    C2S_MSG_SHARED       = 26
+    C2S_MSG_SHARED       = 26,
+    /*
+     * server -> client: C2sHelloAck, as a message.
+     *
+     * On this transport's own port the ack is the bare struct, written
+     * before any framing exists -- it is the reply to the hello and
+     * there is nothing yet to frame it with. A browser's handshake is
+     * the WebSocket upgrade instead, which is over before this
+     * transport hears about the connection, so the ack has to arrive
+     * afterwards like everything else does: as a message, with a header
+     * in front of it, so the page's reader has one shape to handle
+     * rather than a special first frame.
+     */
+    C2S_MSG_HELLO_ACK    = 27
 } C2sMsgType;
 
 #define C2S_FLAG_KEYFRAME 0x01

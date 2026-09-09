@@ -374,6 +374,12 @@ var sharedTouchedAt = 0;
 function noteSharedTouched() { sharedTouchedAt = Date.now(); }
 
 function applyShared(sh) {
+  /* The transport is applied even while a control is being held: it is
+   * not a slider being dragged, it is which encoder the host is
+   * running, and a page left on the other one receives nothing at all. */
+  if (sh.transport === 'ws' || sh.transport === 'webrtc') {
+    applyTransport(sh.transport);
+  }
   if (Date.now() - sharedTouchedAt < 3000) return;
   if (sh.height === 1080 || sh.height === 720 || sh.height === 480) {
     resolutionSelect.value = String(sh.height);
@@ -700,4 +706,14 @@ wakeConsoleBtn.onclick = function () {
         wakeConsoleBtn.textContent = 'wake console';
       }, 2000);
     });
+};
+
+/* Changing it is a deliberate act and changes it for everyone: there is
+ * one host running one of the two. */
+transportSelect.onchange = function (e) {
+  var wanted = e.target.value;
+  noteSharedTouched();
+  playerFetch('/transport', { method: 'POST', body: wanted })
+    .then(function () { applyTransport(wanted); })
+    .catch(function (err) { log('transport: ' + err); });
 };

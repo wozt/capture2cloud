@@ -94,10 +94,34 @@ async function start() {
     log('playoutDelayHint unavailable: ' + e);
   }
 }
+/*
+ * Which transport to use is the host's to decide, not this page's.
+ *
+ * Asked before anything is started: the two paths carry two different
+ * encodes, and opening a peer connection to a host that is not running
+ * that encoder would cost a negotiation and get nothing back.
+ */
+function startStream() {
+  fetch('/shared')
+    .then(function (r) { return r.json(); })
+    .then(function (sh) {
+      if (sh && sh.transport === 'ws') {
+        startWsStream();
+      } else {
+        retry();
+      }
+    })
+    .catch(function () {
+      /* Unreachable or too old to say: the path that has always been
+       * here is the safe assumption. */
+      retry();
+    });
+}
+
 function retry() {
   start().catch(function (e) {
     log('error: ' + e);
     setTimeout(retry, 2000);
   });
 }
-retry();
+startStream();

@@ -4,7 +4,9 @@
 
 #include "app_config.h"
 #include "gamepad_bridge.h"
+#include "switch_stream.h"
 #include "video_capture.h"
+#include "ws_frame.h"
 
 #include <SDL2/SDL.h>
 #include <arpa/inet.h>
@@ -67,6 +69,10 @@ struct WebStream {
      * is stopped and started when its port changes, so a pointer taken
      * once would go stale. */
     void (*native_count)(void *ctx, int *now, int *max);
+    /* Where an upgraded WebSocket goes. Asked for rather than held, for
+     * the same reason the counter is: the native server is stopped and
+     * started when its port changes. */
+    int (*native_adopt)(void *ctx, int fd, int may_control);
     void *native_ctx;
 
     SDL_mutex *state_mutex;
@@ -300,6 +306,7 @@ static const struct {
     { "/web/keyboard.js",       "web/keyboard.js",       "application/javascript; charset=utf-8" },
     { "/web/ui/panels.js",      "web/ui/panels.js",      "application/javascript; charset=utf-8" },
     { "/web/touchpad.js",       "web/touchpad.js",       "application/javascript; charset=utf-8" },
+    { "/web/wstream.js",        "web/wstream.js",        "application/javascript; charset=utf-8" },
     { "/web/webrtc.js",         "web/webrtc.js",         "application/javascript; charset=utf-8" },
     { "/web/styles/app.css",    "web/styles/app.css",    "text/css; charset=utf-8" },
 };
@@ -608,6 +615,13 @@ static void handle_offer(WebStream *ws, int fd, long content_length, const char 
  * wake path does once the picture comes back, exposed as a button
  * because the adapter occasionally needs it after the console has been
  * fiddled with in ways this program never sees. */
+void web_stream_set_native_adopt(WebStream *ws, int (*adopt)(void *ctx, int fd, int may_control),
+                                 void *ctx) {
+    if (!ws) return;
+    ws->native_adopt = adopt;
+    ws->native_ctx = ctx;
+}
+
 void web_stream_set_native_counter(WebStream *ws, void (*count)(void *ctx, int *now, int *max),
                                    void *ctx) {
     if (!ws) {
@@ -758,6 +772,45 @@ static void handle_capture_format_get(int fd) {
     send_all(fd, body, strlen(body));
 }
 
+/*
+ * The upgrade, and the handover.
+ *
+ * Returns 1 when the connection has been given away -- the caller must
+ * not touch the fd again, and above all must not close it. Returns 0
+ * when the request was refused and answered, and the caller closes as
+ * usual.
+ *
+ * The session token decides player or viewer here, once, exactly as it
+ * does for /offer: a browser on this path is subject to the same rule as
+ * a browser on the other one, and neither is trusted to say which it is.
+ */
+static int handle_ws_upgrade(WebStream *ws, int fd, const char *key, const char *token) {
+    if (!ws->native_adopt || !key || !*key) {
+        static const char response[] =
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        send_all(fd, response, sizeof(response) - 1);
+        return 0;
+    }
+
+    char reply[256];
+    const size_t n = ws_accept_response(key, reply, sizeof(reply));
+    /* send_all returns the COUNT, not a status: everything else in this
+     * file ignores the value, which is how "!= 0" looked right and
+     * turned every successful handshake into a closed socket. */
+    if (n == 0 || send_all(fd, reply, n) != (ssize_t)n) {
+        return 0;
+    }
+
+    const int may_control = request_may_control(ws, token);
+    if (ws->native_adopt(ws->native_ctx, fd, may_control) != 0) {
+        /* Refused -- the transport is full. The upgrade has already been
+         * answered, so the honest thing is to close rather than to
+         * pretend an HTTP error is still possible. */
+        return 0;
+    }
+    return 1;
+}
+
 /* "I am closing", from a page on its way out.
  *
  * Worth having because the alternative is waiting out the heartbeat
@@ -789,15 +842,93 @@ static void handle_bye(WebStream *ws, int fd, long content_length) {
  * not be up yet. Two seconds is far below the rate at which anybody
  * changes a setting by hand.
  */
+/*
+ * Which transport the page should use, from WEB_TRANSPORT in the .env.
+ *
+ * One or the other, never both: the two carry the same picture by
+ * different means, and a page that could pick would be a page that
+ * disagrees with the host about which encoder is running.
+ *
+ * "webrtc" is the default and is what has always been here: media
+ * peer-to-peer over UDP, which is why it does not survive a reverse
+ * proxy. "ws" carries the native protocol over a WebSocket instead --
+ * ordinary web traffic that Cloudflare and Nginx relay without being
+ * told anything, at the cost of TCP's head-of-line blocking.
+ */
+/* -1 until read from the .env, then 0 or 1 and changeable while
+ * running. The .env sets what the host STARTS on; the choice after that
+ * belongs to whoever is watching, because they are the ones who can see
+ * whether the picture is better one way or the other. */
+static volatile int g_transport_ws = -1;
+
+static int transport_is_ws(void) {
+    if (g_transport_ws < 0) {
+        char buf[16];
+        int ws = 0;
+        if (config_get("WEB_TRANSPORT", buf, sizeof(buf))) {
+            ws = (strcmp(buf, "ws") == 0 || strcmp(buf, "websocket") == 0);
+        }
+        g_transport_ws = ws;
+    }
+    return g_transport_ws;
+}
+
+/*
+ * POST /transport, body "webrtc" or "ws". Players only, and shared by
+ * everyone: there is one host and it runs one of the two, so this is
+ * not a per-viewer preference -- a viewer switching it would move every
+ * other page onto a transport it did not ask for.
+ *
+ * Nothing is torn down here. The encoder for a path is fed only while
+ * somebody is on it, so the one that empties stops on its own within a
+ * frame or two, and the one that fills starts the same way. The pages
+ * see the change on their next poll of /shared and move themselves.
+ */
+static void handle_transport(WebStream *ws, int fd, long content_length, const char *token) {
+    if (!request_may_control(ws, token)) {
+        static const char response[] = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        send_all(fd, response, sizeof(response) - 1);
+        return;
+    }
+    if (content_length <= 0 || content_length > 16) {
+        send_400(fd, "invalid transport");
+        return;
+    }
+    char body[17];
+    if (read_exact(fd, body, (size_t)content_length) != 0) {
+        return;
+    }
+    body[content_length] = '\0';
+    body[strcspn(body, "\r\n")] = '\0';
+
+    int want;
+    if (strcmp(body, "ws") == 0 || strcmp(body, "websocket") == 0) {
+        want = 1;
+    } else if (strcmp(body, "webrtc") == 0) {
+        want = 0;
+    } else {
+        send_400(fd, "transport must be webrtc or ws");
+        return;
+    }
+    (void)transport_is_ws(); /* so the .env default is read before it is overridden */
+    g_transport_ws = want;
+    fprintf(stderr, "web_stream: the page transport is now %s\n", want ? "websocket" : "webrtc");
+
+    static const char ok[] = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    send_all(fd, ok, sizeof(ok) - 1);
+}
+
 static void handle_shared_get(WebStream *ws, int fd) {
     int w = 0, h = 0;
     gst_webrtc_stream_get_browser_resolution(ws->webrtc, &w, &h);
-    char body[192];
+    char body[224];
     int n = snprintf(body, sizeof(body),
-                     "{\"height\":%d,\"bitrate_kbps\":%d,\"capture\":\"%s\"}",
+                     "{\"height\":%d,\"bitrate_kbps\":%d,\"capture\":\"%s\","
+                     "\"transport\":\"%s\"}",
                      (h == 480 || h == 720) ? h : 1080,
                      gst_webrtc_stream_get_video_bitrate(ws->webrtc),
-                     video_format_name(video_capture_active_format()));
+                     video_format_name(video_capture_active_format()),
+                     transport_is_ws() ? "ws" : "webrtc");
     char header[192];
     int hn = snprintf(header, sizeof(header),
                       "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
@@ -941,6 +1072,9 @@ static int client_thread(void *arg) {
          * client count, shared settings -- are the heartbeat; nothing
          * extra is asked of it. */
         char client_id[17] = {0};
+        /* The browser's half of the WebSocket handshake. Its presence is
+         * what turns this request into a stream rather than a page. */
+        char ws_key[80] = {0};
         for (;;) {
             if (read_line(fd, line, sizeof(line)) != 0) break;
             if (line[0] == '\0') break; /* empty line = end of headers */
@@ -958,6 +1092,11 @@ static int client_thread(void *arg) {
             if (sscanf(line, "X-Client-Id: %16s", cid) == 1 || sscanf(line, "x-client-id: %16s", cid) == 1) {
                 snprintf(client_id, sizeof(client_id), "%s", cid);
             }
+            char key[80];
+            if (sscanf(line, "Sec-WebSocket-Key: %79s", key) == 1 ||
+                sscanf(line, "sec-websocket-key: %79s", key) == 1) {
+                snprintf(ws_key, sizeof(ws_key), "%s", key);
+            }
         }
 
         if (client_id[0]) {
@@ -974,6 +1113,15 @@ static int client_thread(void *arg) {
             handle_resolution_get(ws, fd);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/resolution") == 0) {
             handle_resolution(ws, fd, content_length, token);
+        } else if (strcmp(method, "GET") == 0 && strcmp(path, "/ws") == 0) {
+            /* Handed to the native transport, which then owns the fd:
+             * above the upgrade a browser is a client like any other,
+             * reading the same messages the console reads. */
+            if (transport_is_ws() && handle_ws_upgrade(ws, fd, ws_key, token)) {
+                return 0; /* the socket belongs to switch_stream now */
+            }
+        } else if (strcmp(method, "POST") == 0 && strcmp(path, "/transport") == 0) {
+            handle_transport(ws, fd, content_length, token);
         } else if (strcmp(method, "POST") == 0 && strcmp(path, "/bye") == 0) {
             /* The page saying it is closing or reloading, sent with
              * navigator.sendBeacon so it survives the unload. Not gated:

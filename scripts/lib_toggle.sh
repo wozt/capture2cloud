@@ -17,12 +17,14 @@ C2C_SOURCES=(
     "$C2C_DIR/gst_webrtc.c"
     "$C2C_DIR/gamepad_bridge.c"
     "$C2C_DIR/app_config.c"
+    "$C2C_DIR/ws_frame.c"
     "$C2C_DIR/video_capture.c"
     "$C2C_DIR/audio_capture.c"
     "$C2C_DIR/switch_stream.c"
     "$C2C_DIR/local_pad.c"
 )
 C2C_HEADERS=(
+    "$C2C_DIR/ws_frame.h"
     "$C2C_DIR/gtk_shell.h"
     "$C2C_DIR/web_stream.h"
     "$C2C_DIR/gst_webrtc.h"
@@ -36,7 +38,7 @@ C2C_HEADERS=(
     "$C2C_DIR/local_pad.h"
 )
 C2C_BIN="$C2C_DIR/capture2cloud"
-C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0"
+C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0 glib-2.0"
 
 # The launchers read the same .env the app itself does, so a different
 # capture card is configured in one place.

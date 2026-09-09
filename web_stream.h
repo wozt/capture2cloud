@@ -52,6 +52,12 @@ int web_stream_wake_console(WebStream *ws);
  * the source. Supplied as a function because the native server is
  * stopped and started when its port changes, so a pointer taken once
  * would go stale. */
+/* Where a browser goes once its WebSocket handshake is done: the native
+ * transport adopts the fd and serves it the same messages it serves the
+ * console. Returns 0 when it has taken ownership. */
+void web_stream_set_native_adopt(WebStream *ws, int (*adopt)(void *ctx, int fd, int may_control),
+                                 void *ctx);
+
 void web_stream_set_native_counter(WebStream *ws, void (*count)(void *ctx, int *now, int *max),
                                    void *ctx);
 

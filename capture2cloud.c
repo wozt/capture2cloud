@@ -165,6 +165,18 @@ static void start_or_report_web_stream(void) {
 /* How many console clients are connected, for the page's viewer count.
  * Read through the current server rather than a captured pointer: it is
  * replaced whenever the port changes. */
+/* A browser whose WebSocket handshake is done, handed to the transport
+ * that already serves the console and the phone. Looked up rather than
+ * captured: the native server is stopped and started when its port
+ * changes, so a pointer taken once would go stale. */
+static int adopt_web_socket(void *ctx, int fd, int may_control) {
+    (void)ctx;
+    if (!g_switch) {
+        return -1;
+    }
+    return switch_stream_adopt_websocket(g_switch, fd, may_control);
+}
+
 static void count_native_clients(void *ctx, int *now, int *max) {
     (void)ctx;
     *now = switch_stream_client_count(g_switch);
@@ -547,6 +559,7 @@ int main(int argc, char **argv) {
         (int)config_get_int("SWITCH_PORT", C2S_DEFAULT_PORT, 1, 65535);
     g_settings.switch_enabled = (int)config_get_int("SWITCH_AUTOSTART", 1, 0, 1);
     web_stream_set_native_counter(g_web, count_native_clients, NULL);
+    web_stream_set_native_adopt(g_web, adopt_web_socket, NULL);
     g_switch = g_settings.switch_enabled
                    ? switch_stream_start(g_web, (uint16_t)g_settings.switch_port)
                    : NULL;

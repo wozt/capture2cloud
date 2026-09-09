@@ -76,6 +76,7 @@ var ltThresholdSlider = document.getElementById('lt-threshold');
 var rtThresholdSlider = document.getElementById('rt-threshold');
 var ltv = document.getElementById('ltv');
 var rtv = document.getElementById('rtv');
+var transportSelect = document.getElementById('transport');
 
 var versionEl = document.getElementById('ver');
 if (versionEl) versionEl.textContent = 'v' + C2C_VERSION;

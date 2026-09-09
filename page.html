@@ -93,6 +93,10 @@
     </span>
 
     <details class="menu-group" id="group-stream"><summary>stream</summary><div class="menu-items">
+      <label title="How this page receives the stream. WebRTC sends the media peer-to-peer over UDP, which keeps latency honest and makes a lost packet cost one frame -- but it never touches the HTTP chain, so it does not survive a reverse proxy. WebSocket carries the same protocol the Android and Switch clients use, as ordinary web traffic a proxy relays without being told anything, at the cost of TCP: a lost packet stalls what is behind it. One or the other for everybody, and the encoder for the unused one stops on its own.">transport <select id="transport">
+        <option value="webrtc">WebRTC (UDP, lowest latency)</option>
+        <option value="ws">WebSocket (H.264, goes through a proxy)</option>
+      </select></label>
       <label title="Resolution the browser stream is encoded at. The capture card keeps delivering its own size; this is the scale on the way to the encoder, so lowering it also cuts most of the encoding work. Applies live, to every browser client -- there is one encoder.">resolution <select id="resolution">
         <option value="1080">1080p60</option>
         <option value="720">720p60</option>
@@ -169,5 +173,6 @@
 <script src="/web/keyboard.js"></script>
 <script src="/web/ui/panels.js"></script>
 <script src="/web/touchpad.js"></script>
+<script src="/web/wstream.js"></script>
 <script src="/web/webrtc.js"></script>
 </body></html>
