@@ -485,8 +485,58 @@ fullscreenBox.onchange = function () {
 ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'].forEach(function (ev) {
   document.addEventListener(ev, function () {
     fullscreenBox.checked = isFullscreen();
+    /* The real state, not the request: leaving fullscreen with Escape
+     * never goes through the checkbox, and a preference that only
+     * recorded clicks would remember the opposite of what happened. */
+    saveSettings({ fullscreen: isFullscreen() });
   });
 });
+
+/*
+ * Restored, but not on load: a browser refuses requestFullscreen()
+ * outside a user gesture, so asking at startup is a promise that
+ * rejects every time. The preference is armed instead and spent on the
+ * first thing the person does on the page.
+ *
+ * Once, and only if it is still wanted by then -- otherwise a click
+ * meant for a button would keep dragging the page back into fullscreen
+ * for the rest of the session.
+ */
+if (settings.fullscreen === true) {
+  var restoreFullscreen = function () {
+    window.removeEventListener('pointerdown', restoreFullscreen);
+    window.removeEventListener('keydown', restoreFullscreen);
+    if (settings.fullscreen !== true || isFullscreen()) return;
+    requestFullscreenOn(document.documentElement).catch(function () {
+      /* Silent: a refusal here is the browser's policy, not a fault,
+       * and it has already been reported once if the user asked for it
+       * by hand. */
+    });
+  };
+  window.addEventListener('pointerdown', restoreFullscreen);
+  window.addEventListener('keydown', restoreFullscreen);
+}
+
+/*
+ * Which group of the control bar was open.
+ *
+ * The list and the one-open-at-a-time rule live in main.js, which runs
+ * before settings.js and so cannot read a preference; the remembering
+ * is here, where `settings` exists. Stored as the id rather than an
+ * index, so reordering the bar cannot silently open a different menu.
+ */
+menuGroups.forEach(function (group) {
+  group.addEventListener('toggle', function () {
+    /* Written on close as well, or collapsing the last open group would
+     * be remembered as still open. */
+    saveSettings({ openGroup: group.open ? group.id : null });
+  });
+});
+if (settings.openGroup) {
+  menuGroups.forEach(function (group) {
+    if (group.id === settings.openGroup) group.open = true;
+  });
+}
 /* Whether a point is close enough to a virtual control that a tap there
  * was probably meant for it.
  *
@@ -744,6 +794,12 @@ wakeConsoleBtn.onclick = function () {
 transportSelect.onchange = function (e) {
   var wanted = e.target.value;
   noteSharedTouched();
+  /* Kept like the resolution and the capture format are: a record of
+   * what this browser last chose, never re-imposed on load. The host
+   * runs one transport and /shared says which -- a page that arrived
+   * pushing its own would change the picture for everyone already
+   * watching. */
+  saveSettings({ transport: wanted });
   playerFetch('/transport', { method: 'POST', body: wanted })
     .then(function () { applyTransport(wanted); })
     .catch(function (err) { log('transport: ' + err); });

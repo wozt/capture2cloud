@@ -107,8 +107,9 @@ Nothing here touches the host. Two people can disagree about all of it.
 | Stick deadzone, range, diagonals, trigger thresholds, invert RY | ✓ | ✓ | ✓ | ✓ |
 | Diagnostics overlay, stats line | ✓ | ✓ | ✓ | — |
 | Menu layout (columns / accordion) | — | ✓ | — | — |
+| Which group of the control bar is open | ✓ | — | — | — |
 | Host, port, transport path | — | ✓ | ✓ | — |
-| Saved password, session token | ✓ | ✓ | ✓ | — |
+| Session token (never the password — see below) | ✓ | ✓ | ✓ | — |
 | Vsync | ✓ | — | — | `vsync` |
 | **Video codec** (H.264 / VP8) — picks which native stream to be on | — | ✓ | ✓ | — |
 | Local playback sink | — | — | — | `local_direct_sink` |
@@ -117,6 +118,26 @@ Nothing here touches the host. Two people can disagree about all of it.
 The stick shaping deserves a word: it is per-client even though it feeds
 one adapter, because it shapes *that client's own stick* before it is
 sent. Two players on two clients each shape their own.
+
+**Everything on the page is remembered except one thing.** Every
+control writes its value to `localStorage`, including the two that look
+like window state rather than preference: whether the control bar's
+group was left open, and fullscreen — the latter recorded from the
+document rather than from the checkbox, since leaving with Escape never
+goes through it, and restored at the first user gesture because a
+browser refuses `requestFullscreen()` outside one.
+
+The exception is the **password**. It is typed, exchanged for a session
+token, and forgotten. The token lives in `sessionStorage` so it dies
+with the tab, deliberately not in the settings blob that outlives it,
+and the host only keeps it in memory. A test asserts the password
+reaches `/login` and appears in neither.
+
+The resolution, the capture format and the transport are written down
+too, but are **never re-applied on load** — they belong to the host, and
+a page arriving with its own saved values would change the picture for
+whoever was already watching. They are a record of what this browser
+last chose, nothing more.
 
 ## Actions, not settings
 
