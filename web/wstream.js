@@ -393,9 +393,33 @@ function startWsStream() {
   if (playerToken) {
     url += '?token=' + encodeURIComponent(playerToken);
   }
-  wsSocket = new WebSocket(url);
-  wsSocket.binaryType = 'arraybuffer';
-  wsSocket.onopen = function () {
+  /*
+   * Held locally as well, so every handler below can ask whether it is
+   * still the socket the page is actually using.
+   *
+   * Closing a WebSocket is asynchronous: the old one's onclose arrives
+   * well after its replacement is live. These handlers all reach for
+   * module state -- wsSocket, the ping timer, the canvas -- and the old
+   * one was happily doing so from beyond the grave. Logging in is where
+   * it showed: stopWsStream() then startWsStream(), and moments later
+   * the dead socket's onclose set wsSocket to null (nulling the NEW
+   * socket), cleared the NEW ping timer, and scheduled a reconnect that
+   * opened a third. The second stayed open and went on decoding into
+   * the same canvas, unreachable, because the page had thrown away its
+   * only reference to it.
+   *
+   * Two decoders painting one canvas is the flicker between an old
+   * frame and a new one; the host counting three clients for one tab is
+   * that same bug seen from the other end. A page refresh "fixed" it
+   * because it dropped every socket at once.
+   */
+  var sock = new WebSocket(url);
+  wsSocket = sock;
+  sock.binaryType = 'arraybuffer';
+  sock.onopen = function () {
+    /* Opened after being replaced: nothing here wants it, and leaving
+     * it open is one more client on the host's count. */
+    if (wsSocket !== sock) { try { sock.close(); } catch (e) {} return; }
     log('websocket open, waiting for a keyframe...');
     /*
      * A ping every two seconds, because a page that is only watching
@@ -405,13 +429,16 @@ function startWsStream() {
      */
     if (wsPingTimer) clearInterval(wsPingTimer);
     wsPingTimer = setInterval(function () {
-      if (!wsSocket || wsSocket.readyState !== 1) return;
+      if (wsSocket !== sock || sock.readyState !== 1) return;
       var h = new Uint8Array(8);
       h[0] = WS_MSG_PING;
-      wsSocket.send(h);
+      sock.send(h);
     }, 2000);
   };
-  wsSocket.onclose = function () {
+  sock.onclose = function () {
+    /* A socket already replaced: its successor owns the state now, and
+     * touching any of it here is what this guard exists to stop. */
+    if (wsSocket !== sock) return;
     if (wsPingTimer) { clearInterval(wsPingTimer); wsPingTimer = null; }
     wsSocket = null;
     if (wsLeaving) return;
@@ -422,8 +449,13 @@ function startWsStream() {
       if (!wsLeaving) startWsStream();
     }, 2000);
   };
-  wsSocket.onerror = function () { log('websocket failed'); };
-  wsSocket.onmessage = function (ev) { wsOnMessage(new Uint8Array(ev.data)); };
+  sock.onerror = function () { if (wsSocket === sock) log('websocket failed'); };
+  sock.onmessage = function (ev) {
+    /* The one that matters for the picture: a replaced socket must not
+     * decode into the canvas the live one is drawing on. */
+    if (wsSocket !== sock) return;
+    wsOnMessage(new Uint8Array(ev.data));
+  };
 }
 
 /* Puts the WebSocket path away: called when the host has been switched

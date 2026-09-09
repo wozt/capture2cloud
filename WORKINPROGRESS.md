@@ -226,6 +226,17 @@ the first rebind would quietly redefine "default" for that pad.
   that transport has no source — the decoder draws into the canvas.
   Re-checking it brought the picture back, which is what made it look
   like a vsync bug rather than a surface-ownership one.
+- **A replaced WebSocket's handlers still ran, and still owned the
+  page.** Closing a socket is asynchronous, so on login -- where the
+  token has to travel in a new socket's URL -- the old one's `onclose`
+  landed after its replacement was live and set `wsSocket` to null
+  (nulling the *new* socket), cleared the *new* ping timer, and
+  scheduled a reconnect that opened a third. The second stayed open and
+  went on decoding into the same canvas, unreachable. Two painters on
+  one canvas is the flicker; three clients on the host for one tab is
+  the same bug from the other end; refreshing the page "fixed" it by
+  dropping everything at once. Every handler now checks it is still the
+  current socket before touching anything.
 - **The GMainContext isolation never worked.**
   `g_main_context_push_thread_default()` acquires the context, and the
   gst thread already owns it — GLib said `assertion 'acquired_context'
