@@ -699,12 +699,32 @@ static void handle_resolution(WebStream *ws, int fd, long content_length, const 
     body[content_length] = '\0';
     body[strcspn(body, "\r\n")] = '\0';
 
-    /* 16:9 throughout, and every dimension even -- VP8 rejects odd ones,
-     * and a half-pixel chroma plane is not a thing. */
+    /*
+     * 16:9 throughout, every dimension even -- VP8 rejects odd ones, and
+     * a half-pixel chroma plane is not a thing -- and every WIDTH a
+     * whole number of macroblocks.
+     *
+     * That last one is why 480p is 848 across and not the 854 that 16:9
+     * asks for. H.264 codes in blocks of sixteen; 854 is 53.4 of them,
+     * so the picture is coded at 864 and the ten extra columns are
+     * marked to be ignored, as cropping in the parameter sets. Every
+     * decoder is meant to honour that. Firefox handed the padding over
+     * anyway, and padding nobody wrote is chroma at zero, which is a
+     * green stripe down the right of the picture. 848 leaves nothing to
+     * honour, at a cost of six pixels -- and 848/480 is actually closer
+     * to 16:9 than 864 would be.
+     *
+     * 1080 is the exception, and stays: its height is 67.5 blocks, so it
+     * is coded at 1088 with eight rows cropped -- which is what every
+     * 1080p video in the world does, and the one crop no decoder gets
+     * wrong. Rounding it would either invent eight rows or throw away
+     * eight real ones, to fix something that is not broken. 720p needs
+     * nothing: 1280 and 720 are both whole blocks already.
+     */
     int w = 0, h = 0;
     if (strcmp(body, "1080") == 0)      { w = 1920; h = 1080; }
     else if (strcmp(body, "720") == 0)  { w = 1280; h = 720; }
-    else if (strcmp(body, "480") == 0)  { w = 854;  h = 480; }
+    else if (strcmp(body, "480") == 0)  { w = 848;  h = 480; }
     else {
         send_400(fd, "resolution must be 1080, 720 or 480");
         return;

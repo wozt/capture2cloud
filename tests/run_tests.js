@@ -994,6 +994,35 @@ group('the page and the test suite agree on what to load', () => {
   check('every file listed exists', missing.join(','), '');
 });
 
+group('every offered width is a whole number of macroblocks', () => {
+  // H.264 codes in blocks of sixteen. A width that is not a multiple of
+  // one is coded larger, with the extra columns marked to be ignored as
+  // cropping in the parameter sets -- and a decoder that hands the
+  // padding over anyway draws chroma nobody wrote, which is a green
+  // stripe down the right of the picture. Firefox did exactly that with
+  // 854, which is 53.4 blocks.
+  //
+  // Heights are deliberately NOT checked: 1080 is 67.5 blocks and is
+  // meant to stay that way, being what every 1080p video in the world
+  // does and the one crop no decoder gets wrong. It is the width that
+  // went wrong here, and the width that is pinned.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'web_stream.c'), 'utf8');
+  const re = /strcmp\(body, "(\d+)"\) == 0\)\s*\{\s*w = (\d+);\s*h = (\d+);/g;
+  const offered = [];
+  let m;
+  while ((m = re.exec(src))) offered.push({ name: m[1], w: +m[2], h: +m[3] });
+
+  check('all three resolutions were found', offered.length, 3);
+  check('every width is a whole number of blocks',
+    offered.filter((o) => o.w % 16 !== 0).map((o) => o.name + ':' + o.w).join(','), '');
+  // And the shape is still roughly 16:9, so a fix for the stripe cannot
+  // quietly become a squashed picture.
+  check('and every one is still about 16:9',
+    offered.filter((o) => Math.abs(o.w / o.h - 16 / 9) > 0.03)
+      .map((o) => o.name).join(','), '');
+});
+
 group('the websocket handshake is read where the struct actually puts it', () => {
   // C2sHelloAck is a packed struct and the page reads it by counting
   // bytes, which is silent when it counts wrong: reading audio_rate
@@ -1066,7 +1095,7 @@ group('shared settings arrive pushed on the websocket, not only polled', () => {
     m[0] = 26;
     const v = new DataView(m.buffer);
     v.setUint32(4, 12, true);
-    v.setUint16(8 + 0, height === 1080 ? 1920 : height === 720 ? 1280 : 854, true);
+    v.setUint16(8 + 0, height === 1080 ? 1920 : height === 720 ? 1280 : 848, true);
     v.setUint16(8 + 2, height, true);
     v.setUint16(8 + 4, 60, true);
     v.setUint16(8 + 6, kbps, true);

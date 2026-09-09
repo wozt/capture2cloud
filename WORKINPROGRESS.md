@@ -284,6 +284,23 @@ the first rebind would quietly redefine "default" for that pad.
   `gamepadNeedsXYSwap()` keys on the pad; the likely root cause is the
   Linux xpad driver's button order. That same Xbox Series X|S pad also
   reports LT/RT as axes 4/5 rather than buttons 6/7.
+- **A green stripe down the right of the picture is a width that is not
+  a whole number of macroblocks.** H.264 codes in blocks of sixteen;
+  854 is 53.4 of them, so 480p was coded at 864 with the ten extra
+  columns marked to be ignored, as cropping in the parameter sets.
+  Every decoder is meant to honour that. Firefox handed the padding
+  over anyway, and padding nobody wrote is chroma at zero, which is
+  green. Drawing from `frame.visibleRect` -- which the page already
+  did -- is not enough on its own; the fix is to leave nothing to
+  honour, so 480p is **848** across now, six pixels and closer to 16:9
+  than 864 would be. `bottom_screen_server` hit exactly this and
+  reached the same answer (its `bs_encoder.c` rounds every size to
+  whole blocks).
+  - **1080 is the deliberate exception.** Its height is 67.5 blocks, so
+    it is coded at 1088 with eight rows cropped -- what every 1080p
+    video in the world does, and the one crop no decoder gets wrong.
+    720p needs nothing at all: 1280 and 720 are both whole blocks. That
+    is exactly why the stripe appeared at 480p and nowhere else.
 - **The tray menu needs the button and the timestamp it is handed.**
   KDE has no XEmbed tray: `xembedsniproxy` republishes the
   `GtkStatusIcon` as a StatusNotifierItem, so a right click arrives as
