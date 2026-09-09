@@ -26,6 +26,11 @@ var WS_MSG_STREAM_INFO = 21;
 var WS_MSG_SHARED = 26;
 var WS_MSG_HELLO_ACK = 27;
 var WS_MSG_PING = 17;
+var WS_MSG_INPUT = 16;
+var WS_MSG_KEYFRAME = 22;
+/* Header + the 21 pad slots, reused rather than allocated sixty times a
+ * second: this is called from the gamepad loop. */
+var wsInputBuf = new Uint8Array(8 + 21);
 
 var wsSocket = null;
 var wsDecoder = null;
@@ -33,10 +38,40 @@ var wsCtx2d = null;
 var wsFrames = 0;
 var wsKeyframes = 0;
 var wsBytes = 0;
+var wsDropped = 0;
+var wsLastKeyRequest = 0;
+/* Four frames is about a sixteenth of a second at sixty: deep enough to
+ * ride out a hiccup, shallow enough that riding one out never becomes
+ * latency worth watching. */
+var WS_MAX_DECODE_QUEUE = 4;
 /* Set while a deliberate switch is tearing the socket down, so its
  * onclose does not helpfully reconnect the path we are leaving. */
 var wsLeaving = false;
 var wsPingTimer = null;
+
+/* True while the WebSocket path is the one carrying the picture. Read by
+ * the control bar, which otherwise reaches for the <video> element -- and
+ * on this path that element has no source at all. */
+function wsIsActive() { return wsSocket !== null; }
+
+/* One C2S input message: the same 21 bytes, the same header, the same
+ * meaning as on the other two clients. */
+function wsSendInput(state) {
+  if (!wsSocket || wsSocket.readyState !== 1) return;
+  wsInputBuf[0] = WS_MSG_INPUT;
+  wsInputBuf[1] = 0;
+  wsInputBuf[2] = 0; wsInputBuf[3] = 0;
+  wsInputBuf[4] = 21; wsInputBuf[5] = 0; wsInputBuf[6] = 0; wsInputBuf[7] = 0;
+  wsInputBuf.set(new Uint8Array(state.buffer, state.byteOffset, 21), 8);
+  wsSocket.send(wsInputBuf);
+}
+
+function wsRequestKeyframe() {
+  if (!wsSocket || wsSocket.readyState !== 1) return;
+  var h = new Uint8Array(8);
+  h[0] = WS_MSG_KEYFRAME;
+  wsSocket.send(h);
+}
 
 var wsAudioDecoder = null;
 var wsAudioChannels = 2;
@@ -103,6 +138,11 @@ function wsStartDecoder(codecName) {
         wsCtx2d.drawImage(frame, 0, 0, canvas.width, canvas.height);
       }
       frame.close();
+      /* The gate is over a picture that is now playing. It exists to
+       * ask for the click that unlocks SOUND, and that click is still
+       * wanted -- but leaving a "start stream" veil over a running
+       * stream says the wrong thing. */
+      if (gate) gate.classList.add('hidden');
     },
     error: function (e) { log('decoder: ' + e.message); },
   });
@@ -131,6 +171,26 @@ function wsOnVideo(data, keyframe) {
   }
   if (wsDecoder.state !== 'configured') return;
   if (!keyframe && wsFrames === 0) return;
+
+  /*
+   * A decoder that is behind must not be fed harder.
+   *
+   * 1080p60 is more than some browsers decode in real time, and
+   * decode() queues rather than blocks -- so a page that cannot keep up
+   * grows a queue that never drains, which is a picture that stops and
+   * memory that does not. Frames are dropped here instead, and a
+   * keyframe asked for so the gap costs a moment rather than the five
+   * seconds until the next scheduled one.
+   */
+  if (!keyframe && wsDecoder.decodeQueueSize > WS_MAX_DECODE_QUEUE) {
+    wsDropped++;
+    var now = Date.now();
+    if (now - wsLastKeyRequest > 1000) {
+      wsLastKeyRequest = now;
+      wsRequestKeyframe();
+    }
+    return;
+  }
 
   wsFrames++;
   if (keyframe) wsKeyframes++;
@@ -357,3 +417,14 @@ function applyTransport(which) {
     retry();
   }
 }
+
+/*
+ * A browser makes no sound until the page has been touched, and this is
+ * a page you are going to touch anyway. Registered once, for every
+ * transport: resuming a context that is already running costs nothing.
+ */
+['pointerdown', 'keydown'].forEach(function (ev) {
+  window.addEventListener(ev, function () {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  });
+});

@@ -44,8 +44,17 @@ function inputIsSuppressed() {
 }
 
 function sendGamepadBuffer() {
+  var state = inputIsSuppressed() ? zeroState : gamepadState;
+  /* Two transports, one pad. On the WebSocket path the input goes back
+   * up the same socket the picture comes down, as the C2S message the
+   * Android and Switch clients already send -- there is no DataChannel
+   * there, and there does not need to be. */
+  if (typeof wsIsActive === 'function' && wsIsActive()) {
+    wsSendInput(state);
+    return;
+  }
   if (!gamepadChannel || gamepadChannel.readyState !== 'open') return;
-  gamepadChannel.send(inputIsSuppressed() ? zeroState.buffer : gamepadState.buffer);
+  gamepadChannel.send(state.buffer);
 }
 
 /* "Keyboard/mouse" mode's own state, declared here (rather than down by

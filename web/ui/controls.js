@@ -175,6 +175,16 @@ gateBtn.onclick = function () {
   applyMuteButtonLabel();
   applyVolume();
   saveSettings({ muted: false });
+  /* On the WebSocket path there is no media element to play: the
+   * picture is drawn into the canvas and the sound is a WebAudio graph.
+   * All a click has to do there is let that graph run -- and asking
+   * <video> to play something it has no source for rejects, which is
+   * what left the veil up over a stream that was already running. */
+  if (typeof wsIsActive === 'function' && wsIsActive()) {
+    if (audioCtx) { audioCtx.resume().catch(function () {}); }
+    gate.classList.add('hidden');
+    return;
+  }
   video
     .play()
     .then(function () {
