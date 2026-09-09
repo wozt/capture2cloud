@@ -43,7 +43,12 @@ void switch_stream_set_profile_request(SwitchStream *s,
 /* How many clients are watching one codec (C2S_CODEC_VP8 / _H264).
  * Read per frame by the pipeline, so a chain nobody is on is not
  * encoded at all. */
-int switch_stream_codec_client_count(SwitchStream *s, int codec);
+int switch_stream_stream_client_count(SwitchStream *s, int slot);
+
+/* Takes over a connection the HTTP server has already upgraded to a
+ * WebSocket. Above that handshake it is a client like any other, on the
+ * browsers' stream. Returns 0 once this transport owns the fd. */
+int switch_stream_adopt_websocket(SwitchStream *s, int fd, int may_control);
 
 /* Called whenever that count changes for either codec -- a client
  * arriving, leaving, or switching. Fired outside the client lock. */
@@ -53,16 +58,24 @@ void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), vo
  * a change, because the change takes effect some frames after the
  * request and a decoder re-initialised at the wrong moment sees the tail
  * of the old stream. */
-void switch_stream_announce_stream(SwitchStream *s, uint8_t codec,
+/* Which encode a client is on. Three, not two codecs: the browsers'
+ * H.264 and the console's are the same codec at different sizes, so
+ * they cannot share one. See switch_stream.c for why the routing key
+ * had to stop being the codec. */
+#define SS_STREAM_VP8  0
+#define SS_STREAM_H264 1
+#define SS_STREAM_WEB  2
+
+void switch_stream_announce_stream(SwitchStream *s, int slot,
                                    uint16_t width, uint16_t height);
 
 /* Announces the settings every native client shares -- the stream's
  * shape, its codec, its bitrate, and the capture format. Sent on change
  * and to each client as it connects; see SHARED_SETTINGS.md for what is
  * shared and what is deliberately not. */
-void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t height,
+void switch_stream_announce_shared(SwitchStream *s, int slot, uint16_t width, uint16_t height,
                                    uint16_t fps, uint16_t bitrate_kbps,
-                                   uint8_t codec, uint8_t capture_mjpeg);
+                                   uint8_t capture_mjpeg);
 
 /* How many native clients are connected. The encoder branch for this
  * stream is only fed while this is above zero -- there is no point
@@ -79,7 +92,7 @@ int switch_stream_max_clients(void);
 /* Sends one encoded frame to the clients on that codec, and only them:
  * the other group is watching a different encode, and bytes from the
  * wrong chain do not fail cleanly -- they decode into a picture. */
-void switch_stream_send_video(SwitchStream *s, int codec, const uint8_t *data, uint32_t size,
+void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, uint32_t size,
                               int keyframe);
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size);
 

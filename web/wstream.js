@@ -1,0 +1,224 @@
+/*
+ * capture2cloud -- the stream over a WebSocket, decoded by the browser.
+ *
+ * The other transport in this page is WebRTC, and it is not going away:
+ * its media travels peer-to-peer over UDP, which is what keeps latency
+ * honest and what makes a lost packet cost one frame instead of
+ * stalling everything behind it.
+ *
+ * What it cannot do is leave the house. That media never touches the
+ * HTTP chain, so a reverse proxy relays the signalling and then watches
+ * the stream fail; reaching it from outside needs STUN and possibly a
+ * TURN relay. This path exists for that: the SAME protocol the Android
+ * and Switch clients speak, carried over a WebSocket, which Cloudflare
+ * and Nginx pass without being told anything at all.
+ *
+ * Which one runs is the host's decision (WEB_TRANSPORT in the .env),
+ * read from /shared. Never both: they are two deliveries of two
+ * different encodes, and a page that could choose would be a page that
+ * disagrees with the host about which encoder is running.
+ */
+
+/* The message types, as c2s_protocol.h numbers them. */
+var WS_MSG_VIDEO = 1;
+var WS_MSG_AUDIO = 2;
+var WS_MSG_STREAM_INFO = 21;
+var WS_MSG_SHARED = 26;
+var WS_MSG_HELLO_ACK = 27;
+
+var wsSocket = null;
+var wsDecoder = null;
+var wsCtx2d = null;
+var wsFrames = 0;
+var wsKeyframes = 0;
+var wsBytes = 0;
+/* Set while a deliberate switch is tearing the socket down, so its
+ * onclose does not helpfully reconnect the path we are leaving. */
+var wsLeaving = false;
+
+/*
+ * The codec string, read out of the stream rather than assumed.
+ *
+ * WebCodecs takes the profile and level as part of the codec name and it
+ * means them: a hardcoded avc1.42E01E pins level 3.0, which decodes
+ * nothing at all at 1080p. The three bytes after the SPS NAL header are
+ * exactly profile, constraints and level, so they are taken from there.
+ */
+function wsCodecFromSps(data) {
+  for (var i = 0; i + 4 < data.length; i++) {
+    var start3 = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1;
+    var start4 = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1;
+    if (!start3 && !start4) continue;
+    var nal = i + (start4 ? 4 : 3);
+    if (nal + 3 >= data.length) break;
+    if ((data[nal] & 0x1f) !== 7) continue;   /* 7 is the SPS */
+    var hex = function (b) { return b.toString(16).padStart(2, '0'); };
+    return 'avc1.' + hex(data[nal + 1]) + hex(data[nal + 2]) + hex(data[nal + 3]);
+  }
+  return null;
+}
+
+function wsStartDecoder(codecName) {
+  if (wsDecoder) { try { wsDecoder.close(); } catch (e) {} }
+  wsDecoder = new VideoDecoder({
+    output: function (frame) {
+      /*
+       * Drawn from the frame's visible rectangle, not the whole frame.
+       *
+       * A hardware encoder codes in macroblocks of sixteen, so a width
+       * that is not a multiple of sixteen is coded larger and the extra
+       * columns are marked to be ignored. A decoder that has not
+       * cropped hands back the coded frame, and those columns have an
+       * untouched chroma plane -- which is green.
+       */
+      var r = frame.visibleRect;
+      if (canvas.width !== (r ? r.width : frame.displayWidth) ||
+          canvas.height !== (r ? r.height : frame.displayHeight)) {
+        canvas.width = r ? r.width : frame.displayWidth;
+        canvas.height = r ? r.height : frame.displayHeight;
+      }
+      if (r) {
+        wsCtx2d.drawImage(frame, r.x, r.y, r.width, r.height, 0, 0, canvas.width, canvas.height);
+      } else {
+        wsCtx2d.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      }
+      frame.close();
+    },
+    error: function (e) { log('decoder: ' + e.message); },
+  });
+  /* No description, which is what tells WebCodecs the stream is Annex B
+   * -- and it is: the host repeats the parameter sets in front of every
+   * keyframe (h264parse config-interval=-1), so a page can start at any
+   * of them rather than only at the first. */
+  wsDecoder.configure({ codec: codecName, optimizeForLatency: true });
+}
+
+function wsOnVideo(data, keyframe) {
+  if (!wsDecoder) {
+    /* Nothing until a keyframe: it carries the parameter sets the
+     * decoder is configured from, and a correction to a picture that was
+     * never there is noise rather than an image. */
+    if (!keyframe) return;
+    var codecName = wsCodecFromSps(data);
+    if (!codecName) { log('no parameter sets in the keyframe'); return; }
+    try {
+      wsStartDecoder(codecName);
+    } catch (e) {
+      log('configure ' + codecName + ': ' + e.message);
+      wsDecoder = null;
+      return;
+    }
+  }
+  if (wsDecoder.state !== 'configured') return;
+  if (!keyframe && wsFrames === 0) return;
+
+  wsFrames++;
+  if (keyframe) wsKeyframes++;
+  wsBytes += data.length;
+  try {
+    wsDecoder.decode(new EncodedVideoChunk({
+      type: keyframe ? 'key' : 'delta',
+      timestamp: wsFrames * 1000,
+      data: data,
+    }));
+  } catch (e) {
+    log('decode: ' + e.message);
+  }
+}
+
+/*
+ * One WebSocket binary frame carries exactly one protocol message, in
+ * the same layout the TCP framing uses -- so this reader is the same
+ * eight-byte header the Android and Switch clients read.
+ */
+function wsOnMessage(bytes) {
+  var v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  var type = bytes[0];
+  var flags = bytes[1];
+  var size = v.getUint32(4, true);
+  if (bytes.length < 8 + size) return;
+  var body = bytes.subarray(8, 8 + size);
+
+  if (type === WS_MSG_VIDEO) {
+    wsOnVideo(body, (flags & 1) !== 0);
+  } else if (type === WS_MSG_HELLO_ACK) {
+    var b = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    var granted = body[6] === 1;
+    log('connected over the websocket, ' +
+        b.getUint16(8, true) + 'x' + b.getUint16(10, true) +
+        (granted ? ' -- player' : ' -- viewer'));
+    setPlayerUi(granted);
+  } else if (type === WS_MSG_STREAM_INFO) {
+    /* The host saying what it is sending now. The decoder is rebuilt at
+     * the next keyframe rather than here: the change takes effect some
+     * frames later, and one re-initialised early sees the tail of the
+     * old stream. */
+    if (wsDecoder) { try { wsDecoder.close(); } catch (e) {} }
+    wsDecoder = null;
+    wsFrames = 0;
+  }
+  /* SHARED and AUDIO are read by the same page in the same way as
+   * everywhere else; the spike leaves them for the next step. */
+}
+
+function startWsStream() {
+  if (!('VideoDecoder' in window)) {
+    log('this browser has no WebCodecs, so it cannot decode this stream');
+    return;
+  }
+  /* The canvas is the surface either way: the vsync path already draws
+   * the WebRTC picture into it, so there is one thing to size and one
+   * thing to fit. */
+  video.style.display = 'none';
+  canvas.style.display = 'block';
+  wsCtx2d = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
+  var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  wsSocket = new WebSocket(url);
+  wsSocket.binaryType = 'arraybuffer';
+  wsSocket.onopen = function () { log('websocket open, waiting for a keyframe...'); };
+  wsSocket.onclose = function () {
+    wsSocket = null;
+    if (wsLeaving) return;
+    log('websocket closed, reconnecting...');
+    setTimeout(function () { if (!wsLeaving) startWsStream(); }, 2000);
+  };
+  wsSocket.onerror = function () { log('websocket failed'); };
+  wsSocket.onmessage = function (ev) { wsOnMessage(new Uint8Array(ev.data)); };
+}
+
+/* Puts the WebSocket path away: called when the host has been switched
+ * to WebRTC and this page is following it. */
+function stopWsStream() {
+  wsLeaving = true;
+  if (wsSocket) { try { wsSocket.close(); } catch (e) {} }
+  wsSocket = null;
+  if (wsDecoder) { try { wsDecoder.close(); } catch (e) {} }
+  wsDecoder = null;
+  wsFrames = 0;
+  /* The video element is the WebRTC path's surface; hand it back. */
+  canvas.style.display = 'none';
+  video.style.display = 'block';
+}
+
+/*
+ * Follows the host onto the transport it is actually running.
+ *
+ * Called from the /shared poll, so a switch made on one page moves every
+ * other page within a couple of seconds -- and a page that was loaded
+ * before the switch is not left waiting on an encoder that stopped.
+ */
+function applyTransport(which) {
+  var wantWs = (which === 'ws');
+  if (transportSelect && transportSelect.value !== which) {
+    transportSelect.value = which;
+  }
+  if (wantWs && !wsSocket) {
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    wsLeaving = false;
+    startWsStream();
+  } else if (!wantWs && wsSocket) {
+    stopWsStream();
+    retry();
+  }
+}

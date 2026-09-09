@@ -71,7 +71,8 @@ function viewerHiddenControls() {
            vidFilterResetBtn, vgpResetBtn]
       .concat(menuGroups),
     /* Sitting inside a <label>: hide the label so its text goes too. */
-    labelled: [gamepadSelect, vsyncBox, captureFormatSelect, resolutionSelect, fullscreenBox, quality,
+    labelled: [gamepadSelect, vsyncBox, captureFormatSelect, resolutionSelect, transportSelect,
+               fullscreenBox, quality,
                vidBrightness, vidContrast, vidSaturation, vidHue,
                invertRyBox, ltThresholdSlider, rtThresholdSlider,
                lStickDeadzone, lStickRange, lStickDiagonal,

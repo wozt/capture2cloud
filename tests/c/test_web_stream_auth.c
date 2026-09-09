@@ -11,6 +11,7 @@
  * than linking the real GStreamer pipeline in, since none of the code
  * under test here touches WebRTC at all. */
 #include "../../app_config.c"
+#include "../../ws_frame.c"
 #include "../../web_stream.c"
 
 #include "test_util.h"

@@ -81,8 +81,11 @@ run_c_test() {
 # The C tests #include the .c file under test, so they see its static
 # functions; the pkg-config sets below are just that file's own deps.
 timed "C: gamepad bridge"  run_c_test test_gamepad_bridge "libusb-1.0 sdl2"
-timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0"
+# glib because web_stream.c now answers a WebSocket upgrade, whose
+# handshake is a SHA-1 and a base64 -- both GLib's.
+timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 glib-2.0"
 timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscale libavcodec libavutil"
+timed "C: websocket frame" run_c_test test_ws_frame "glib-2.0"
 timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
 
 # Before the security suite, and that order is not cosmetic: the security

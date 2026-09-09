@@ -128,6 +128,19 @@ static const char *const H264_ENCODER_PREFERENCE[] = {
  * pulled cable or a machine that went to sleep. */
 #define WEBRTC_HEARTBEAT_TIMEOUT_US (90 * G_USEC_PER_SEC)
 
+/* The three streams this file feeds, named as switch_stream.h names
+ * them. A local alias for the count so the arrays below can be sized
+ * without the header's name leaking into every one of them. */
+#define SS_STREAM_COUNT_LOCAL 3
+
+/* The browsers' stream: H.264, and at a size a monitor wants rather
+ * than the size a handheld wants -- which is the whole reason it cannot
+ * share the console's encode. Fed only while a browser is connected, so
+ * a session with nobody on the page costs nothing at all. */
+#define WEB_VIDEO_WIDTH  1920
+#define WEB_VIDEO_HEIGHT 1080
+#define WEB_VIDEO_BITRATE_KBPS 8000
+
 #define DEFAULT_KEYFRAME_MAX_DIST 300
 #define MIN_KEYFRAME_MAX_DIST 15
 #define MAX_KEYFRAME_MAX_DIST 3000
@@ -216,6 +229,7 @@ struct GstWebrtcStream {
      * dead. Two chains have nothing to agree on, and the one not in use
      * is never fed, so it costs nothing. */
     GstElement *vsrc_switch264, *venc_switch_h264, *switchsink264;
+    GstElement *vsrc_web264, *venc_web_h264, *websink264, *vscale_web264_caps;
     GstElement *vscale_switch264_caps;
     /* The VA encoders take NV12 and nothing else, x264enc takes I420.
      * The conversion happens in the scaler that feeds the branch either
@@ -229,15 +243,16 @@ struct GstWebrtcStream {
      * asking for 480p30 moved everybody, including the people on the
      * other codec who were not even watching that encode. Two chains
      * are fed now, each with its own size, rate and bitrate. */
-    int switch_width[2], switch_height[2], switch_fps[2];
+    int switch_width[SS_STREAM_COUNT_LOCAL], switch_height[SS_STREAM_COUNT_LOCAL];
+    int switch_fps[SS_STREAM_COUNT_LOCAL];
     /* Whether anybody is watching each of them. A chain with no
      * audience is not fed, so it encodes nothing and costs nothing --
      * which is the point: two encoders running for one viewer was the
      * reason only one ever ran. */
-    volatile int switch_wanted[2];
+    volatile int switch_wanted[SS_STREAM_COUNT_LOCAL];
     /* Kept, not merely applied: a client that connects later has to be
      * told the rate everyone on ITS codec is already on. */
-    int switch_bitrate_kbps[2];
+    int switch_bitrate_kbps[SS_STREAM_COUNT_LOCAL];
     /* The capture card's format, shared with the browsers too. Mirrored
      * here so the native announcement can carry it. */
     int capture_mjpeg;
@@ -245,11 +260,11 @@ struct GstWebrtcStream {
      * pixel layouts: the GPU H.264 encoder takes NV12 and nothing else,
      * vp8enc takes I420. When only one chain is fed the other costs
      * nothing -- it is never built. */
-    struct SwsContext *sws_switch[2];
-    enum AVPixelFormat sws_switch_src_format[2];
-    enum AVPixelFormat sws_switch_dst_format[2];
-    uint8_t *switch_i420_buf[2];
-    size_t switch_i420_size[2];
+    struct SwsContext *sws_switch[SS_STREAM_COUNT_LOCAL];
+    enum AVPixelFormat sws_switch_src_format[SS_STREAM_COUNT_LOCAL];
+    enum AVPixelFormat sws_switch_dst_format[SS_STREAM_COUNT_LOCAL];
+    uint8_t *switch_i420_buf[SS_STREAM_COUNT_LOCAL];
+    size_t switch_i420_size[SS_STREAM_COUNT_LOCAL];
     uint64_t switch_frame;
     SwitchStream *switch_out;
     GstElement *asrc, *atee;
@@ -546,7 +561,23 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
             g->switch264_encoder ? g->switch264_encoder : "none",
             g->switch264_nv12 ? "on the GPU" : "on the CPU");
 
-    char desc[3072];
+    /* The same encoder family for the browsers, at their own bitrate.
+     * Built separately rather than reusing the string above because
+     * every property in it names the element it belongs to. */
+    char web_h264_enc[320];
+    if (g->switch264_nv12) {
+        snprintf(web_h264_enc, sizeof(web_h264_enc),
+                 "%s name=venc_web_h264 bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 "
+                 "rate-control=cbr target-usage=6",
+                 g->switch264_encoder, WEB_VIDEO_BITRATE_KBPS, keyframe_max_dist);
+    } else {
+        snprintf(web_h264_enc, sizeof(web_h264_enc),
+                 "x264enc name=venc_web_h264 tune=zerolatency speed-preset=veryfast "
+                 "threads=1 sliced-threads=false bitrate=%d key-int-max=%d bframes=0",
+                 WEB_VIDEO_BITRATE_KBPS, keyframe_max_dist);
+    }
+
+    char desc[4608];
     snprintf(desc, sizeof(desc),
              /* max-buffers=1 + leaky matters more than it looks. appsrc
               * defaults to max-bytes=200000 with leaky-type=none, and a
@@ -658,6 +689,32 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
              "appsink name=switchsink264 emit-signals=true sync=false async=false "
              "max-buffers=2 drop=true "
 
+             /* And the same picture again for the browsers, in H.264 at
+              * a monitor's size.
+              *
+              * A third chain rather than a third client on the second
+              * one: the console decodes 720p on a handheld screen and a
+              * browser is looked at on a desktop, and one encode cannot
+              * be both without shortchanging one of them. It costs an
+              * encoder only while somebody has the page open -- the
+              * appsrc is simply not fed otherwise -- which is the same
+              * bargain the other two make.
+              *
+              * Its own appsrc down, for the reason the H.264 chain has
+              * one: two branches off a tee share a negotiation, and the
+              * closed one never answers the allocation query. */
+             "appsrc name=vsrc_web264 format=time is-live=true do-timestamp=true "
+             "max-buffers=1 leaky-type=downstream "
+             "caps=video/x-raw,format=%s,width=%d,height=%d,framerate=60/1 ! "
+             "queue max-size-buffers=1 leaky=downstream ! "
+             "videorate name=vrate_web264 drop-only=true ! "
+             "videoscale name=vscale_web264 ! capsfilter name=vscale_web264_caps ! "
+             "%s ! "
+             "video/x-h264,stream-format=byte-stream,alignment=au ! "
+             "h264parse config-interval=-1 ! "
+             "appsink name=websink264 emit-signals=true sync=false async=false "
+             "max-buffers=2 drop=true "
+
              /* Audio for the same client, tapped off the encoder the
               * browser already uses: one Opus stream serves both. */
              "atee. ! queue max-size-buffers=2 leaky=downstream ! "
@@ -667,7 +724,9 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
              SWITCH_VIDEO_WIDTH, SWITCH_VIDEO_HEIGHT, SWITCH_VIDEO_BITRATE_KBPS * 1000,
              keyframe_max_dist,
              g->switch264_nv12 ? "NV12" : "I420", SWITCH_VIDEO_WIDTH, SWITCH_VIDEO_HEIGHT,
-             h264_enc);
+             h264_enc,
+             g->switch264_nv12 ? "NV12" : "I420", WEB_VIDEO_WIDTH, WEB_VIDEO_HEIGHT,
+             web_h264_enc);
 
     GError *error = NULL;
     g->pipeline = gst_parse_launch(desc, &error);
@@ -701,16 +760,25 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->vscale_switch_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_switch_caps");
     g->venc_switch_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_switch_h264");
     g->switchsink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchsink264");
+    g->vsrc_web264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_web264");
+    g->venc_web_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_web_h264");
+    g->websink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "websink264");
+    g->vscale_web264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_web264_caps");
+    if (g->websink264) {
+        g_signal_connect(g->websink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
+    }
     g->vsrc_switch264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_switch264");
     g->vscale_switch264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_switch264_caps");
     if (g->switchsink264) {
         g_signal_connect(g->switchsink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
     }
-    for (int slot = 0; slot < 2; slot++) {
-        g->switch_width[slot] = SWITCH_VIDEO_WIDTH;
-        g->switch_height[slot] = SWITCH_VIDEO_HEIGHT;
+    for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
+        const int web = (slot == SS_STREAM_WEB);
+        g->switch_width[slot] = web ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
+        g->switch_height[slot] = web ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
         g->switch_fps[slot] = 60;
-        g->switch_bitrate_kbps[slot] = SWITCH_VIDEO_BITRATE_KBPS;
+        g->switch_bitrate_kbps[slot] = web ? WEB_VIDEO_BITRATE_KBPS
+                                           : SWITCH_VIDEO_BITRATE_KBPS;
     }
     g->switchasink = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchasink");
     if (g->switchsink) {
@@ -795,12 +863,14 @@ static GstFlowReturn on_switch_video_sample(GstElement *sink, gpointer user_data
      * chain's bytes does not fail cleanly: it produces a picture, and
      * the picture was bright pink. Routing rather than dropping is the
      * same guarantee, and it is what lets both run at once. */
-    const int codec = (sink == g->switchsink264) ? C2S_CODEC_H264 : C2S_CODEC_VP8;
+    const int slot = (sink == g->websink264)     ? SS_STREAM_WEB
+                   : (sink == g->switchsink264)  ? SS_STREAM_H264
+                                                 : SS_STREAM_VP8;
     GstBuffer *buf = gst_sample_get_buffer(sample);
     GstMapInfo map;
     if (buf && gst_buffer_map(buf, &map, GST_MAP_READ)) {
         int keyframe = !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
-        switch_stream_send_video(g->switch_out, codec, map.data, (uint32_t)map.size, keyframe);
+        switch_stream_send_video(g->switch_out, slot, map.data, (uint32_t)map.size, keyframe);
         gst_buffer_unmap(buf, &map);
     }
     gst_sample_unref(sample);
@@ -888,17 +958,17 @@ static void on_switch_keyframe_request(void *ctx) {
  * them is how a client ends up showing a setting nobody else has. */
 static void announce_shared_slot(GstWebrtcStream *g, int slot) {
     if (!g || !g->switch_out) return;
-    switch_stream_announce_shared(g->switch_out,
+    switch_stream_announce_shared(g->switch_out, slot,
                                   (uint16_t)g->switch_width[slot], (uint16_t)g->switch_height[slot],
                                   (uint16_t)g->switch_fps[slot],
                                   (uint16_t)g->switch_bitrate_kbps[slot],
-                                  (uint8_t)(slot ? C2S_CODEC_H264 : C2S_CODEC_VP8),
                                   (uint8_t)(g->capture_mjpeg ? 1 : 0));
 }
 
 static void announce_shared(GstWebrtcStream *g) {
-    announce_shared_slot(g, 0);
-    announce_shared_slot(g, 1);
+    for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
+        announce_shared_slot(g, slot);
+    }
 }
 
 /* A profile request from a client, applied to ITS codec's chain only.
@@ -912,8 +982,9 @@ static void on_switch_profile_request(void *ctx, int codec, int w, int h, int fp
     if (!g || w <= 0 || h <= 0) {
         return;
     }
-    const int slot = (codec == C2S_CODEC_H264) ? 1 : 0;
-    GstElement *caps_filter = slot ? g->vscale_switch264_caps : g->vscale_switch_caps;
+    const int slot = (codec == C2S_CODEC_H264) ? SS_STREAM_H264 : SS_STREAM_VP8;
+    GstElement *caps_filter = (slot == SS_STREAM_H264) ? g->vscale_switch264_caps
+                                                       : g->vscale_switch_caps;
     if (!caps_filter) {
         return;
     }
@@ -933,10 +1004,10 @@ static void on_switch_profile_request(void *ctx, int codec, int w, int h, int fp
     if (bitrate_kbps > 0) {
         if (bitrate_kbps < 500) bitrate_kbps = 500;
         if (bitrate_kbps > 20000) bitrate_kbps = 20000;
-        if (slot == 0 && g->venc_switch) {
+        if (slot == SS_STREAM_VP8 && g->venc_switch) {
             g_object_set(g->venc_switch, "target-bitrate", bitrate_kbps * 1000, NULL);
         }
-        if (slot == 1 && g->venc_switch_h264) {
+        if (slot == SS_STREAM_H264 && g->venc_switch_h264) {
             g_object_set(g->venc_switch_h264, "bitrate", bitrate_kbps, NULL);
         }
         g->switch_bitrate_kbps[slot] = bitrate_kbps;
@@ -946,9 +1017,7 @@ static void on_switch_profile_request(void *ctx, int codec, int w, int h, int fp
     g->switch_fps[slot] = fps;
     on_switch_keyframe_request(g);
     if (g->switch_out) {
-        switch_stream_announce_stream(g->switch_out,
-                                      (uint8_t)(slot ? C2S_CODEC_H264 : C2S_CODEC_VP8),
-                                      (uint16_t)w, (uint16_t)h);
+        switch_stream_announce_stream(g->switch_out, slot, (uint16_t)w, (uint16_t)h);
         announce_shared_slot(g, slot);
     }
     fprintf(stderr, "gst_webrtc: native %s stream now %dx%d@%d, %d kbps\n",
@@ -967,17 +1036,17 @@ static void on_switch_demand_changed(void *ctx) {
     if (!g || !g->switch_out) {
         return;
     }
-    for (int slot = 0; slot < 2; slot++) {
-        const int codec = slot ? C2S_CODEC_H264 : C2S_CODEC_VP8;
-        const int wanted = switch_stream_codec_client_count(g->switch_out, codec) > 0;
+    for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
+        const int wanted = switch_stream_stream_client_count(g->switch_out, slot) > 0;
         if (wanted == g->switch_wanted[slot]) {
             continue;
         }
         g->switch_wanted[slot] = wanted;
-        fprintf(stderr, "gst_webrtc: native %s chain %s\n", slot ? "h264" : "vp8",
+        static const char *const names[] = {"native vp8", "native h264", "browser h264"};
+        fprintf(stderr, "gst_webrtc: %s chain %s\n", names[slot],
                 wanted ? "started (a client is watching it)" : "stopped (nobody left on it)");
         if (wanted) {
-            switch_stream_announce_stream(g->switch_out, (uint8_t)codec,
+            switch_stream_announce_stream(g->switch_out, slot,
                                           (uint16_t)g->switch_width[slot],
                                           (uint16_t)g->switch_height[slot]);
             announce_shared_slot(g, slot);
@@ -1002,6 +1071,15 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
     switch_stream_set_keyframe_request(out, on_switch_keyframe_request, g);
     switch_stream_set_profile_request(out, on_switch_profile_request, g);
     switch_stream_set_demand_changed(out, on_switch_demand_changed, g);
+    /* The shape of all three, before anyone connects. A client adopted
+     * onto a stream whose size nobody had announced yet was told the
+     * size of a different one -- harmless, since the decoder reads the
+     * real size out of the parameter sets, and confusing to read. */
+    for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
+        switch_stream_announce_stream(out, slot,
+                                      (uint16_t)g->switch_width[slot],
+                                      (uint16_t)g->switch_height[slot]);
+    }
     announce_shared(g);
 }
 
@@ -1014,18 +1092,26 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
 static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const plane[3],
                               const int stride[3], enum AVPixelFormat format,
                               int width, int height, GstClockTime pts) {
-    GstElement *dest = slot ? g->vsrc_switch264 : g->vsrc_switch;
+    GstElement *dest = (slot == SS_STREAM_WEB)  ? g->vsrc_web264
+                     : (slot == SS_STREAM_H264) ? g->vsrc_switch264
+                                                : g->vsrc_switch;
     if (!dest) {
         return;
     }
-    const int dw = SWITCH_VIDEO_WIDTH, dh = SWITCH_VIDEO_HEIGHT;
+    /* Each chain is fed at its own size: a handheld's and a monitor's
+     * are not the same picture. */
+    const int dw = (slot == SS_STREAM_WEB) ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
+    const int dh = (slot == SS_STREAM_WEB) ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
 
     /* The GPU encoders take NV12 and nothing else; x264 and vp8 take
      * I420. Producing the right one here is free -- the conversion from
      * the capture format happens either way -- and saves a second pass
      * over every pixel inside the pipeline. */
+    /* The GPU encoders take NV12 and nothing else; vp8enc takes I420.
+     * Both H.264 chains use the same encoder family, so they want the
+     * same layout. */
     enum AVPixelFormat dst_format =
-        (slot && g->switch264_nv12) ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+        (slot != SS_STREAM_VP8 && g->switch264_nv12) ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
 
     if (g->sws_switch[slot] && (g->sws_switch_src_format[slot] != format
                                 || g->sws_switch_dst_format[slot] != dst_format)) {
@@ -1099,7 +1185,7 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
     const GstClockTime pts = gst_util_uint64_scale(g->switch_frame, GST_SECOND, 60);
     g->switch_frame++;
 
-    for (int slot = 0; slot < 2; slot++) {
+    for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
         if (g->switch_wanted[slot]) {
             push_switch_chain(g, slot, plane, stride, format, width, height, pts);
         }

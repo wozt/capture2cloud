@@ -1,5 +1,7 @@
 #include "switch_stream.h"
 
+#include "ws_frame.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -21,6 +23,23 @@
 #include "web_stream.h"
 
 /* Small on purpose: this is one console in one room, not a broadcast. */
+/*
+ * Three streams, not two codecs.
+ *
+ * The routing key used to be the codec, because the only two audiences
+ * were the native VP8 clients and the native H.264 ones. A browser
+ * arriving over a WebSocket is a third: it wants H.264 like the console
+ * does, but at the size a monitor wants rather than the size a handheld
+ * wants, so it cannot share that encode. Naming the slots after the
+ * streams rather than the codecs is what lets a third exist at all.
+ *
+ * A client belongs to exactly one, for its whole life.
+ */
+#define SS_STREAM_VP8  0  /* native, VP8 */
+#define SS_STREAM_H264 1  /* native, H.264 */
+#define SS_STREAM_WEB  2  /* browsers over the WebSocket, H.264, bigger */
+#define SS_STREAM_COUNT 3
+
 #define SS_MAX_CLIENTS 4
 
 /* A client that has said nothing for this long is gone, whatever the
@@ -84,9 +103,22 @@ typedef struct {
      * decoding VP8. Two chains are fed now, so this is the client's own
      * business and nobody else's. */
     uint8_t codec;
+    /* Arrived through the HTTP server's WebSocket upgrade rather than
+     * on this transport's own port. Above the handshake the two are the
+     * same stream of C2S messages; the difference is one frame header
+     * per message, and which encode it is fed. */
+    int is_ws;
     uint32_t last_seen_ms;
     uint8_t rx[SS_RX_CAPACITY];
     uint32_t rx_len;
+
+    /* For a browser only: what came OUT of the WebSocket frames, which
+     * is what the C2S parser reads. Two buffers rather than unwrapping
+     * in place, because a partial frame at the end of rx would otherwise
+     * sit in the middle of bytes already unwrapped, and telling the two
+     * apart is more state than a second small buffer. */
+    uint8_t *ws_rx;
+    uint32_t ws_rx_len, ws_rx_cap;
 
     /* What a send could not finish. A frame is header+payload and must
      * arrive whole or the client loses its place in the stream, so a
@@ -120,14 +152,14 @@ struct SwitchStream {
     /* How many clients each codec has, kept up to date rather than
      * counted per frame: the video path reads this sixty times a second
      * and must not take the client lock to do it. */
-    volatile int live[2];
+    volatile int live[SS_STREAM_COUNT];
     volatile int demand_dirty;
 
-    uint32_t max_frame_bytes_by_codec[2];
-    C2sShared shared[2];
-    int shared_known[2];
-    uint16_t group_width[2], group_height[2];
-    int group_stream_known[2];
+    uint32_t max_frame_bytes_by_slot[SS_STREAM_COUNT];
+    C2sShared shared[SS_STREAM_COUNT];
+    int shared_known[SS_STREAM_COUNT];
+    uint16_t group_width[SS_STREAM_COUNT], group_height[SS_STREAM_COUNT];
+    int group_stream_known[SS_STREAM_COUNT];
 
     /* Told whenever the set of codecs anybody is watching changes, so
      * the pipeline can start feeding a chain or stop wasting a core on
@@ -173,19 +205,31 @@ static uint32_t now_ms(void) {
 }
 
 /* Defined further down, with the rest of the sending. */
-/* VP8 in slot 0, H.264 in slot 1. Anything else is not a codec this
- * transport carries, and is treated as the default rather than indexing
- * past the end of an array. */
+/* Which stream a native client asking for this codec belongs to.
+ * Anything else is not a codec this transport carries. */
 static int codec_slot(int codec) {
-    return codec == C2S_CODEC_H264 ? 1 : 0;
+    return codec == C2S_CODEC_H264 ? SS_STREAM_H264 : SS_STREAM_VP8;
 }
-/* codec_filter 0 means every client; otherwise only those on that
- * codec. Video is always filtered -- handing a client the other
- * chain's bytes produces a picture, and the picture is bright pink. */
-static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t flags,
+
+/* And the one a client is actually on, which for a browser is decided
+ * by how it connected rather than by what it asked for. */
+static int client_slot(const SsClient *c) {
+    return c->is_ws ? SS_STREAM_WEB : codec_slot(c->codec);
+}
+
+/* What a stream is encoded in. The browsers' stream and the console's
+ * are both H.264; they differ in size, not in codec. */
+static uint8_t slot_codec(int slot) {
+    return (uint8_t)(slot == SS_STREAM_VP8 ? C2S_CODEC_VP8 : C2S_CODEC_H264);
+}
+/* slot_filter < 0 means every client; otherwise only those on that
+ * stream. Video is always filtered -- handing a client another
+ * encode's bytes produces a picture, and the picture is bright pink. */
+static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t flags,
                       const uint8_t *data, uint32_t size);
-static void recount(SwitchStream *s);
 static void send_group_state(SwitchStream *s, int index);
+static int send_msg_now(SsClient *c, uint8_t type, const void *data, uint32_t size);
+static void recount(SwitchStream *s);
 
 void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest cb, void *ctx) {
     if (s) { s->keyframe_cb = cb; s->keyframe_ctx = ctx; }
@@ -196,19 +240,18 @@ void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest c
  * The codec is no longer a property of the server, so neither is this:
  * telling a VP8 client that the stream is now 720p H.264 would make it
  * rebuild its decoder for an encode it is not being sent. */
-void switch_stream_announce_stream(SwitchStream *s, uint8_t codec,
+void switch_stream_announce_stream(SwitchStream *s, int slot,
                                    uint16_t width, uint16_t height) {
-    if (!s) return;
+    if (!s || slot < 0 || slot >= SS_STREAM_COUNT) return;
     C2sStreamInfo info;
     memset(&info, 0, sizeof(info));
     info.width = width;
     info.height = height;
-    info.video_codec = codec;
-    const int slot = codec_slot(codec);
+    info.video_codec = slot_codec(slot);
     s->group_width[slot] = width;
     s->group_height[slot] = height;
     s->group_stream_known[slot] = 1;
-    broadcast(s, codec, C2S_MSG_STREAM_INFO, 0, (const uint8_t *)&info, sizeof(info));
+    broadcast(s, slot, C2S_MSG_STREAM_INFO, 0, (const uint8_t *)&info, sizeof(info));
 }
 
 /* Tells one codec's clients what the settings they have in common now
@@ -223,10 +266,11 @@ void switch_stream_announce_stream(SwitchStream *s, uint8_t codec,
  * two different encodes with their own size, rate and bitrate, so a
  * VP8 viewer dropping to 480p30 has no business moving an H.264
  * viewer's menu -- which is exactly what one shared set of values did. */
-void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t height,
+void switch_stream_announce_shared(SwitchStream *s, int slot, uint16_t width, uint16_t height,
                                    uint16_t fps, uint16_t bitrate_kbps,
-                                   uint8_t codec, uint8_t capture_mjpeg) {
-    if (!s) return;
+                                   uint8_t capture_mjpeg) {
+    if (!s || slot < 0 || slot >= SS_STREAM_COUNT) return;
+    const uint8_t codec = slot_codec(slot);
     C2sShared sh;
     memset(&sh, 0, sizeof(sh));
     sh.width = width;
@@ -235,10 +279,9 @@ void switch_stream_announce_shared(SwitchStream *s, uint16_t width, uint16_t hei
     sh.bitrate_kbps = bitrate_kbps;
     sh.video_codec = codec;
     sh.capture_mjpeg = capture_mjpeg;
-    const int slot = codec_slot(codec);
     s->shared[slot] = sh;
     s->shared_known[slot] = 1;
-    broadcast(s, codec, C2S_MSG_SHARED, 0, (const uint8_t *)&sh, sizeof(sh));
+    broadcast(s, slot, C2S_MSG_SHARED, 0, (const uint8_t *)&sh, sizeof(sh));
 }
 
 void switch_stream_set_profile_request(SwitchStream *s,
@@ -302,6 +345,7 @@ static void drop_client(SwitchStream *s, int i, const char *why) {
     gamepad_bridge_forget(GAMEPAD_SOURCE_NATIVE(i));
     close(s->clients[i].fd);
     free(s->clients[i].pending);
+    free(s->clients[i].ws_rx);
     memset(&s->clients[i], 0, sizeof(s->clients[i]));
     s->clients[i].fd = -1;
     /* If that was the last client on its codec, the chain it was
@@ -309,7 +353,7 @@ static void drop_client(SwitchStream *s, int i, const char *why) {
     recount(s);
 }
 
-static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t flags,
+static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t flags,
                       const uint8_t *data, uint32_t size) {
     if (!s || size > C2S_MAX_PAYLOAD) {
         return;
@@ -325,10 +369,11 @@ static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t f
      * interval instead of staying sized for a resolution nobody is
      * watching any more. */
     if (type == C2S_MSG_VIDEO) {
-        /* Per codec: a 6 Mb/s H.264 keyframe and a 1 Mb/s VP8 one are
-         * not the same size, and one allowance for both would size the
-         * small stream's backlog for the large stream's frames. */
-        uint32_t *largest = &s->max_frame_bytes_by_codec[codec_slot(codec_filter)];
+        /* Per stream: a 1080p browser keyframe, a 6 Mb/s H.264 one and a
+         * 1 Mb/s VP8 one are not the same size, and one allowance for
+         * all three would size the small stream's backlog for the large
+         * stream's frames. */
+        uint32_t *largest = &s->max_frame_bytes_by_slot[slot_filter];
         *largest -= *largest / 16;
         if (size > *largest) {
             *largest = size;
@@ -343,7 +388,7 @@ static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t f
         if (!c->in_use || !c->handshake_done) {
             continue;
         }
-        if (codec_filter && c->codec != codec_filter) {
+        if (slot_filter >= 0 && client_slot(c) != slot_filter) {
             continue;
         }
 
@@ -379,19 +424,29 @@ static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t f
         /* Header and payload are one message: a header whose payload
          * never follows would leave the client permanently out of step,
          * so the remainder is buffered rather than abandoned. */
-        if (total > c->pending_cap) {
-            uint8_t *bigger = realloc(c->pending, total);
+        /* A browser reads WebSocket frames, so one goes in front of the
+         * message. Nothing else about the bytes changes: above the
+         * handshake the page reads exactly what the console reads. */
+        uint8_t wsh[10];
+        const size_t wsh_len = c->is_ws ? ws_binary_header(total, wsh) : 0;
+        const uint32_t on_wire = total + (uint32_t)wsh_len;
+
+        if (on_wire > c->pending_cap) {
+            uint8_t *bigger = realloc(c->pending, on_wire);
             if (!bigger) {
                 continue; /* skip this frame; the client stays */
             }
             c->pending = bigger;
-            c->pending_cap = total;
+            c->pending_cap = on_wire;
         }
-        memcpy(c->pending, &h, sizeof(h));
+        if (wsh_len) {
+            memcpy(c->pending, wsh, wsh_len);
+        }
+        memcpy(c->pending + wsh_len, &h, sizeof(h));
         if (size) {
-            memcpy(c->pending + sizeof(h), data, size);
+            memcpy(c->pending + wsh_len + sizeof(h), data, size);
         }
-        c->pending_len = total;
+        c->pending_len = on_wire;
         c->pending_sent = 0;
 
         if (flush_pending(c) != 0) {
@@ -426,17 +481,96 @@ static void broadcast(SwitchStream *s, int codec_filter, uint8_t type, uint8_t f
     }
 }
 
-void switch_stream_send_video(SwitchStream *s, int codec, const uint8_t *data, uint32_t size,
+void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, uint32_t size,
                               int keyframe) {
-    /* Only to the clients on that codec. The other group is watching a
+    /* Only to the clients on that stream. The others are watching a
      * different encode and would decode these bytes as their own. */
-    broadcast(s, codec, C2S_MSG_VIDEO, keyframe ? C2S_FLAG_KEYFRAME : 0, data, size);
+    broadcast(s, slot, C2S_MSG_VIDEO, keyframe ? C2S_FLAG_KEYFRAME : 0, data, size);
 }
 
 /* How many clients are watching one of the two codecs. The pipeline
  * asks, so a chain nobody is reading is not encoded at all. */
-int switch_stream_codec_client_count(SwitchStream *s, int codec) {
-    return s ? s->live[codec_slot(codec)] : 0;
+/*
+ * Takes over a connection the HTTP server has already upgraded.
+ *
+ * The WebSocket handshake IS the greeting: by the time this is called
+ * the browser has said who it is and been answered, so there is no
+ * C2sHello to wait for. What it still needs is the ack -- the size, the
+ * codec, whether it may drive the console -- and it gets it as the
+ * first binary frame, in exactly the layout a native client reads.
+ *
+ * Returns 0 once the connection belongs to this transport, which then
+ * owns the fd and will close it. Non-zero means it was refused and the
+ * caller still owns it.
+ */
+int switch_stream_adopt_websocket(SwitchStream *s, int fd, int may_control) {
+    if (!s || fd < 0) return -1;
+
+    SDL_LockMutex(s->mutex);
+    int index = -1;
+    for (int i = 0; i < SS_MAX_CLIENTS; i++) {
+        if (!s->clients[i].in_use) { index = i; break; }
+    }
+    if (index < 0) {
+        SDL_UnlockMutex(s->mutex);
+        return -1;
+    }
+
+    SsClient *c = &s->clients[index];
+    memset(c, 0, sizeof(*c));
+    c->fd = fd;
+    c->in_use = 1;
+    c->is_ws = 1;
+    c->handshake_done = 1;
+    c->may_control = may_control ? 1 : 0;
+    c->codec = C2S_CODEC_H264;   /* the browsers' stream is H.264 */
+    c->last_seen_ms = now_ms();
+    {
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        int sndbuf = SS_SOCKET_SNDBUF;
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    }
+
+    const int slot = SS_STREAM_WEB;
+    C2sHelloAck ack;
+    memset(&ack, 0, sizeof(ack));
+    ack.magic = C2S_MAGIC;
+    ack.version = C2S_VERSION;
+    ack.accepted = 1;
+    ack.may_control = c->may_control;
+    ack.width = s->group_stream_known[slot] ? s->group_width[slot] : s->width;
+    ack.height = s->group_stream_known[slot] ? s->group_height[slot] : s->height;
+    ack.video_codec = C2S_CODEC_H264;
+    ack.audio_codec = C2S_CODEC_OPUS;
+    ack.audio_rate = 48000;
+    ack.audio_channels = 2;
+
+    /* Sent as a message like any other, so the page's reader has one
+     * shape to handle rather than a special first frame. */
+    const int sent = send_msg_now(c, C2S_MSG_HELLO_ACK, &ack, sizeof(ack));
+    if (sent != 0) {
+        memset(c, 0, sizeof(*c));
+        c->fd = -1;
+        SDL_UnlockMutex(s->mutex);
+        return -1;
+    }
+
+    send_group_state(s, index);
+    /* It has seen no picture, so the next one has to be a keyframe. */
+    s->keyframe_pending = 1;
+    recount(s);
+    SDL_UnlockMutex(s->mutex);
+
+    fprintf(stderr, "switch_stream: a browser connected as %s, on the web stream\n",
+            c->may_control ? "PLAYER" : "viewer");
+    return 0;
+}
+
+int switch_stream_stream_client_count(SwitchStream *s, int slot) {
+    if (!s || slot < 0 || slot >= SS_STREAM_COUNT) return 0;
+    return s->live[slot];
 }
 
 void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), void *ctx) {
@@ -450,8 +584,8 @@ static void note_demand_changed(SwitchStream *s) {
 }
 
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size) {
-    /* One encode, everybody: sound has no codec groups. */
-    broadcast(s, 0, C2S_MSG_AUDIO, 0, data, size);
+    /* One encode, everybody: sound has no stream groups. */
+    broadcast(s, -1, C2S_MSG_AUDIO, 0, data, size);
 }
 
 void switch_stream_set_video_size(SwitchStream *s, uint16_t width, uint16_t height) {
@@ -566,14 +700,17 @@ static void handle_hello(SwitchStream *s, int index) {
  * a client arrives, leaves, or changes codec -- the three things that
  * can turn a chain on or off. */
 static void recount(SwitchStream *s) {
-    int n[2] = {0, 0};
+    int n[SS_STREAM_COUNT] = {0};
     for (int i = 0; i < SS_MAX_CLIENTS; i++) {
         const SsClient *c = &s->clients[i];
-        if (c->in_use && c->handshake_done) n[codec_slot(c->codec)]++;
+        if (c->in_use && c->handshake_done) n[client_slot(c)]++;
     }
-    if (n[0] != s->live[0] || n[1] != s->live[1]) {
-        s->live[0] = n[0];
-        s->live[1] = n[1];
+    int changed = 0;
+    for (int k = 0; k < SS_STREAM_COUNT; k++) {
+        if (n[k] != s->live[k]) changed = 1;
+    }
+    if (changed) {
+        for (int k = 0; k < SS_STREAM_COUNT; k++) s->live[k] = n[k];
         /* Not called from here: the pipeline is on the other side of a
          * lock this thread is holding. The poll loop fires it once it
          * has let go. */
@@ -586,48 +723,126 @@ static void recount(SwitchStream *s) {
  * Sent when it connects and again whenever it changes codec, because
  * both are moments where it is about to receive an encode it knows
  * nothing about. */
+/* One message, sent now and whole, wrapped for a browser if that is
+ * what this client is. Used for the handshake and for the two
+ * announcements that follow it, where blocking briefly is fine and a
+ * partial write would leave the client out of step. */
+static int send_msg_now(SsClient *c, uint8_t type, const void *data, uint32_t size) {
+    C2sFrameHeader h = {.type = type, .flags = 0, .reserved = 0, .size = size};
+    uint8_t buf[10 + sizeof(h) + 256];
+    if (size > sizeof(buf) - 10 - sizeof(h)) {
+        return -1;
+    }
+    size_t at = 0;
+    if (c->is_ws) {
+        at += ws_binary_header(sizeof(h) + size, buf);
+    }
+    memcpy(buf + at, &h, sizeof(h));
+    at += sizeof(h);
+    if (size) {
+        memcpy(buf + at, data, size);
+        at += size;
+    }
+    return send_all_now(c->fd, buf, at);
+}
+
 static void send_group_state(SwitchStream *s, int index) {
     SsClient *c = &s->clients[index];
-    const int slot = codec_slot(c->codec);
+    const int slot = client_slot(c);
 
     if (s->group_stream_known[slot]) {
         C2sStreamInfo info;
         memset(&info, 0, sizeof(info));
         info.width = s->group_width[slot];
         info.height = s->group_height[slot];
-        info.video_codec = c->codec;
-        C2sFrameHeader h = {.type = C2S_MSG_STREAM_INFO, .flags = 0, .reserved = 0,
-                            .size = sizeof(info)};
-        if (send_all_now(c->fd, &h, sizeof(h)) == 0) {
-            send_all_now(c->fd, &info, sizeof(info));
-        }
+        info.video_codec = slot_codec(slot);
+        send_msg_now(c, C2S_MSG_STREAM_INFO, &info, sizeof(info));
     }
     if (s->shared_known[slot]) {
-        C2sFrameHeader h = {.type = C2S_MSG_SHARED, .flags = 0, .reserved = 0,
-                            .size = sizeof(C2sShared)};
-        if (send_all_now(c->fd, &h, sizeof(h)) == 0) {
-            send_all_now(c->fd, &s->shared[slot], sizeof(s->shared[slot]));
-        }
+        send_msg_now(c, C2S_MSG_SHARED, &s->shared[slot], sizeof(C2sShared));
     }
+}
+
+/*
+ * Moves whatever complete WebSocket frames are in rx into ws_rx, where
+ * the C2S parser will find them, and answers the control frames.
+ *
+ * Returns -1 when the connection has to go: a close, or a frame that
+ * cannot be honoured. A browser that sends something malformed here is
+ * not a browser.
+ */
+static int unwrap_ws(SwitchStream *s, int index) {
+    SsClient *c = &s->clients[index];
+    uint32_t at = 0;
+
+    while (at < c->rx_len) {
+        uint8_t op = 0;
+        uint8_t *payload = NULL;
+        size_t plen = 0;
+        const long used = ws_take_frame(c->rx + at, c->rx_len - at, &op, &payload, &plen);
+        if (used == 0) break;      /* the rest of the frame has not arrived */
+        if (used < 0) return -1;
+
+        if (op == WS_OP_CLOSE) {
+            return -1;
+        } else if (op == WS_OP_PING) {
+            /* A pong, unmasked and with the same payload, which is what
+             * the spec asks and what keeps a proxy from timing the
+             * connection out. */
+            uint8_t hdr[10];
+            const size_t hl = ws_binary_header(plen, hdr);
+            hdr[0] = 0x80 | WS_OP_PONG;
+            if (send_all_now(c->fd, hdr, hl) == 0 && plen) {
+                send_all_now(c->fd, payload, plen);
+            }
+        } else if (op == WS_OP_BINARY || op == WS_OP_CONT) {
+            if (c->ws_rx_len + plen > c->ws_rx_cap) {
+                const uint32_t want = c->ws_rx_len + (uint32_t)plen;
+                uint8_t *bigger = realloc(c->ws_rx, want);
+                if (!bigger) return -1;
+                c->ws_rx = bigger;
+                c->ws_rx_cap = want;
+            }
+            memcpy(c->ws_rx + c->ws_rx_len, payload, plen);
+            c->ws_rx_len += (uint32_t)plen;
+        }
+        /* Text frames are ignored: this protocol is binary, and a page
+         * that sends text here has nothing to say that is understood. */
+        at += (uint32_t)used;
+    }
+
+    if (at) {
+        memmove(c->rx, c->rx + at, c->rx_len - at);
+        c->rx_len -= at;
+    }
+    return 0;
 }
 
 static void handle_messages(SwitchStream *s, int index) {
     SsClient *c = &s->clients[index];
     int codec_changed = 0;
     for (;;) {
-        if (c->rx_len < sizeof(C2sFrameHeader)) {
+        /* A browser's messages have already been taken out of their
+         * WebSocket frames and put in ws_rx; everyone else's are still
+         * where they were read. The parsing below is the same either
+         * way, which is the whole point of carrying the same framing. */
+        uint8_t *buf = c->is_ws ? c->ws_rx : c->rx;
+        uint32_t *buf_len = c->is_ws ? &c->ws_rx_len : &c->rx_len;
+        const uint32_t cap = c->is_ws ? c->ws_rx_cap : SS_RX_CAPACITY;
+
+        if (!buf || *buf_len < sizeof(C2sFrameHeader)) {
             return;
         }
         C2sFrameHeader h;
-        memcpy(&h, c->rx, sizeof(h));
-        if (h.size > SS_RX_CAPACITY - sizeof(h)) {
+        memcpy(&h, buf, sizeof(h));
+        if (h.size > cap - sizeof(h)) {
             drop_client(s, index, "oversized message");
             return;
         }
-        if (c->rx_len < sizeof(h) + h.size) {
+        if (*buf_len < sizeof(h) + h.size) {
             return;
         }
-        const uint8_t *payload = c->rx + sizeof(h);
+        const uint8_t *payload = buf + sizeof(h);
 
         switch (h.type) {
             case C2S_MSG_INPUT:
@@ -721,7 +936,11 @@ static void handle_messages(SwitchStream *s, int index) {
             default:
                 break;
         }
-        client_consume(c, sizeof(h) + h.size);
+        {
+            const uint32_t used = (uint32_t)sizeof(h) + h.size;
+            memmove(buf, buf + used, *buf_len - used);
+            *buf_len -= used;
+        }
         if (codec_changed) {
             codec_changed = 0;
             recount(s);
@@ -757,9 +976,16 @@ static int accept_thread(void *arg) {
         }
         SDL_UnlockMutex(s->mutex);
 
-        if (poll(pfds, n, 200) <= 0) {
-            continue;
-        }
+        /* A timeout is not a reason to skip the housekeeping below.
+         *
+         * This used to `continue` here, which skipped everything after
+         * the per-socket handling -- including the notification that
+         * says a chain now has an audience. With only a browser
+         * connected, on the OTHER server's port, nothing ever made this
+         * poll return, so the encoder for it was never started and the
+         * page received sound and no picture. */
+        const int ready = poll(pfds, n, 200);
+        if (ready > 0) {
 
         if (pfds[0].revents & POLLIN) {
             int fd = accept(s->listen_fd, NULL, NULL);
@@ -816,7 +1042,14 @@ static int accept_thread(void *arg) {
             c->rx_len += (uint32_t)got;
             c->last_seen_ms = now_ms();
 
-            if (!c->handshake_done) {
+            if (c->is_ws) {
+                /* The upgrade was the handshake, so there is no hello to
+                 * wait for -- only frames to unwrap. */
+                if (unwrap_ws(s, i) != 0) {
+                    drop_client(s, i, "websocket closed");
+                    continue;
+                }
+            } else if (!c->handshake_done) {
                 handle_hello(s, i);
             }
             if (s->clients[i].in_use && s->clients[i].handshake_done) {
@@ -824,6 +1057,7 @@ static int accept_thread(void *arg) {
             }
         }
         SDL_UnlockMutex(s->mutex);
+        } /* if (ready > 0) */
 
         /* Outside the lock, for the same reason the keyframe request
          * below is: this reaches into the pipeline. */

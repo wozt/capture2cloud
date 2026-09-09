@@ -32,6 +32,7 @@ const WEB_FILES = [
   'keyboard.js',
   'ui/panels.js',
   'touchpad.js',
+  'wstream.js',
   'webrtc.js',
 ];
 const APP_JS = WEB_FILES.map((f) => path.join(__dirname, '..', 'web', f));
