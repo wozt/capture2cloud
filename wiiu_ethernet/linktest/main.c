@@ -12,6 +12,8 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
 
 #include "ax88179.h"
 #include "probe.h"
@@ -59,11 +61,15 @@ int main(int argc, char **argv)
 
     /* The PHY needs a moment to negotiate once it is powered. */
     int speed = 0, up = 0;
-    for (int i = 0; i < 10 && !up; i++) {
+    for (int i = 0; i < 60 && !up; i++) {
         up = ax88179_link(ax, &speed);
         if (!up) {
-            probe_say("waiting for the link... (%d)", i + 1);
+            OSSleepTicks(OSMillisecondsToTicks(250));
         }
+    }
+    if (up < 0) {
+        probe_say("PHY/link configuration failed: UHS %ld", (long)ax88179_last_control(ax));
+        ax88179_close(ax); probe_wait(); probe_shutdown(); return 1;
     }
     probe_say(up ? "link UP at %d Mbit/s" : "link DOWN (%d) -- is the cable in?", speed);
 

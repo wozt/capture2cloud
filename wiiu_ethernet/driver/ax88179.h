@@ -30,7 +30,7 @@ extern "C" {
 typedef struct Ax88179 Ax88179;
 
 /* Finds the adapter, takes the interface and brings the chip up.
- * Returns NULL and writes why into `why`. */
+ * Returns NULL and writes why into `why`. Single instance, serial calls only. */
 Ax88179 *ax88179_open(char *why, unsigned why_size);
 void     ax88179_close(Ax88179 *ax);
 
@@ -39,13 +39,19 @@ const uint8_t *ax88179_mac(const Ax88179 *ax);
 
 /* Whether the PHY says a cable is in and a partner is talking, and at
  * what speed. `speed` is 10, 100 or 1000, or 0 when the link is down. */
+/* Returns 1 up (MAC configured), 0 down/negotiating, -1 USB error.
+ * Poll regularly to apply renegotiated speed/duplex before sending. */
 int ax88179_link(Ax88179 *ax, int *speed);
+int ax88179_read_mac(Ax88179 *ax, uint16_t reg, void *out, uint16_t size);
+int ax88179_read_phy(Ax88179 *ax, uint16_t reg, uint16_t *value);
+int32_t ax88179_last_control(const Ax88179 *ax);
 
 /* One ethernet frame out. Returns 0, or -1. */
 int ax88179_send(Ax88179 *ax, const void *frame, int length);
 
 /*
- * One ethernet frame in, or 0 when none arrived before `timeout_ms`.
+ * One ethernet frame in, 0 when none arrived, -1 on USB/malformed data.
+ * At most one bulk transfer per call; last_bulk preserves UHS errors.
  *
  * The adapter does not hand over bare frames: a bulk transfer carries
  * several, wrapped in the chip's own receive header, and this unwraps

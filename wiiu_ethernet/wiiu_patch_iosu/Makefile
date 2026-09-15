@@ -32,7 +32,7 @@ LIBS	:=	-lSDL2_ttf -lfreetype -lharfbuzz -lfreetype -lbrotlidec -lbrotlicommon -
 #---------------------------------------------------------------------------------
 # list of directories containing libraries
 #---------------------------------------------------------------------------------
-LIBDIRS	:= $(PORTLIBS) $(WUT_ROOT) /tmp/claude-1000/-home-wozt-dev-capture2cloud/a2fe2912-bc23-4107-925e-0fb83667abae/scratchpad/libmocha
+LIBDIRS	:= $(PORTLIBS) $(WUT_ROOT) $(CURDIR)/../vendor/libmocha
 
 #---------------------------------------------------------------------------------
 #  no real need to edit anything past this point

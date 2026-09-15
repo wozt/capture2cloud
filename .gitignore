@@ -105,3 +105,9 @@ wiiu_ethernet/ghidra/
 wiiu_ethernet/*.bin
 wiiu_ethernet/fw.*
 wiiu_ethernet/*.rpl
+# Prebuilt third-party toolchain libs, vendored locally for a reproducible
+# build but not committed (GPL binaries; fetch/build from wiiu-env instead).
+wiiu_ethernet/vendor/wums/
+wiiu_ethernet/vendor/libmocha/
+wiiu_ethernet/*/*.wms
+wiiu_ethernet/*/*.bak
