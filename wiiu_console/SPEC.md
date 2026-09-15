@@ -174,6 +174,52 @@ and the Android client follow.
 
 ---
 
+## Two rules this chain inherits, and one it needs built
+
+**Nothing is encoded for nobody.** Every chain here is fed only while a
+client is holding it: `switch_wanted[]` is set from the transport's own
+count, and an appsrc that is not fed produces nothing. A Wii U client
+that is not connected must cost exactly zero -- not a few percent, zero
+-- for the same reason the other four do. Measured on the browser chain:
+4% of a core idle against 18.5% with one client watching. This is not an
+optimisation, it is the thing that makes five encodes affordable on one
+machine.
+
+So the fifth chain is gated the same way, and the demand callback is the
+only place that decides it.
+
+**Hardware where there is hardware.** The host already prefers the GPU:
+
+    varenderD129h264enc   integrated GPU -- idle, cheapest in system time
+    vah264enc             discrete GPU -- also fine, it has other work
+    x264enc               no GPU encoder: back to the CPU
+
+This machine has two render nodes, `renderD128` and `renderD129`, so
+there are two video engines to spread across.
+
+**But the falling-back part does not exist yet, and the fifth chain is
+what will need it.** Today the host picks ONE encoder name at startup by
+asking GStreamer which factories exist, and every H.264 chain is built
+with that same name. Whether the device can actually open another
+session is never asked. With four H.264 chains -- console, browser,
+GamePad, and now Wii U -- that assumption gets its first real test, and
+a video engine that runs out of sessions fails when the chain starts,
+not when the pipeline is parsed.
+
+What it should do instead, in the order a chain starts:
+
+1. Try the preferred hardware encoder.
+2. If it will not open -- busy, out of sessions, no free engine -- try
+   the next one, which on this machine is the other GPU.
+3. Only then fall to `x264enc`, and say so once rather than silently.
+
+That is per chain rather than once at startup, because "busy" is a
+question with a different answer at each moment. It benefits the four
+chains that already exist, so it is worth doing properly rather than
+for this one.
+
+---
+
 ## Order of work
 
 1. An `.rpx` that connects, decodes, and draws on the TV. Nothing else.
