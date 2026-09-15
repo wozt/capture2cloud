@@ -83,3 +83,7 @@ wiiu_console/bringup/build/
 wiiu_console/bringup/bringup.rpx
 wiiu_console/bringup/bringup.elf
 wiiu_console/bringup/bringup.wuhb
+wiiu_console/bringup/*/build/
+wiiu_console/bringup/*/*.rpx
+wiiu_console/bringup/*/*.elf
+wiiu_console/bringup/*/*.wuhb
