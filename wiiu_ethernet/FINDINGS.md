@@ -238,10 +238,69 @@ traffic through them is a separate problem, and a bigger one. Two shapes:
 The second is the one that gets a picture on the television. The first
 is the one worth doing if this turns out to be interesting on its own.
 
+## The chip works. The host stack will not carry data.
+
+`driver/ax88179.c` is a driver written from the register documentation
+in Linux's `ax88179_178a.c` -- numbers a chip answers to are facts about
+the chip -- and on the console it gets this far:
+
+    adapter up, MAC 00:0e:c6:b0:41:dc
+    endpoints: bulk in 2, bulk out 3, interrupt 1
+    link UP at 100 Mbit/s
+
+**The bring-up sequence works.** PHY powered out of reset, the half
+second it needs, clocks selected, receive control started. The PHY
+negotiated 100 Mbit/s with the switch on its own. The chip is alive and
+doing its job.
+
+**Every data transfer is refused.** Not a timeout -- a refusal, in the
+same `0xFFDEFF..` family as the two status codes wut names:
+
+    UhsAdministerEndpoint(ENABLE)   -> -2162715  (0xFFDEFFE5)
+    UhsSubmitBulkRequest    in ep2  -> -2162713  (0xFFDEFFE7)
+    UhsSubmitInterruptRequest ep1   -> -2162713
+    UhsSubmitControlRequest         ->        6  (works)
+
+Ruled out, each by measurement rather than by reasoning:
+
+- **the endpoint number** -- tried 2, 0x82, and every reading of the
+  "mask" argument: 1<<2, 1<<(0x82&0xF), 0x82, 0x04|0x08. All the same.
+- **the transfer size** -- 512, 2048, 16384. All the same.
+- **the buffer** -- our own aligned static, and a pointer inside the
+  work buffer UHS was given at open. All the same.
+- **the transfer type** -- interrupt is refused exactly like bulk, so it
+  is not something specific to bulk.
+- **the wrong interface** -- the theory was that the filtered query
+  returned a device-level handle, since control transfers go to endpoint
+  0 and would work on one. Disproved: a MATCH_ANY listing gives the same
+  handle with all three endpoints present, and it still refuses. (The
+  handle value itself changes between runs -- 65537 one time, 131074
+  another -- so handles are reassigned and are not a clue.)
+- **timing** -- a long wait after acquiring changes nothing.
+
+So the position is precise: **the console will let a homebrew configure
+this adapter but not move packets through it.** Control transfers reach
+the device; endpoint 0 is not the problem.
+
+What is left to try, in order of how much they would explain:
+
+1. `UhsAdministerDevice` before the endpoints -- there is a
+   `UHS_ADMIN_DEV_RESET`, and the device may need a configuration set
+   before its endpoints exist as far as the stack is concerned.
+2. The `UhsConfig.controller_num` -- always 0 here. The adapter is on a
+   particular controller and 0 may be the wrong one, which would explain
+   a refusal that is not a timeout.
+3. Whether IOSU deliberately reserves data endpoints for its own
+   drivers. If it does, this route is closed and the IOSU patch is the
+   only one -- which is what the Ghidra groundwork above was for.
+
+Point 3 is the one that decides the project, and the firmware is already
+decrypted and mapped for exactly that question.
+
 ## Next, in order
 
-1. Fix the endpoint reading -- the loose end above -- and confirm the
-   bulk IN/OUT addresses against what MATCH_ANY reported.
+1. Try `UhsAdministerDevice` and a non-zero controller number -- two
+   cheap experiments that would explain the refusal if either is it.
 2. Read both Linux drivers and write the differences down here --
    register map, PHY bring-up, RX header format, endpoint layout.
 3. Ghidra on segment 29 and compare its init sequence with Linux's
