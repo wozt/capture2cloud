@@ -458,6 +458,43 @@ REJECT event (11) and logs "Rejected by client in pid %d", so a
 declining client is a normal path -- and an interface its first claimant
 declines should fall to the next registration, which would be ours.
 
+### IOSU's own log says the acquire SUCCEEDS
+
+The console keeps system logs at `/storage_slc/sys/logs/*.log`, and the
+UHS server writes its state machine transitions into them. Pulled off
+the console after a run:
+
+    00:09:56:113  UHS0 Trace: CltIfFsm(V0b95|P1790|IF0): Acquired by client in pid 21.
+    00:09:56:129  UHS0 Trace: CltIfFsm(V0b95|P1790|IF0): Enable endpoints 0x0000ffff.
+    00:09:56:163  UHS0 Trace: CltIfFsm(V0b95|P1790|IF0): Release by client in pid 21 completed.
+
+V0b95|P1790 is our adapter. **The acquire is granted.** The endpoint
+enable -- the call that returned -2162715 -- is received and processed,
+with exactly the mask this code passes. The release is completed.
+
+So every conclusion drawn from those return values was wrong, including
+the ones in the commits above. The interface IS handed over; userspace
+is simply told otherwise, or told something that is not an error code at
+all. The reasoning that "silence means rejected" was sound about the
+firmware and wrong about what was happening.
+
+**And the one call with no trace at all is the bulk request.** Acquire,
+AdministerEndpoint and ReleaseInterface are `ioctl` in the /dev/uhs
+interface; `UhsSubmitBulkRequest` is `ioctlv` -- two buffers, a request
+block and the data. Three ioctls arrive and are logged; the one ioctlv
+leaves no trace, which suggests it is not reaching IOSU at all rather
+than being refused by it.
+
+That is a completely different fault from the one chased for six
+rounds, and a much narrower one: **something about the vectored request
+is wrong before it leaves this side.**
+
+Worth noting for whoever picks this up: the system log is the single
+most useful instrument found in this whole project, and it was here the
+entire time. Every UHS operation is traced with the vendor, product and
+interface. Reading it first would have saved most of the experiments
+above.
+
 ### Where this stands
 
 **IOSU may simply not hand an interface to a Cafe OS client for a device
