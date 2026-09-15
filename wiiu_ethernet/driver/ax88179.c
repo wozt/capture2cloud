@@ -9,6 +9,26 @@
 #include <coreinit/time.h>
 #include <nsysuhs/uhs.h>
 
+/*
+ * The direction argument is 1 or 2, and neither is zero.
+ *
+ * Read out of nsysuhs.rpl rather than assumed. UhsSubmitBulkRequest
+ * builds an ioctlv and counts its vectors from the direction:
+ *
+ *     param_4 == 1  ->  2 in, 0 out   the buffer is SENT      (write)
+ *     param_4 == 2  ->  1 in, 1 out   the buffer is FILLED    (read)
+ *     anything else ->  neither branch runs, and the call goes out
+ *                       malformed
+ *
+ * The obvious guess -- 0 for out, 1 for in -- is wrong twice over: it
+ * asks to WRITE to an IN endpoint, and its "out" is a request with no
+ * vectors at all. Control transfers were unaffected because they take
+ * no direction argument; theirs comes from bmRequestType, which is why
+ * they were the one thing that always worked.
+ */
+#define UHS_DIR_OUT 1
+#define UHS_DIR_IN  2
+
 /* --- the chip, as its registers -------------------------------------- */
 /* Numbers from Linux's ax88179_178a.c. A number a chip answers to is a
  * fact about the chip. */
@@ -59,8 +79,7 @@
  * device itself. */
 /* UhsSubmitBulkRequest's direction argument. The header names no
  * constants for it, so they are named here. */
-#define UHS_DIR_OUT 0
-#define UHS_DIR_IN  1
+
 
 #define REQ_IN   0xC0
 #define REQ_OUT  0x40

@@ -495,6 +495,48 @@ entire time. Every UHS operation is traced with the vendor, product and
 interface. Reading it first would have saved most of the experiments
 above.
 
+### The direction argument is 1 or 2, and neither is zero
+
+Read out of `nsysuhs.rpl` rather than guessed. The library is 9.6 KB,
+its sections are zlib-compressed inside the RPL, and its export table
+gives `UhsSubmitBulkRequest` at `0x020015E4`. Decompiled as PowerPC
+big-endian, it builds an ioctlv and counts the vectors from the
+direction:
+
+    param_4 == 1  ->  2 in, 0 out   the buffer is SENT    (write)
+    param_4 == 2  ->  1 in, 1 out   the buffer is FILLED  (read)
+    anything else ->  neither branch runs; the request goes out with
+                      vector counts computed from an untouched pointer
+
+The obvious guess -- 0 for out, 1 for in -- is wrong twice: it asks to
+WRITE to an IN endpoint, and its "out" is a request with no data vector
+at all. **Control transfers were never affected because they take no
+direction argument**; theirs is derived from `bmRequestType`, which is
+exactly why they were the one thing that always worked.
+
+Corrected. The bulk request still returns the same value, so this was a
+real bug and not the last one.
+
+### Where that value comes from
+
+Also from the library: it returns `0xFFDEFFFD` when its arguments are
+null and `0xFFDEFFFC` when the handle is not in state 2 (OPENED). Those
+are the only two it produces itself. **`0xFFDEFFE7` is the return of the
+IPC call**, so the request is built, issued, and refused by IOS.
+
+Which makes the remaining question: what does IOS object to in a
+vectored request that it does not object to in a plain ioctl? The
+candidates, none yet tested:
+
+- the buffer's memory region. IOS reaches Cafe OS memory through its own
+  mapping; a buffer in the wrong region is reachable for a small ioctl
+  payload that gets copied and not for a vector that is used in place.
+- cache. An ioctlv buffer used in place must be flushed and invalidated
+  around the call; the driver does this, `bulktest` did not, and both
+  fail the same way -- which argues against it but does not settle it.
+- `UhsAdministerEndpoint`'s `max_request_size`, which IOSU logged
+  accepting but whose value may bound what a later transfer may ask for.
+
 ### Where this stands
 
 **IOSU may simply not hand an interface to a Cafe OS client for a device
