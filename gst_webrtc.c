@@ -106,6 +106,133 @@ static const char *const H264_ENCODER_PREFERENCE[] = {
     "x264enc",             /* no GPU encoder available: back to the CPU */
 };
 
+/*
+ * Whether an encoder can be opened, which is not the same question as
+ * whether it is installed.
+ *
+ * gst_element_factory_find() only says the plugin is there. A render
+ * node that is missing, that this user cannot open, or whose video
+ * engine has no session left, still has its factory: the failure comes
+ * when the element goes to READY and touches the device. Asking that
+ * here, once per candidate, is what lets the next one be tried --
+ * because the pipeline below is parsed in a single piece, and by the
+ * time it fails there is nothing left to fall back to.
+ */
+static int h264_encoder_opens(const char *name)
+{
+    GstElement *e = gst_element_factory_make(name, NULL);
+    if (!e) {
+        return 0;
+    }
+    int ok = gst_element_set_state(e, GST_STATE_READY) != GST_STATE_CHANGE_FAILURE;
+    if (ok) {
+        /* READY can be reached asynchronously, so the return value above
+         * is not the whole answer -- wait for the real one. */
+        GstState state = GST_STATE_NULL;
+        if (gst_element_get_state(e, &state, NULL, 500 * GST_MSECOND) == GST_STATE_CHANGE_FAILURE ||
+            state != GST_STATE_READY) {
+            ok = 0;
+        }
+    }
+    gst_element_set_state(e, GST_STATE_NULL);
+    gst_object_unref(e);
+    return ok;
+}
+
+/*
+ * Which H.264 encoder each chain is built with.
+ *
+ * Two things were wrong before this existed. The host picked ONE name at
+ * startup and built every H.264 chain with it, so on a machine with two
+ * render nodes one video engine did all the encoding while the other sat
+ * idle. And it picked that name by asking only whether the plugin
+ * existed -- never whether the element would open.
+ *
+ * `forced` is SWITCH_H264_ENCODER from the .env, or NULL. Naming one is
+ * a decision, so it goes to every chain and none of the spreading below
+ * happens; naming one this build does not have, or does not know how to
+ * configure, is a mistake worth saying out loud rather than a reason to
+ * fail at parse time.
+ *
+ * Returns how many distinct engines were used: 0 when it fell back to
+ * the CPU, 1 or more otherwise.
+ */
+int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int count)
+{
+    const size_t n_pref = sizeof(H264_ENCODER_PREFERENCE) / sizeof(*H264_ENCODER_PREFERENCE);
+    const char *pinned = NULL;
+
+    if (forced && forced[0]) {
+        GstElementFactory *f = gst_element_factory_find(forced);
+        if (f) {
+            gst_object_unref(f);
+            for (size_t i = 0; i < n_pref; i++) {
+                if (strcmp(forced, H264_ENCODER_PREFERENCE[i]) == 0) {
+                    pinned = H264_ENCODER_PREFERENCE[i];
+                }
+            }
+            if (!pinned) {
+                fprintf(stderr, "gst_webrtc: SWITCH_H264_ENCODER=%s is not one this knows how to "
+                                "configure, choosing automatically\n", forced);
+            }
+        } else {
+            fprintf(stderr, "gst_webrtc: SWITCH_H264_ENCODER=%s is not installed, "
+                            "choosing automatically\n", forced);
+        }
+    }
+
+    /* Every hardware encoder that opens, in preference order. */
+    const char *hardware[sizeof(H264_ENCODER_PREFERENCE) / sizeof(*H264_ENCODER_PREFERENCE)];
+    int hardware_count = 0;
+    if (!pinned) {
+        for (size_t i = 0; i < n_pref; i++) {
+            const char *name = H264_ENCODER_PREFERENCE[i];
+            if (strcmp(name, "x264enc") == 0) {
+                continue;   /* the last resort, not something to spread onto */
+            }
+            if (h264_encoder_opens(name)) {
+                hardware[hardware_count++] = name;
+            } else {
+                GstElementFactory *f = gst_element_factory_find(name);
+                if (f) {
+                    gst_object_unref(f);
+                    fprintf(stderr, "gst_webrtc: %s is installed but would not open, "
+                                    "trying the next one\n", name);
+                }
+            }
+        }
+    }
+
+    /* Nothing pinned and no hardware that opens: back to the CPU. The
+     * name still has to exist, so it is looked up rather than assumed. */
+    const char *cpu = NULL;
+    for (size_t i = 0; !cpu && !pinned && hardware_count == 0 && i < n_pref; i++) {
+        GstElementFactory *f = gst_element_factory_find(H264_ENCODER_PREFERENCE[i]);
+        if (f) {
+            gst_object_unref(f);
+            cpu = H264_ENCODER_PREFERENCE[i];
+        }
+    }
+
+    /*
+     * Round-robin over the engines that opened. With one engine, or a
+     * pinned choice, every chain gets the same name and this changes
+     * nothing. A fifth chain -- the console client in wiiu_console/SPEC.md
+     * -- joins the array and costs nothing more.
+     */
+    for (int i = 0; i < count; i++) {
+        out[i] = pinned              ? pinned
+                 : hardware_count > 0 ? hardware[i % hardware_count]
+                                      : (cpu ? cpu : "x264enc");
+    }
+
+    if (hardware_count > 1) {
+        fprintf(stderr, "gst_webrtc: %d video engines opened, spreading %d H.264 chains across "
+                        "them\n", hardware_count, count);
+    }
+    return hardware_count;
+}
+
 /* How long a connection may sit in DISCONNECTED before its slot is
  * taken back. Long enough that a genuine network blip -- the case that
  * state exists for -- recovers untouched; short enough that a browser
@@ -574,38 +701,17 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     int keyframe_max_dist = (int)config_get_int("KEYFRAME_MAX_DIST", DEFAULT_KEYFRAME_MAX_DIST,
                                                 MIN_KEYFRAME_MAX_DIST, MAX_KEYFRAME_MAX_DIST);
 
-    /* Asked for by name, then checked: an encoder configured in the .env
-     * that this build does not have would otherwise take the whole
-     * pipeline down at parse time, over a preference. */
+    /* One encoder name per H.264 chain -- see
+     * gst_webrtc_pick_h264_encoders() for why they are not all the
+     * same one any more. */
+    const char *enc_for[GST_WEBRTC_H264_CHAINS];   /* console, browser, GamePad */
     char forced[64];
-    g->switch264_encoder = NULL;
-    if (config_get("SWITCH_H264_ENCODER", forced, sizeof(forced)) && forced[0]) {
-        GstElementFactory *f = gst_element_factory_find(forced);
-        if (f) {
-            gst_object_unref(f);
-            for (size_t i = 0; i < sizeof(H264_ENCODER_PREFERENCE) / sizeof(*H264_ENCODER_PREFERENCE); i++) {
-                if (strcmp(forced, H264_ENCODER_PREFERENCE[i]) == 0) {
-                    g->switch264_encoder = H264_ENCODER_PREFERENCE[i];
-                }
-            }
-            if (!g->switch264_encoder) {
-                fprintf(stderr, "gst_webrtc: SWITCH_H264_ENCODER=%s is not one this knows how to "
-                                "configure, choosing automatically\n", forced);
-            }
-        } else {
-            fprintf(stderr, "gst_webrtc: SWITCH_H264_ENCODER=%s is not installed, "
-                            "choosing automatically\n", forced);
-        }
+    if (!config_get("SWITCH_H264_ENCODER", forced, sizeof(forced))) {
+        forced[0] = '\0';
     }
-    for (size_t i = 0; !g->switch264_encoder &&
-                       i < sizeof(H264_ENCODER_PREFERENCE) / sizeof(*H264_ENCODER_PREFERENCE); i++) {
-        GstElementFactory *f = gst_element_factory_find(H264_ENCODER_PREFERENCE[i]);
-        if (f) {
-            gst_object_unref(f);
-            g->switch264_encoder = H264_ENCODER_PREFERENCE[i];
-        }
-    }
-    g->switch264_nv12 = g->switch264_encoder && strcmp(g->switch264_encoder, "x264enc") != 0;
+    gst_webrtc_pick_h264_encoders(forced[0] ? forced : NULL, enc_for, GST_WEBRTC_H264_CHAINS);
+    g->switch264_encoder = enc_for[0];
+    g->switch264_nv12 = strcmp(g->switch264_encoder, "x264enc") != 0;
 
     /* The two families disagree on the name of nearly every property
      * that matters, so the whole tail of the element is built here
@@ -615,7 +721,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
         snprintf(h264_enc, sizeof(h264_enc),
                  "%s name=venc_switch_h264 bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 "
                  "rate-control=cbr target-usage=6",
-                 g->switch264_encoder, SWITCH_VIDEO_BITRATE_KBPS, keyframe_max_dist);
+                 enc_for[0], SWITCH_VIDEO_BITRATE_KBPS, keyframe_max_dist);
     } else {
         /* threads=1 and no sliced threading: frame-level threading holds
          * frames back to fill its pipeline, which is latency, and sliced
@@ -627,7 +733,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
                  SWITCH_VIDEO_BITRATE_KBPS, keyframe_max_dist);
     }
     fprintf(stderr, "gst_webrtc: native H.264 encoder: %s (%s)\n",
-            g->switch264_encoder ? g->switch264_encoder : "none",
+            enc_for[0] ? enc_for[0] : "none",
             g->switch264_nv12 ? "on the GPU" : "on the CPU");
 
     /* The same encoder family for the browsers, at their own bitrate.
@@ -638,7 +744,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
         snprintf(web_h264_enc, sizeof(web_h264_enc),
                  "%s name=venc_web_h264 bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 "
                  "rate-control=cbr target-usage=6",
-                 g->switch264_encoder, WEB_VIDEO_BITRATE_KBPS, keyframe_max_dist);
+                 enc_for[1], WEB_VIDEO_BITRATE_KBPS, keyframe_max_dist);
     } else {
         snprintf(web_h264_enc, sizeof(web_h264_enc),
                  "x264enc name=venc_web_h264 tune=zerolatency speed-preset=veryfast "
@@ -661,7 +767,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
         snprintf(drc_h264_enc, sizeof(drc_h264_enc),
                  "%s name=venc_drc_h264 bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 "
                  "rate-control=cbr target-usage=6",
-                 g->switch264_encoder, DRC_H264_BITRATE_KBPS, keyframe_max_dist);
+                 enc_for[2], DRC_H264_BITRATE_KBPS, keyframe_max_dist);
     } else {
         snprintf(drc_h264_enc, sizeof(drc_h264_enc),
                  "x264enc name=venc_drc_h264 tune=zerolatency speed-preset=veryfast "

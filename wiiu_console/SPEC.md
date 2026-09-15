@@ -197,26 +197,21 @@ only place that decides it.
 This machine has two render nodes, `renderD128` and `renderD129`, so
 there are two video engines to spread across.
 
-**But the falling-back part does not exist yet, and the fifth chain is
-what will need it.** Today the host picks ONE encoder name at startup by
-asking GStreamer which factories exist, and every H.264 chain is built
-with that same name. Whether the device can actually open another
-session is never asked. With four H.264 chains -- console, browser,
-GamePad, and now Wii U -- that assumption gets its first real test, and
-a video engine that runs out of sessions fails when the chain starts,
-not when the pipeline is parsed.
+**Spreading them across the engines now happens; falling back when one
+is busy still does not.** The host used to pick ONE encoder name at
+startup and build every H.264 chain with it, so on this machine one
+video engine did all the encoding while the other sat idle. Each chain
+now gets its own name, round-robin over the engines that open, and the
+fifth chain joins that array for free.
 
-What it should do instead, in the order a chain starts:
-
-1. Try the preferred hardware encoder.
-2. If it will not open -- busy, out of sessions, no free engine -- try
-   the next one, which on this machine is the other GPU.
-3. Only then fall to `x264enc`, and say so once rather than silently.
-
-That is per chain rather than once at startup, because "busy" is a
-question with a different answer at each moment. It benefits the four
-chains that already exist, so it is worth doing properly rather than
-for this one.
+What is still not answered is "this engine is busy, use the other one".
+Measured while adding the above: when a render node is unusable the VA
+plugin does not register its element at all, so the factory is already
+absent and a probe never sees it. Whether an engine will grant another
+encode *session* is only answerable by asking for one, and the pipeline
+is parsed in a single piece -- a chain that cannot start fails at start,
+with nothing left to fall back to. Moving a chain to another engine at
+run time is the real answer and it is not written.
 
 ---
 

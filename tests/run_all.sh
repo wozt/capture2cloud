@@ -90,6 +90,7 @@ timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 
 timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscale libavcodec libavutil"
 timed "C: websocket frame" run_c_test test_ws_frame "glib-2.0"
 timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
+timed "C: h264 encoders"   run_c_test test_h264_encoders "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
 
 # The fourth encode. Linked against libavcodec on purpose: that is what
 # brings the distribution's x264 into the process, and the whole point of

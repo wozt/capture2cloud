@@ -82,6 +82,26 @@
  * without a ping it would be dropped and reconnected every ten seconds
  * for as long as somebody watched it. */
 #define SS_IDLE_TIMEOUT_MS 10000
+/*
+ * How long a client may be quiet before we ASK whether it is still
+ * there, rather than concluding that it is not.
+ *
+ * The timeout above counts bytes received, and a native client's only
+ * unprompted traffic is input -- which it sends when something MOVED,
+ * because the host applies a state rather than a change. So a pad
+ * resting on a table for ten seconds looked exactly like a pad that had
+ * crashed, and the session was dropped.
+ *
+ * Measured in /dev/shm/capture2cloud.log with three clients connected:
+ * every single freeze recovery ended in "silent too long" -- the pad is
+ * away reassociating, so nothing moves, so nothing is sent. A stutter
+ * the client could have recovered from became a whole session restart
+ * twelve times in twelve minutes.
+ *
+ * A ping costs five bytes and the clients already answer it. Only a
+ * client that answers nothing is now reaped.
+ */
+#define SS_IDLE_PROBE_MS    3000
 
 /* Per-client receive buffer. Only input, pings and the handshake arrive
  * this way, all tiny. */
@@ -147,6 +167,7 @@ typedef struct {
     int is_ws;
     int on_drc_port;   /* arrived on the GamePad's own port */
     uint32_t last_seen_ms;
+    uint32_t last_probe_ms;   /* when we last asked a quiet client if it is there */
     uint8_t rx[SS_RX_CAPACITY];
     uint32_t rx_len;
 
@@ -1164,8 +1185,15 @@ static int accept_thread(void *arg) {
                 continue;
             }
             if (!(pfds[p].revents & POLLIN)) {
-                if (now_ms() - c->last_seen_ms > SS_IDLE_TIMEOUT_MS) {
+                const uint32_t quiet = now_ms() - c->last_seen_ms;
+                if (quiet > SS_IDLE_TIMEOUT_MS) {
                     drop_client(s, i, "silent too long");
+                } else if (quiet > SS_IDLE_PROBE_MS &&
+                           now_ms() - c->last_probe_ms > SS_IDLE_PROBE_MS) {
+                    /* Asked, not assumed. The answer arrives as bytes,
+                     * which is what refreshes the clock above. */
+                    c->last_probe_ms = now_ms();
+                    send_msg_now(c, C2S_MSG_PING, NULL, 0);
                 }
                 continue;
             }
