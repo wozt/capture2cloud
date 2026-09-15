@@ -35,7 +35,7 @@ typedef struct WiiuPad WiiuPad;
 /*
  * Starts it against the native transport on `port`, which must already
  * be listening. `project_dir` is where this host was started from; the
- * client binary is looked for at `<project_dir>/wiiu/wiiu_pad`.
+ * client binary is looked for at `<project_dir>/wiiu_gamepad/wiiu_pad`.
  *
  * Never returns NULL for a missing binary or a failed exec: it returns
  * a handle whose status says what went wrong, because a toggle that

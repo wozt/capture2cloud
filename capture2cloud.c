@@ -451,7 +451,7 @@ static void on_pair(void *userdata, const char *pin) {
         }
     }
     char cmd[PATH_MAX + 64];
-    snprintf(cmd, sizeof(cmd), "%s/wiiu/tools/ap-pair.sh %s &", g_project_dir, pin);
+    snprintf(cmd, sizeof(cmd), "%s/wiiu_gamepad/tools/ap-pair.sh %s &", g_project_dir, pin);
     fprintf(stderr, "wiiu: pairing, PIN %s -- press sync on the pad\n", pin);
     if (system(cmd) != 0) {
         fprintf(stderr, "wiiu: the pairing script did not run\n");
@@ -519,7 +519,7 @@ static void on_action(void *userdata, GtkShellAction action) {
             const char *what = (action == GTK_SHELL_ACTION_WIIU_AP_START) ? "start"
                              : (action == GTK_SHELL_ACTION_WIIU_AP_STOP)  ? "stop"
                                                                           : "deauth";
-            snprintf(cmd, sizeof(cmd), "%s/wiiu/tools/ap.sh %s &", g_project_dir, what);
+            snprintf(cmd, sizeof(cmd), "%s/wiiu_gamepad/tools/ap.sh %s &", g_project_dir, what);
             fprintf(stderr, "wiiu: ap.sh %s\n", what);
             if (system(cmd) != 0) {
                 fprintf(stderr, "wiiu: %s did not run\n", what);
