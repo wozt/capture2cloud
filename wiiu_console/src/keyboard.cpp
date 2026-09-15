@@ -136,6 +136,27 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
         VPADReadError verr;
         VPADRead(VPAD_CHAN_0, &vpad, 1, &verr);
 
+        /*
+         * A way out that does not depend on the keyboard being visible.
+         *
+         * This loop used to end only on swkbd's own OK and Cancel
+         * buttons -- which are touched, on a keyboard that draws
+         * itself. When it drew nothing, there was no way out at all:
+         * two black screens, no input path, and a console that had to
+         * be held down to power off. Wiiload could not even replace the
+         * program, because the program was still the one running.
+         *
+         * B and MINUS are read here, before anything else, and they
+         * always end it. A screen that may not appear must never be the
+         * only way to leave.
+         */
+        if (verr == VPAD_READ_SUCCESS &&
+            (vpad.trigger & (VPAD_BUTTON_B | VPAD_BUTTON_MINUS))) {
+            WHBLogPrintf("swkbd: escape button, cancelling");
+            result = 0;
+            break;
+        }
+
         nn::swkbd::ControllerInfo controllerInfo;
         controllerInfo.vpad = (verr == VPAD_READ_SUCCESS) ? &vpad : nullptr;
         nn::swkbd::Calc(controllerInfo);
