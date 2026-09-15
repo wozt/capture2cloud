@@ -26,6 +26,7 @@
  * and being shown.
  */
 #include <malloc.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include <coreinit/screen.h>
@@ -53,6 +54,15 @@ int main(int argc, char **argv)
     OSScreenEnableEx(SCREEN_TV, 1);
     OSScreenEnableEx(SCREEN_DRC, 1);
 
+    /*
+     * Black, plus the one thing that cannot be established by being
+     * described over a chat: what VPADRead is actually handing this
+     * program.
+     *
+     * Every number on screen is raw. Nothing here interprets, scales or
+     * decides -- the point is to see what arrives, not what I think
+     * arrives, having now been wrong about that twice.
+     */
     while (WHBProcIsRunning()) {
         VPADStatus vpad;
         VPADReadError err;
@@ -63,6 +73,60 @@ int main(int argc, char **argv)
 
         OSScreenClearBufferEx(SCREEN_TV, 0x00000000);
         OSScreenClearBufferEx(SCREEN_DRC, 0x00000000);
+
+        char line[128];
+        snprintf(line, sizeof(line), "VPADRead err %d", (int)err);
+        OSScreenPutFontEx(SCREEN_TV, 2, 2, line);
+        OSScreenPutFontEx(SCREEN_DRC, 1, 2, line);
+
+        if (err == VPAD_READ_SUCCESS) {
+            snprintf(line, sizeof(line), "hold %08X  trig %08X", (unsigned)vpad.hold,
+                     (unsigned)vpad.trigger);
+            OSScreenPutFontEx(SCREEN_TV, 2, 3, line);
+            OSScreenPutFontEx(SCREEN_DRC, 1, 3, line);
+
+            snprintf(line, sizeof(line), "tpNormal   %4u,%4u t=%u v=%u", vpad.tpNormal.x,
+                     vpad.tpNormal.y, vpad.tpNormal.touched, vpad.tpNormal.validity);
+            OSScreenPutFontEx(SCREEN_TV, 2, 5, line);
+            OSScreenPutFontEx(SCREEN_DRC, 1, 5, line);
+
+            snprintf(line, sizeof(line), "tpFiltered1 %4u,%4u t=%u", vpad.tpFiltered1.x,
+                     vpad.tpFiltered1.y, vpad.tpFiltered1.touched);
+            OSScreenPutFontEx(SCREEN_TV, 2, 6, line);
+            OSScreenPutFontEx(SCREEN_DRC, 1, 6, line);
+
+            /* Both calibrations, side by side, from the filtered point:
+             * one of these is the coordinate space the panel really
+             * speaks, and this is how we find out which. */
+            VPADTouchData plain, ex854;
+            VPADGetTPCalibratedPoint(VPAD_CHAN_0, &plain, &vpad.tpFiltered1);
+            VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &ex854, &vpad.tpFiltered1);
+            snprintf(line, sizeof(line), "calib plain %4u,%4u   ex854 %4u,%4u", plain.x, plain.y,
+                     ex854.x, ex854.y);
+            OSScreenPutFontEx(SCREEN_TV, 2, 7, line);
+            OSScreenPutFontEx(SCREEN_DRC, 1, 7, line);
+
+            /* And a mark where the plain calibration says the finger
+             * is, scaled as 1280x720 -> this panel. If the mark lands
+             * under the finger, that assumption is right. */
+            if (vpad.tpNormal.touched) {
+                const int mx = (int)plain.x * 854 / 1280;
+                const int my = (int)plain.y * 480 / 720;
+                for (int dy = -10; dy <= 10; dy++) {
+                    for (int dx = -10; dx <= 10; dx++) {
+                        const int px = mx + dx, py = my + dy;
+                        if (px >= 0 && px < 854 && py >= 0 && py < 480) {
+                            OSScreenPutPixelEx(SCREEN_DRC, (uint32_t)px, (uint32_t)py,
+                                               0xFFFFFFFF);
+                        }
+                    }
+                }
+            }
+        }
+
+        OSScreenPutFontEx(SCREEN_TV, 2, 10, "touch the pad; MINUS quits");
+        OSScreenPutFontEx(SCREEN_DRC, 1, 10, "touch the pad; MINUS quits");
+
         OSScreenFlipBuffersEx(SCREEN_TV);
         OSScreenFlipBuffersEx(SCREEN_DRC);
     }
