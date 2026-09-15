@@ -1,32 +1,60 @@
 #include "ax_net.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <stdatomic.h>
 #include <coreinit/time.h>
 #include <coreinit/thread.h>
+#include <coreinit/messagequeue.h>
 #include <whb/log.h>
 #include "lwip/init.h"
+#include "lwip/tcpip.h"
 #include "lwip/netif.h"
 #include "lwip/dhcp.h"
 #include "lwip/etharp.h"
-#include "lwip/timeouts.h"
 #include "netif/ethernet.h"
 
+/*
+ * Threaded lwIP port: the tcpip thread owns the lwIP core, the caller of
+ * ax_net_poll (the module's worker thread) exclusively owns UHS and the
+ * adapter. Received frames go worker -> tcpip_input; outgoing frames go
+ * tcpip -> a slot queue -> the worker, which is the only thread that ever
+ * calls into the AX88179 driver.
+ */
+
+#define TX_SLOTS 8
+
 static struct netif iface;
-static uint8_t rx_frame[1600], tx_frame[1600];
-static int initialized, active, link_errors;
+static uint8_t rx_frame[1600];
+static uint8_t tx_pool[TX_SLOTS][1600];
+static atomic_int tx_in_use[TX_SLOTS];
+static OSMessageQueue tx_queue;
+static OSMessage tx_storage[TX_SLOTS];
+static int initialized, active, link_errors, last_link_up;
 static uint32_t last_link;
 static char address[16];
 
-u32_t sys_now(void)
-{
-    return (u32_t)OSTicksToMilliseconds(OSGetTime());
-}
-
 static err_t send_frame(struct netif *n, struct pbuf *p)
 {
-    if (p->tot_len > sizeof(tx_frame) ||
-        pbuf_copy_partial(p, tx_frame, p->tot_len, 0) != p->tot_len) return ERR_BUF;
-    return ax88179_send(n->state, tx_frame, p->tot_len) == 0 ? ERR_OK : ERR_IF;
+    (void)n;
+    if (p->tot_len > sizeof(tx_pool[0])) return ERR_BUF;
+    /* Only the tcpip thread reaches here, so slot picking is single-threaded. */
+    int slot = -1;
+    for (int i = 0; i < TX_SLOTS; i++) {
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&tx_in_use[i], &expected, 1)) { slot = i; break; }
+    }
+    if (slot < 0) return ERR_MEM;
+    if (pbuf_copy_partial(p, tx_pool[slot], p->tot_len, 0) != p->tot_len) {
+        atomic_store(&tx_in_use[slot], 0);
+        return ERR_BUF;
+    }
+    OSMessage m;
+    memset(&m, 0, sizeof(m));
+    m.message = (void *)(uintptr_t)slot;
+    m.args[0] = p->tot_len;
+    OSSendMessage(&tx_queue, &m, OS_MESSAGE_FLAGS_BLOCKING);
+    return ERR_OK;
 }
 
 static err_t init_interface(struct netif *n)
@@ -42,45 +70,89 @@ static err_t init_interface(struct netif *n)
     return ERR_OK;
 }
 
+struct setup_ctx {
+    Ax88179 *ax;
+    int link_up;
+    err_t err;
+};
+
+static void setup_cb(void *v)
+{
+    struct setup_ctx *c = v;
+    ip4_addr_t zero = {0};
+    memset(&iface, 0, sizeof(iface));
+    if (!netif_add(&iface, &zero, &zero, &zero, c->ax, init_interface, tcpip_input)) {
+        c->err = ERR_IF;
+        return;
+    }
+    netif_set_default(&iface);
+    netif_set_up(&iface);
+    if (c->link_up) netif_set_link_up(&iface);
+    if (dhcp_start(&iface) != ERR_OK) {
+        dhcp_cleanup(&iface);
+        netif_remove(&iface);
+        c->err = ERR_IF;
+        return;
+    }
+    c->err = ERR_OK;
+}
+
 int ax_net_start(Ax88179 *ax)
 {
     if (active || !ax) return -1;
     if (!initialized) {
         srand((unsigned)OSGetTime());
-        lwip_init();
+        for (int i = 0; i < TX_SLOTS; i++) atomic_store(&tx_in_use[i], 0);
+        OSInitMessageQueue(&tx_queue, tx_storage, TX_SLOTS);
+        tcpip_init(NULL, NULL);
         initialized = 1;
     }
-    memset(&iface, 0, sizeof(iface));
-    ip4_addr_t zero = {0};
-    if (!netif_add(&iface, &zero, &zero, &zero, ax, init_interface, ethernet_input)) return -1;
-    netif_set_default(&iface);
-    netif_set_up(&iface);
+    struct setup_ctx ctx = { .ax = ax, .link_up = 0, .err = ERR_ARG };
     int speed;
-    if (ax88179_link(ax, &speed) == 1) netif_set_link_up(&iface);
-    if (dhcp_start(&iface) != ERR_OK) {
-        dhcp_cleanup(&iface); netif_remove(&iface); return -1;
-    }
+    if (ax88179_link(ax, &speed) == 1) ctx.link_up = 1;
+    tcpip_callback_with_block(setup_cb, &ctx, 1);
+    if (ctx.err != ERR_OK) return -1;
     active = 1;
     address[0] = 0;
     last_link = sys_now();
+    last_link_up = ctx.link_up;
     link_errors = 0;
     return 0;
+}
+
+static void link_cb(void *v)
+{
+    if ((uintptr_t)v) netif_set_link_up(&iface);
+    else netif_set_link_down(&iface);
+}
+
+static void drain_tx(Ax88179 *ax, int send)
+{
+    OSMessage m;
+    while (OSReceiveMessage(&tx_queue, &m, OS_MESSAGE_FLAGS_NONE)) {
+        int slot = (int)(uintptr_t)m.message;
+        if (send) ax88179_send(ax, tx_pool[slot], m.args[0]);
+        atomic_store(&tx_in_use[slot], 0);
+    }
 }
 
 int ax_net_poll(void)
 {
     if (!active) return -1;
     uint32_t now = sys_now();
-    if ((uint32_t)(now-last_link) >= 500) {
+    if ((uint32_t)(now - last_link) >= 500) {
         int speed, up = ax88179_link(iface.state, &speed);
-        if (up == 1) netif_set_link_up(&iface);
-        else netif_set_link_down(&iface);
         last_link = now;
+        if (up >= 0 && up != last_link_up) {
+            tcpip_callback_with_block(link_cb, (void *)(uintptr_t)up, 0);
+            last_link_up = up;
+        }
         if (up < 0) link_errors++;
         else link_errors = 0;
         if (link_errors >= 3) return -2;
     }
-    /* One bounded receive: timers run even on an idle network. */
+    drain_tx(iface.state, 1);
+    /* One bounded receive; timers live in the tcpip thread now. */
     int n = ax88179_receive(iface.state, rx_frame, sizeof(rx_frame), 100);
     if (n > 0) {
         struct pbuf *p = pbuf_alloc(PBUF_RAW, (u16_t)n, PBUF_POOL);
@@ -90,7 +162,6 @@ int ax_net_poll(void)
         }
     }
     if (n <= 0) OSSleepTicks(OSMillisecondsToTicks(5));
-    sys_check_timeouts();
     return n;
 }
 
@@ -100,12 +171,21 @@ const char *ax_net_address(void)
     return ip4addr_ntoa_r(netif_ip4_addr(&iface), address, sizeof(address));
 }
 
-void ax_net_stop(void)
+static void stop_cb(void *v)
 {
-    if (!active) return;
+    (void)v;
     dhcp_release_and_stop(&iface);
     dhcp_cleanup(&iface);
     netif_set_down(&iface);
     netif_remove(&iface);
+}
+
+void ax_net_stop(void)
+{
+    if (!active) return;
+    tcpip_callback_with_block(stop_cb, NULL, 1);
+    /* Drop whatever the tcpip thread queued for TX before the adapter
+     * handle goes away. */
+    drain_tx(iface.state, 0);
     active = 0;
 }
