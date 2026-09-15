@@ -68,7 +68,21 @@ int main(int argc, char **argv)
         VPADReadError err;
         VPADRead(VPAD_CHAN_0, &vpad, 1, &err);
         if (err == VPAD_READ_SUCCESS && (vpad.trigger & VPAD_BUTTON_MINUS)) {
-            break;
+    /*
+     * How a program on this console asks to leave.
+     *
+     * The first version broke out of the loop, called SYSLaunchMenu()
+     * and then spun on `while (WHBProcIsRunning()) {}` waiting to be
+     * taken down. Nothing had told ProcUI anything, so that condition
+     * stayed true and the spin never ended -- two black screens and a
+     * forced power-off, which is exactly what came back from the sofa.
+     *
+     * WHBProcStopRunning() is the switch. SYSLaunchMenu() says where to
+     * go next, that says to stop going, and the ordinary loop condition
+     * does the rest.
+     */
+            SYSLaunchMenu();
+            WHBProcStopRunning();
         }
 
         OSScreenClearBufferEx(SCREEN_TV, 0x00000000);
@@ -135,11 +149,6 @@ int main(int argc, char **argv)
     free(tv);
     free(drc);
 
-    /* Returning from main() does not send this console anywhere; it has
-     * to be told. Same lesson as the client. */
-    SYSLaunchMenu();
-    while (WHBProcIsRunning()) {
-    }
     WHBProcShutdown();
     return 0;
 }

@@ -10,6 +10,7 @@
 #include <proc_ui/procui.h>
 #include <vpad/input.h>
 #include <whb/gfx.h>
+#include <whb/log.h>
 #include <whb/proc.h>
 
 namespace {
@@ -55,17 +56,24 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
      * would be writing to the same scan buffers and the result is a
      * console that shows neither.
      */
+    WHBLogPrintf("swkbd: WHBGfxInit");
     if (!WHBGfxInit()) {
         snprintf(why, why_size, "cannot start the graphics layer");
         return -1;
     }
 
+    WHBLogPrintf("swkbd: gfx up, FS client");
     FSClient *fsClient = static_cast<FSClient *>(MEMAllocFromDefaultHeap(sizeof(FSClient)));
     if (!fsClient) {
         WHBGfxShutdown();
         snprintf(why, why_size, "out of memory");
         return -1;
     }
+    /* FSInit before a client is added. wut does not do it for you, and
+     * swkbd loads its fonts and layouts through this client -- a
+     * keyboard with no resources is a keyboard that draws nothing,
+     * which is exactly what a black screen looks like. */
+    FSInit();
     FSAddClient(fsClient, FS_ERROR_FLAG_NONE);
 
     nn::swkbd::CreateArg createArg;
@@ -80,6 +88,8 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
         return -1;
     }
 
+    WHBLogPrintf("swkbd: Create, work memory %u bytes",
+                 (unsigned)nn::swkbd::GetWorkMemorySize(0));
     if (!nn::swkbd::Create(createArg)) {
         MEMFreeToDefaultHeap(createArg.workMemory);
         FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
@@ -108,6 +118,7 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
     appearArg.inputFormArg.maxTextLength = static_cast<int32_t>(out_size) - 1;
     appearArg.inputFormArg.higlightInitialText = true;
 
+    WHBLogPrintf("swkbd: AppearInputForm");
     if (!nn::swkbd::AppearInputForm(appearArg)) {
         nn::swkbd::Destroy();
         MEMFreeToDefaultHeap(createArg.workMemory);
@@ -118,6 +129,7 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
         return -1;
     }
 
+    WHBLogPrintf("swkbd: entering its loop");
     int result = 0;   /* cancelled, unless told otherwise */
     while (WHBProcIsRunning()) {
         VPADStatus vpad;
@@ -161,10 +173,12 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
         WHBGfxFinishRender();
     }
 
+    WHBLogPrintf("swkbd: leaving, result %d", result);
     nn::swkbd::DisappearInputForm();
     nn::swkbd::Destroy();
     MEMFreeToDefaultHeap(createArg.workMemory);
     FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
+    FSShutdown();
     MEMFreeToDefaultHeap(fsClient);
     WHBGfxShutdown();
     return result;
