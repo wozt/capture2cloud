@@ -47,6 +47,10 @@ CXXFLAGS	:= $(CFLAGS) -std=c++17
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map) $(WUMSSPECS) 
 
+ifeq ($(SHIM),0)
+CFLAGS += -DAX_DISABLE_SHIM=1
+endif
+
 ifeq ($(DEBUG),1)
 CXXFLAGS += -DDEBUG -g
 CFLAGS += -DDEBUG -g
