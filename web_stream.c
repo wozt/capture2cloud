@@ -1257,7 +1257,7 @@ int web_stream_start(WebStream *ws, int port, char *errbuf, size_t errbuf_len) {
         return -1;
     }
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         if (errbuf) snprintf(errbuf, errbuf_len, "socket: %s", strerror(errno));
         SDL_UnlockMutex(ws->state_mutex);
