@@ -282,20 +282,46 @@ So the position is precise: **the console will let a homebrew configure
 this adapter but not move packets through it.** Control transfers reach
 the device; endpoint 0 is not the problem.
 
-What is left to try, in order of how much they would explain:
+### Found: the interface is never actually handed over
 
-1. `UhsAdministerDevice` before the endpoints -- there is a
-   `UHS_ADMIN_DEV_RESET`, and the device may need a configuration set
-   before its endpoints exist as far as the stack is concerned.
-2. The `UhsConfig.controller_num` -- always 0 here. The adapter is on a
-   particular controller and 0 may be the wrong one, which would explain
-   a refusal that is not a timeout.
-3. Whether IOSU deliberately reserves data endpoints for its own
-   drivers. If it does, this route is closed and the IOSU patch is the
-   only one -- which is what the Ghidra groundwork above was for.
+`UhsAcquireInterface` takes a **completion callback**, which means its
+return value says "accepted", not "done". Every probe passed NULL and
+used the interface on the very next line.
 
-Point 3 is the one that decides the project, and the firmware is already
-decrypted and mapped for exactly that question.
+Given a real callback and three seconds to arrive:
+
+    acquire submitted -> 0
+    acquire never called back after 3000 ms
+
+**It never completes.** That explains every symptom at once and far
+better than "bulk is refused": control transfers go to endpoint 0 and
+never needed the interface, while everything else was asked for on an
+interface the stack had not given us.
+
+Also eliminated in the same run, and worth recording because it was a
+real suspicion: the **controller number**. Moving the dongle from the
+front port to the back changes nothing -- the adapter is on controller 0
+either way, and controllers 1 and 2 will not open at all (-1 and -6).
+
+### So the question is now much narrower
+
+Not "why is bulk refused" but **"why does an acquire that was accepted
+never complete"**. Candidates:
+
+1. The completion arrives on a thread or a message queue that something
+   has to service, and a program that just spins never lets it run.
+   Cheapest to test: do the wait on a separate thread, or with
+   `OSYieldThread` in the loop rather than `OSSleepTicks`.
+2. `UhsAdministerDevice` may be required first -- a configuration set
+   before the stack will part with an interface.
+3. IOSU refuses to hand over an interface on a device it has itself
+   probed, silently, by never answering. If that is it, the userspace
+   route is closed and the IOSU patch is the only one -- which is what
+   the decrypted firmware above is for.
+
+Point 3 still decides the project. But point 1 is an hour, and the
+difference between "never answered" and "answered no" is exactly the
+kind of thing that turns out to be a missing thread.
 
 ## Next, in order
 
