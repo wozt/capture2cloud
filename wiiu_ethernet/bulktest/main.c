@@ -32,17 +32,8 @@ static uint8_t g_buf[16 * 1024] __attribute__((aligned(0x40)));
 static volatile int g_probed;
 static volatile uint32_t g_probed_if;
 static volatile int g_acquired;
+static volatile int32_t g_acquire_in_probe;
 static volatile int32_t g_acquire_result;
-
-/* UHS offering us an interface it thinks we drive. */
-static void on_probe(void *context, UhsInterfaceProfile *profile)
-{
-    (void)context;
-    if (profile) {
-        g_probed_if = profile->if_handle;
-        g_probed = 1;
-    }
-}
 
 static void on_acquired(void *context, int32_t arg1, int32_t arg2)
 {
@@ -50,6 +41,29 @@ static void on_acquired(void *context, int32_t arg1, int32_t arg2)
     (void)arg2;
     g_acquire_result = arg1;
     g_acquired = 1;
+}
+
+/*
+ * UHS offering us an interface it thinks we drive -- and the acquire
+ * happens HERE, inside the offer.
+ *
+ * The client manager's own log strings describe the sequence: "Sending
+ * probe indication to client in pid %d", then "Acquired by client in
+ * pid %d". A class driver claims the interface from the indication, the
+ * way an answer belongs in a conversation. Every attempt so far noted
+ * the offer, returned, and asked from the main loop some milliseconds
+ * later -- by which time the state machine has moved on, which is
+ * exactly what "accepted and never completed" looks like.
+ */
+static void on_probe(void *context, UhsInterfaceProfile *profile)
+{
+    (void)context;
+    if (!profile) {
+        return;
+    }
+    g_probed_if = profile->if_handle;
+    g_acquire_in_probe = UhsAcquireInterface(&g_handle, profile->if_handle, NULL, on_acquired);
+    g_probed = 1;
 }
 
 int main(int argc, char **argv)
@@ -87,10 +101,8 @@ int main(int argc, char **argv)
     probe_say("probe callback %s", g_probed ? "ARRIVED" : "never came");
 
     if (g_probed) {
-        probe_say("offered interface %u", (unsigned)g_probed_if);
-        g_acquired = 0;
-        const int32_t a = UhsAcquireInterface(&g_handle, g_probed_if, NULL, on_acquired);
-        probe_say("acquire -> %d", (int)a);
+        probe_say("offered interface %u; acquire from inside the probe -> %d",
+                  (unsigned)g_probed_if, (int)g_acquire_in_probe);
         for (int waited = 0; waited < 3000 && !g_acquired; waited += 20) {
             OSSleepTicks(OSMillisecondsToTicks(20));
         }

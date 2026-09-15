@@ -348,9 +348,51 @@ never complete"**. Candidates:
    it was genuinely wrong** -- the probe callback now arrives with a
    handle from a different space. The acquire still does not complete.
 
-What is left is the one that decides the project: **IOSU may simply not
-hand an interface to a Cafe OS client for a device it has itself
-probed**, and it says so by never answering rather than by refusing.
+5. ~~Acquiring from inside the probe callback rather than after it.~~
+   **Eliminated.** The client manager's own log strings describe the
+   sequence -- "Sending probe indication to client in pid %d" then
+   "Acquired by client in pid %d" -- so claiming from within the offer
+   was a fair reading. Tried: returns 0, never completes, same as
+   everything else.
+
+### What the firmware's own strings say
+
+The UHS server is `uhs_main.c` and its client manager is
+`uhs_client_mgr.c`, both in segment 17 (`0x10100000`, executable) with
+their strings in segment 18. The client interface state machine logs:
+
+    CltIfFsm(V%04x|P%04x|IF%d): Sending probe indication to client in pid %d.
+    CltIfFsm(V%04x|P%04x|IF%d): Evaluating registrations owned by client in pid %d.
+    CltIfFsm(V%04x|P%04x|IF%d): Rejected by client in pid %d.
+    CltIfFsm(V%04x|P%04x|IF%d): Acquired by client in pid %d.
+    CltIfFsm(V%04x|P%04x|IF%d): Released and LOCKED by client in pid %d.
+
+**"Acquired by client in pid %d" is a state this thing logs**, so a Cafe
+OS client acquiring an interface is a supported outcome and not
+something forbidden in principle. Whatever stops ours is a condition
+inside that state machine, and those five strings are its labels -- which
+makes them the cheapest possible entry points for a disassembler.
+
+### `devsel.bin` is a cache, not a policy
+
+Worth writing down because the name invites the opposite conclusion.
+`/storage_slc/sys/proc/usb/uhs/devsel.bin`, 2376 bytes, read off the
+console: it holds **device descriptors the console has seen**. Our
+adapter is in it --
+
+    12 01 02 10 ff ff 40  0b 95 17 90  01 00 ...  09 04 00 00 03 ff ff 00
+
+a USB 2.10 device descriptor, class ff/ff, `0b95:1790`, one
+configuration, an interface with three endpoints -- and so is the WD
+drive at `1058:25a2` with its mass-storage class. It is a descriptor
+cache. It is not an allow-list, and the AX88772 is *not* in it, which is
+the opposite of what a permission table would look like.
+
+### Where this stands
+
+**IOSU may simply not hand an interface to a Cafe OS client for a device
+it has itself probed**, and it says so by never answering rather than by
+refusing.
 
 That is now a question to answer in the firmware rather than by
 experiment, and the firmware is decrypted, mapped, and named: segment
