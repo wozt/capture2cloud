@@ -528,9 +528,14 @@ Which makes the remaining question: what does IOS object to in a
 vectored request that it does not object to in a plain ioctl? The
 candidates, none yet tested:
 
-- the buffer's memory region. IOS reaches Cafe OS memory through its own
-  mapping; a buffer in the wrong region is reachable for a small ioctl
-  payload that gets copied and not for a vector that is used in place.
+- ~~the buffer's memory region.~~ **Largely eliminated.** Three sources
+  tried in one run -- the program's own `.bss` (`0x105D98C0`), a pointer
+  inside the work buffer UHS was given (`0x105C98C0`), and the default
+  heap (`0x10EA3500`). All three refused identically. They are all in
+  `0x10xxxxxx`, so a MEM1 buffer is still untested -- the probe fell
+  over on `MEMGetBaseHeapHandle` before reaching it -- but a buffer the
+  UHS client itself was handed at open failing the same way is a strong
+  argument that the region is not what IOS objects to.
 - cache. An ioctlv buffer used in place must be flushed and invalidated
   around the call; the driver does this, `bulktest` did not, and both
   fail the same way -- which argues against it but does not settle it.
