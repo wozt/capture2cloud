@@ -47,14 +47,19 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS	:=	-g $(MACHDEP)
 LDFLAGS	=	-g $(MACHDEP) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 
-# No SDL2 here, deliberately.
+# SDL2, and the reason is not convenience.
 #
-# SDL2's Wii U renderer is real GX2, but it has no YUV shader -- an NV12
-# texture would go through SDL's software conversion, and 720p60 of that
-# on a 1.24 GHz PowerPC is not a thing that happens. The console's
-# decoder hands us NV12 and GX2 can sample it directly, so the picture
-# path is GX2 and there is nothing for SDL2 to do.
-LIBS	:=	-lwut -lm
+# Measured on the console: once OSScreen has been up, GX2 renders
+# nothing -- and the keyboard, the HOME overlay and an NV12 video
+# texture all need GX2. So the program has to be GX2 from its first
+# line, and this toolchain ships no shader assembler to get there by
+# hand. SDL2's Wii U renderer IS GX2 and brings text and touch with it.
+#
+# SDL2_ttf pulls freetype, which pulls harfbuzz, which pulls freetype
+# back -- hence freetype on both sides of it. The font itself is not
+# shipped: it comes from the console's shared memory (see ui.c).
+LIBS	:=	-lSDL2_ttf -lfreetype -lharfbuzz -lfreetype -lbrotlidec -lbrotlicommon -lpng -lbz2 -lz \
+			-lSDL2 -lwut -lm
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level
