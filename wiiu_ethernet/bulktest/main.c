@@ -1,17 +1,16 @@
 /*
- * Why does the host stack refuse a bulk transfer?
+ * Register as a class driver, the way the console's own driver does.
  *
- * Everything else works: the chip initialises, the PHY negotiates, the
- * link comes up at 100 Mbit/s, control transfers are answered. Only the
- * bulk IN is refused, with 0xFFDEFFE7 -- the same 0xFFDEFF.. family as
- * the two UHS status codes wut does name, so a refusal rather than a
- * timeout.
+ * The /dev/uhs documentation settles what a dozen permutations could
+ * not. Acquiring is only half a protocol: ioctl 0x01, UhsClassDrvReg,
+ * registers a driver with a filter, and UHS then CALLS YOU when a
+ * matching interface appears, handing you its profile. That is exactly
+ * the shape of the IOSU driver found in the decrypted firmware --
+ * `__uhsIfProbeCallback`, `__handleUhsDevProbe`.
  *
- * Each round trip to the console costs a minute, so rather than guess
- * once per trip this tries every plausible cause in one run and reports
- * each: whether enabling the endpoint even succeeded, whether the
- * endpoint wants its direction bit, whether the request size is the
- * problem, and whether a smaller buffer is accepted.
+ * Every probe so far queried and then acquired, which is not the
+ * supported flow, and an acquire that is accepted and never completes
+ * is precisely what one would expect of it.
  */
 #include <stdio.h>
 #include <string.h>
@@ -24,26 +23,26 @@
 
 #define ASIX_VID    0x0b95
 #define AX88179_PID 0x1790
-#define UHS_DIR_OUT 0
 #define UHS_DIR_IN  1
 
 static UhsHandle g_handle;
 static uint8_t g_work[128 * 1024] __attribute__((aligned(0x40)));
 static uint8_t g_buf[16 * 1024] __attribute__((aligned(0x40)));
-static UhsInterfaceProfile g_profiles[16];
 
-/*
- * Acquiring an interface is ASYNCHRONOUS.
- *
- * UhsAcquireInterface takes a completion callback, which means its
- * return value says "accepted", not "done" -- and every probe so far
- * passed NULL and used the interface on the very next line. That would
- * explain everything seen: control transfers go to endpoint 0 and never
- * needed the interface, while every data transfer was asked for before
- * the stack had finished handing it over.
- */
+static volatile int g_probed;
+static volatile uint32_t g_probed_if;
 static volatile int g_acquired;
 static volatile int32_t g_acquire_result;
+
+/* UHS offering us an interface it thinks we drive. */
+static void on_probe(void *context, UhsInterfaceProfile *profile)
+{
+    (void)context;
+    if (profile) {
+        g_probed_if = profile->if_handle;
+        g_probed = 1;
+    }
+}
 
 static void on_acquired(void *context, int32_t arg1, int32_t arg2)
 {
@@ -58,82 +57,56 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
-    if (probe_init("AX88179: why is bulk refused?") != 0) {
+    if (probe_init("UHS: register as a class driver") != 0) {
         probe_shutdown();
         return 1;
     }
 
-    /*
-     * Every controller, not just zero.
-     *
-     * This console has more than one USB controller and the front and
-     * back ports need not be on the same one. Every probe so far opened
-     * controller 0 without asking -- so "the adapter is refused" may all
-     * along have been "the adapter is on a controller we never opened",
-     * which would explain a refusal that was never a timeout.
-     *
-     * Moving the dongle from the front to the back is what raised the
-     * question. This answers it for every controller at once.
-     */
-    for (int controller = 0; controller < 3; controller++) {
-        UhsConfig config;
-        memset(&config, 0, sizeof(config));
-        config.controller_num = controller;
-        config.buffer = g_work;
-        config.buffer_size = sizeof(g_work);
-
-        int32_t r = UhsClientOpen(&g_handle, &config);
-        if (r < 0) {
-            probe_say("controller %d: will not open (%d)", controller, (int)r);
-            continue;
-        }
-
-        UhsInterfaceFilter filter;
-        memset(&filter, 0, sizeof(filter));
-        filter.match_params = MATCH_ANY;
-        const int32_t found = UhsQueryInterfaces(&g_handle, &filter, g_profiles, 16);
-        probe_say("controller %d: %d interface(s)", controller, (int)found);
-
-        uint32_t ifh = 0;
-        for (int32_t i = 0; i < found; i++) {
-            const UhsInterfaceProfile *p = &g_profiles[i];
-            probe_say("   %04x:%04x", p->dev_desc.idVendor, p->dev_desc.idProduct);
-            if (p->dev_desc.idVendor == ASIX_VID && p->dev_desc.idProduct == AX88179_PID) {
-                ifh = p->if_handle;
-            }
-        }
-        if (!ifh) {
-            UhsClientClose(&g_handle);
-            continue;
-        }
-
-        probe_say("   ASIX is HERE, on controller %d", controller);
-        g_acquired = 0;
-        g_acquire_result = 0;
-        r = UhsAcquireInterface(&g_handle, ifh, NULL, on_acquired);
-        probe_say("   acquire submitted -> %d", (int)r);
-        if (r < 0) {
-            UhsClientClose(&g_handle);
-            continue;
-        }
-        /* Wait for the callback rather than assuming it has happened. */
-        int waited = 0;
-        while (!g_acquired && waited < 3000) {
-            OSSleepTicks(OSMillisecondsToTicks(10));
-            waited += 10;
-        }
-        probe_say("   acquire %s after %d ms, result %d",
-                  g_acquired ? "COMPLETED" : "never called back", waited,
-                  (int)g_acquire_result);
-        r = UhsAdministerEndpoint(&g_handle, ifh, UHS_ADMIN_EP_ENABLE, 0xFFFF, 4, 2048);
-        probe_say("   enable endpoints -> %d", (int)r);
-        r = UhsSubmitBulkRequest(&g_handle, ifh, 0x02, UHS_DIR_IN, g_buf, 2048, 500);
-        probe_say("   bulk in ep2 -> %d %s", (int)r,
-                  r >= 0 ? "*** DATA MOVES ***" : "(refused)");
-        UhsReleaseInterface(&g_handle, ifh, false);
-        UhsClientClose(&g_handle);
+    UhsConfig config;
+    memset(&config, 0, sizeof(config));
+    config.controller_num = 0;
+    config.buffer = g_work;
+    config.buffer_size = sizeof(g_work);
+    if (UhsClientOpen(&g_handle, &config) < 0) {
+        probe_say("client will not open");
+        probe_wait(); probe_shutdown(); return 1;
     }
 
+    UhsInterfaceFilter filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.match_params = MATCH_DEV_VID | MATCH_DEV_PID;
+    filter.vid = ASIX_VID;
+    filter.pid = AX88179_PID;
+
+    const int32_t reg = UhsClassDrvReg(&g_handle, &filter, NULL, on_probe);
+    probe_say("UhsClassDrvReg -> %d", (int)reg);
+
+    for (int waited = 0; waited < 3000 && !g_probed; waited += 20) {
+        OSSleepTicks(OSMillisecondsToTicks(20));
+    }
+    probe_say("probe callback %s", g_probed ? "ARRIVED" : "never came");
+
+    if (g_probed) {
+        probe_say("offered interface %u", (unsigned)g_probed_if);
+        g_acquired = 0;
+        const int32_t a = UhsAcquireInterface(&g_handle, g_probed_if, NULL, on_acquired);
+        probe_say("acquire -> %d", (int)a);
+        for (int waited = 0; waited < 3000 && !g_acquired; waited += 20) {
+            OSSleepTicks(OSMillisecondsToTicks(20));
+        }
+        probe_say("acquire callback %s, result %d", g_acquired ? "ARRIVED" : "never came",
+                  (int)g_acquire_result);
+
+        int32_t r = UhsAdministerEndpoint(&g_handle, g_probed_if, UHS_ADMIN_EP_ENABLE,
+                                          0xFFFF, 4, 2048);
+        probe_say("enable endpoints -> %d", (int)r);
+        r = UhsSubmitBulkRequest(&g_handle, g_probed_if, 0x02, UHS_DIR_IN, g_buf, 2048, 500);
+        probe_say("bulk in ep2 -> %d %s", (int)r, r >= 0 ? "*** DATA MOVES ***" : "");
+        UhsReleaseInterface(&g_handle, g_probed_if, false);
+    }
+
+    UhsClassDrvUnReg(&g_handle, (uint32_t)reg);
+    UhsClientClose(&g_handle);
     probe_wait();
     probe_shutdown();
     return 0;
