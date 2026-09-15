@@ -12,15 +12,10 @@ import ghidra.program.model.listing.Function;
 public class DecompPpc extends GhidraScript {
     @Override
     public void run() throws Exception {
-        String[][] targets = {
-            { "02001-5e4", "UhsSubmitBulkRequest" },
-            { "0200-0dd0", "UhsSubmitControlRequest" },
-        };
         DecompInterface decomp = new DecompInterface();
         decomp.openProgram(currentProgram);
-        String[] addrs = { "020015e4", "02000dd0", "02000c34" };
-        String[] names = { "UhsSubmitBulkRequest", "UhsSubmitControlRequest",
-                           "UhsAdministerEndpoint" };
+        String[] addrs = { "02000154", "02000820", "02000c34" };
+        String[] names = { "UhsClientOpen", "UhsAcquireInterface", "UhsAdministerEndpoint" };
         for (int i = 0; i < addrs.length; i++) {
             Address a = currentProgram.getAddressFactory().getAddress("0x" + addrs[i]);
             Function f = getFunctionAt(a);

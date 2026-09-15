@@ -561,6 +561,42 @@ demand. Whatever made it trace that window was not repeated. Worth
 knowing before someone plans around it: it gave one decisive reading and
 has been silent since.
 
+### Comparing with what works: the working client does not use nsysuhs
+
+`usb_mic.rpl` is a Cafe OS library that drives a USB device and moves
+data through it every day. Its import table holds **one** library --
+`coreinit` -- and the symbols it takes from it are `IOS_Open`,
+`IOS_Close`, `IOS_Ioctl`, `IOS_IoctlAsync`, `IOS_Ioctlv`,
+`IOS_IoctlvAsync`. Its string table contains `/dev/uhs`.
+
+**It opens the device itself and issues raw ioctls. It never touches
+nsysuhs.rpl** -- the library every probe here has gone through.
+
+That is the comparison, and it is actionable. `nsysuhs`'s own
+decompilation shows the whole path is reproducible:
+
+- `UhsClientOpen` requires `buffer_size >= 0x137F`, carves the work
+  buffer into `0x454`-byte blocks, opens `/dev/uhs/<controller>` and
+  keeps the **raw IOS handle in `handle[3]`**.
+- `UhsSubmitBulkRequest` calls `IOS_Ioctlv(handle[3], 0x0E, vecIn,
+  vecOut, vecs)` with a `0xA1`-byte request block as the first vector and
+  the caller's buffer as the second.
+- The request block is `{if_handle, endpoint u8, timeout, 3, direction,
+  length}` in a zeroed `0x454` frame.
+- Vector counting confirms the direction constants a second time:
+  `1` gives 0 in / 2 out (a write), `2` gives 1 in / 1 out (a read),
+  matching the /dev/uhs documentation exactly.
+
+`IOSVec` is 12 bytes -- `vaddr`, `len`, `paddr` -- which is the `/0xc`
+divisor in that arithmetic, so the reading is not a guess.
+
+**Next: do the whole sequence raw**, on our own `IOS_Open("/dev/uhs/0")`
+handle, the way the microphone does. It removes nsysuhs from between us
+and the fault, and if the raw ioctlv is accepted then the library was
+the problem all along. It is also entirely read-only with respect to the
+console: opening a device node and issuing ioctls changes nothing on
+the NAND.
+
 ### Where this stands
 
 **IOSU may simply not hand an interface to a Cafe OS client for a device
