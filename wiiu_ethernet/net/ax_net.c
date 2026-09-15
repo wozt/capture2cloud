@@ -171,6 +171,19 @@ const char *ax_net_address(void)
     return ip4addr_ntoa_r(netif_ip4_addr(&iface), address, sizeof(address));
 }
 
+/* Non-zero once tcpip_init has run: the socket/DNS API is usable. */
+int ax_net_stack_ready(void)
+{
+    return initialized;
+}
+
+/* Our IPv4 address in network byte order, 0 when none. */
+uint32_t ax_net_ip4(void)
+{
+    if (!active) return 0;
+    return netif_ip4_addr(&iface)->addr;
+}
+
 static void stop_cb(void *v)
 {
     (void)v;
