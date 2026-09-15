@@ -37,6 +37,7 @@
 #include <whb/proc.h>
 
 #include "c2s_protocol.h"
+#include "keyboard.h"
 #include "net.h"
 #include "settings.h"
 #include "video.h"
@@ -108,78 +109,59 @@ static int in_rect(const Rect *r, int x, int y)
  * on purpose: this is a finger on a resistive panel, and the first
  * version of this had no way out at all.
  */
-#define BTN_OCTET_W 150
-#define BTN_OCTET_H 60
-#define OCTET_X(i)  (40 + (i) * 190)
-#define ROW_PLUS_Y  110
-#define ROW_VALUE_Y 180
-#define ROW_MINUS_Y 225
-
-static const Rect RECT_PORT_MINUS = { 20, 350, 100, 60 };
-static const Rect RECT_PORT_PLUS  = { 130, 350, 100, 60 };
-static const Rect RECT_CONNECT    = { 280, 350, 250, 60 };
-static const Rect RECT_QUIT       = { 560, 350, 250, 60 };
+/*
+ * Fields, not a row of plus and minus.
+ *
+ * The first version put a [+] and a [-] under each octet of the
+ * address. Typing 192.168.2.100 that way is 462 taps, and the verdict
+ * from the sofa was the right one. A field is tapped, the console's own
+ * keyboard opens, you type it.
+ */
+static const Rect RECT_HOST    = { 40, 90, 600, 70 };
+static const Rect RECT_PORT    = { 40, 185, 300, 70 };
+static const Rect RECT_CONNECT = { 40, 310, 320, 80 };
+static const Rect RECT_QUIT    = { 480, 310, 320, 80 };
 
 #define C_BUTTON  0x404a56FF
+#define C_FIELD   0x1c2430FF
 #define C_ACCENT  0x2f6f4eFF
 #define C_DANGER  0x6f2f2fFF
 
-static void draw_settings(const Settings *s, const char *note, int touch_x, int touch_y)
+static void draw_settings(const Settings *s, const char *note)
 {
-    char buf[96];
+    char host[32], buf[96];
+    settings_host_string(s, host, sizeof(host));
 
-    OSScreenPutFontEx(SCREEN_DRC, 0, 0, "capture2cloud -- where is the host?");
-    OSScreenPutFontEx(SCREEN_DRC, 0, 2, "host address");
+    OSScreenPutFontEx(SCREEN_DRC, 1, 0, "capture2cloud");
+    OSScreenPutFontEx(SCREEN_DRC, 1, 1, "tap a field to type with the console keyboard");
 
-    for (int i = 0; i < 4; i++) {
-        Rect plus  = { OCTET_X(i), ROW_PLUS_Y,  BTN_OCTET_W, BTN_OCTET_H };
-        Rect minus = { OCTET_X(i), ROW_MINUS_Y, BTN_OCTET_W, BTN_OCTET_H };
-        Rect value = { OCTET_X(i), ROW_VALUE_Y, BTN_OCTET_W, CELL_H };
-        fill_rect(SCREEN_DRC, &plus, C_BUTTON);
-        fill_rect(SCREEN_DRC, &minus, C_BUTTON);
-        text_in_rect(SCREEN_DRC, &plus, "+");
-        text_in_rect(SCREEN_DRC, &minus, "-");
-        snprintf(buf, sizeof(buf), "%u", s->host[i]);
-        text_in_rect(SCREEN_DRC, &value, buf);
-    }
+    fill_rect(SCREEN_DRC, &RECT_HOST, C_FIELD);
+    fill_rect(SCREEN_DRC, &RECT_PORT, C_FIELD);
+    OSScreenPutFontEx(SCREEN_DRC, 1, 3, "host");
+    OSScreenPutFontEx(SCREEN_DRC, 1, 7, "port");
+    text_in_rect(SCREEN_DRC, &RECT_HOST, host[0] && strcmp(host, "0.0.0.0") != 0
+                                             ? host : "tap to set");
+    snprintf(buf, sizeof(buf), "%u", s->port);
+    text_in_rect(SCREEN_DRC, &RECT_PORT, buf);
 
-    snprintf(buf, sizeof(buf), "port %u", s->port);
-    OSScreenPutFontEx(SCREEN_DRC, 2, 12, buf);
-
-    fill_rect(SCREEN_DRC, &RECT_PORT_MINUS, C_BUTTON);
-    fill_rect(SCREEN_DRC, &RECT_PORT_PLUS, C_BUTTON);
     fill_rect(SCREEN_DRC, &RECT_CONNECT, C_ACCENT);
     fill_rect(SCREEN_DRC, &RECT_QUIT, C_DANGER);
-    text_in_rect(SCREEN_DRC, &RECT_PORT_MINUS, "port -");
-    text_in_rect(SCREEN_DRC, &RECT_PORT_PLUS, "port +");
     text_in_rect(SCREEN_DRC, &RECT_CONNECT, "CONNECT");
     text_in_rect(SCREEN_DRC, &RECT_QUIT, "QUIT");
 
-    /*
-     * The live touch position, on screen.
-     *
-     * Not decoration. The calibrated point is documented only as
-     * "calibrated", and whether it arrives in this panel's 854x480 or in
-     * something else is the difference between buttons that work and
-     * buttons that do nothing at all. Until it has been seen on
-     * hardware once, this is how it gets seen.
-     */
-    snprintf(buf, sizeof(buf), "touch %d,%d", touch_x, touch_y);
-    OSScreenPutFontEx(SCREEN_DRC, 2, 18, buf);
     if (note && note[0]) {
-        OSScreenPutFontEx(SCREEN_DRC, 20, 18, note);
+        OSScreenPutFontEx(SCREEN_DRC, 1, 17, note);
     }
 
     /* The television says the same thing, for whoever is not holding
      * the pad. */
-    settings_host_string(s, buf, sizeof(buf));
     OSScreenPutFontEx(SCREEN_TV, 2, 2, "capture2cloud -- Wii U");
-    {
-        char line[96];
-        snprintf(line, sizeof(line), "host %s:%u", buf, s->port);
-        OSScreenPutFontEx(SCREEN_TV, 2, 4, line);
-    }
+    snprintf(buf, sizeof(buf), "host %s:%u", host, s->port);
+    OSScreenPutFontEx(SCREEN_TV, 2, 4, buf);
     OSScreenPutFontEx(SCREEN_TV, 2, 6, "set the address on the GamePad, then CONNECT");
+    if (note && note[0]) {
+        OSScreenPutFontEx(SCREEN_TV, 2, 8, note);
+    }
 }
 
 /* --- the picture ------------------------------------------------------ */
@@ -319,24 +301,59 @@ int main(int argc, char **argv)
 
         if (state == STATE_SETTINGS) {
             if (tapped) {
-                for (int i = 0; i < 4; i++) {
-                    Rect plus  = { OCTET_X(i), ROW_PLUS_Y,  BTN_OCTET_W, BTN_OCTET_H };
-                    Rect minus = { OCTET_X(i), ROW_MINUS_Y, BTN_OCTET_W, BTN_OCTET_H };
-                    if (in_rect(&plus, tx, ty)) {
-                        settings.host[i] = (uint8_t)((settings.host[i] + 1) % 256);
-                    } else if (in_rect(&minus, tx, ty)) {
-                        settings.host[i] = (uint8_t)((settings.host[i] + 255) % 256);
+                char typed[64], kb_why[96];
+                if (in_rect(&RECT_HOST, tx, ty)) {
+                    /*
+                     * The console's keyboard draws with GX2 and this
+                     * menu is OSScreen, so the display is handed over
+                     * for the duration and taken back afterwards. That
+                     * is why this blocks rather than being another
+                     * state in this loop.
+                     */
+                    char current[32];
+                    settings_host_string(&settings, current, sizeof(current));
+                    screen_stop();
+                    const int r = keyboard_prompt("host address", current, 1, typed,
+                                                  sizeof(typed), kb_why, sizeof(kb_why));
+                    if (screen_start() != 0) {
+                        break;   /* nothing can be drawn any more */
                     }
-                }
-                if (in_rect(&RECT_PORT_MINUS, tx, ty) && settings.port > 1) {
-                    settings.port--;
-                } else if (in_rect(&RECT_PORT_PLUS, tx, ty) && settings.port < 65535) {
-                    settings.port++;
+                    if (r < 0) {
+                        snprintf(note, sizeof(note), "%s", kb_why);
+                    } else if (r == 1) {
+                        if (settings_set_host_string(&settings, typed) != 0) {
+                            snprintf(note, sizeof(note), "not an address: %s", typed);
+                        } else {
+                            note[0] = '\0';
+                        }
+                    }
+                } else if (in_rect(&RECT_PORT, tx, ty)) {
+                    char current[16];
+                    snprintf(current, sizeof(current), "%u", settings.port);
+                    screen_stop();
+                    const int r = keyboard_prompt("port", current, 1, typed, sizeof(typed),
+                                                  kb_why, sizeof(kb_why));
+                    if (screen_start() != 0) {
+                        break;
+                    }
+                    if (r < 0) {
+                        snprintf(note, sizeof(note), "%s", kb_why);
+                    } else if (r == 1) {
+                        const int v = atoi(typed);
+                        if (v > 0 && v < 65536) {
+                            settings.port = (uint16_t)v;
+                            note[0] = '\0';
+                        } else {
+                            snprintf(note, sizeof(note), "not a port: %s", typed);
+                        }
+                    }
                 } else if (in_rect(&RECT_QUIT, tx, ty)) {
                     quitting = 1;
                 } else if (in_rect(&RECT_CONNECT, tx, ty)) {
                     if (!decoder_ok) {
                         snprintf(note, sizeof(note), "no decoder");
+                    } else if (settings.host[0] == 0) {
+                        snprintf(note, sizeof(note), "set the host address first");
                     } else if (net_init() != 0) {
                         snprintf(note, sizeof(note), "%s", net_info()->status);
                     } else {
@@ -414,7 +431,7 @@ int main(int argc, char **argv)
                 snprintf(line, sizeof(line), "decoder: %s", why);
                 OSScreenPutFontEx(SCREEN_TV, 2, 8, line);
             }
-            draw_settings(&settings, note, tx, ty);
+            draw_settings(&settings, note);
         } else {
             if (have_frame) {
                 draw_frame(&frame);

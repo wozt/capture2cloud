@@ -85,3 +85,22 @@ void settings_host_string(const Settings *s, char *out, unsigned out_size)
 {
     snprintf(out, out_size, "%u.%u.%u.%u", s->host[0], s->host[1], s->host[2], s->host[3]);
 }
+
+int settings_set_host_string(Settings *s, const char *text)
+{
+    unsigned a, b, c, d;
+    char tail = 0;
+    /* The trailing %c catches "1.2.3.4.5" and "1.2.3.4x", which sscanf
+     * would otherwise accept by simply stopping early. */
+    if (!text || sscanf(text, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4) {
+        return -1;
+    }
+    if (a > 255 || b > 255 || c > 255 || d > 255) {
+        return -1;
+    }
+    s->host[0] = (uint8_t)a;
+    s->host[1] = (uint8_t)b;
+    s->host[2] = (uint8_t)c;
+    s->host[3] = (uint8_t)d;
+    return 0;
+}
