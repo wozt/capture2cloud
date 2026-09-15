@@ -14,6 +14,7 @@ TOPDIR ?= $(CURDIR)
 THIS_DIR   := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 WUMS_ROOT  ?= $(THIS_DIR)../vendor/wums
 MOCHA_ROOT ?= $(THIS_DIR)../vendor/libmocha
+FUNCTIONPATCHER_ROOT ?= $(THIS_DIR)../vendor/functionpatcher
 include $(WUMS_ROOT)/share/wums_rules
 WUT_ROOT := $(DEVKITPRO)/wut
 #-------------------------------------------------------------------------------
@@ -51,13 +52,13 @@ CXXFLAGS += -DDEBUG -g
 CFLAGS += -DDEBUG -g
 endif
 
-LIBS	:= -lwums -lmocha -lwut
+LIBS	:= -lwums -lfunctionpatcher -lmocha -lwut
 
 #-------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level
 # containing include and lib
 #-------------------------------------------------------------------------------
-LIBDIRS	:= $(PORTLIBS) $(WUT_ROOT) $(WUMS_ROOT) $(MOCHA_ROOT)
+LIBDIRS	:= $(PORTLIBS) $(WUT_ROOT) $(WUMS_ROOT) $(MOCHA_ROOT) $(FUNCTIONPATCHER_ROOT)
 
 #-------------------------------------------------------------------------------
 # no real need to edit anything past this point unless you need to add additional

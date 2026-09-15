@@ -109,5 +109,6 @@ wiiu_ethernet/*.rpl
 # build but not committed (GPL binaries; fetch/build from wiiu-env instead).
 wiiu_ethernet/vendor/wums/
 wiiu_ethernet/vendor/libmocha/
+wiiu_ethernet/vendor/functionpatcher/
 wiiu_ethernet/*/*.wms
 wiiu_ethernet/*/*.bak

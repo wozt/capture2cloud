@@ -8,6 +8,7 @@
 #include <whb/log_udp.h>
 #include "../net/ax_net.h"
 #include "iosu_patch.h"
+#include "nsysnet_shim.h"
 
 WUMS_MODULE_EXPORT_NAME("homebrew_ax88179");
 WUMS_MODULE_AUTHOR("wozt");
@@ -26,6 +27,15 @@ static int run_network(int argc, const char **argv)
     (void)argc; (void)argv;
     WHBLogUdpInit();
     WHBLogPrintf("AX88179 module: worker started");
+
+    /*
+     * The nsysnet interception: replace the socket/DNS exports of
+     * nsysnet.rpl with our lwIP stack for games, the menu and homebrew.
+     * Registered once per boot here; the patches persist across title
+     * switches. If the FunctionPatcher module is missing the adapter
+     * still serves the module itself, just not the titles.
+     */
+    nsysnet_shim_install();
 
     /*
      * The IOSU patch, applied here and not by a separate app.
