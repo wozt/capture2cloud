@@ -388,6 +388,60 @@ drive at `1058:25a2` with its mass-storage class. It is a descriptor
 cache. It is not an allow-list, and the AX88772 is *not* in it, which is
 the opposite of what a permission table would look like.
 
+### Ghidra: why a rejected acquire is silent
+
+The UHS server was imported at `0x10100000` as **ARM big-endian** --
+`E2501000` is `SUBS r1,r0,#0`, `E1510003` is `CMP r1,r3`, so BE32 is not
+a guess. Its five state-machine log strings led straight to the five
+functions that own them, and `FUN_10115dac` is the acquire handler:
+
+    iface = lookup(server, if_handle);
+    if (iface != 0
+        && iface[0x28] == 0                          /* nobody owns it   */
+        && (iface[0x10] == 4 || iface[0x10] == 1)    /* state ORPHANED or PROBING */
+        && (iface[0x2c] < 0 || iface[0x2c] == client_pid))
+    {
+        iface[0x30] = arg1;  iface[0x34] = callback;
+        iface[0x28] = client;
+        if (fsm(server, iface, ACQUIRE, 0) >= 0) {
+            reply(request, 0);                       /* <-- THE ONLY REPLY */
+            log("Acquired by client in pid %d");
+        }
+    }
+    return error_code;
+
+**The reply to the ioctl is on the success path and nowhere else.**
+Every failing condition returns an error code to IOSU's own caller and
+leaves the request unanswered.
+
+So "accepted and never completes" does not mean something exotic. It
+means **rejected**. IOSU declines an acquire by saying nothing, and six
+rounds of experiments were reading that silence as a puzzle when it was
+simply the answer.
+
+The states are named in the firmware, in a table the logger indexes with
+`iface[0x10]`:
+
+    0 NULL   1 PROBING   2 ACQUIRED   3 CLEANUP   4 ORPHANED
+
+and the events in the table beside it -- `5 = ACQUIRE`, which is
+precisely what the success path sends. So the requirement reads: **the
+interface must be ORPHANED or PROBING, unowned, and not reserved to
+another process.**
+
+Which of the three fails for us is not observable from outside, because
+a failure is silent by construction. The candidates, in order:
+
+- the lookup itself. UHS offers handle 196611 through a probe
+  indication where a query returns 65537 for the same adapter. If
+  `FUN_10113618` wants one form and we pass the other, it returns 0 and
+  everything after is moot. **This is the cheapest to test: acquire with
+  each of the two handles and see whether either replies.**
+- `iface[0x2c]`, a reservation to a particular pid.
+- the state having moved on between the probe and our call -- though
+  both PROBING and ORPHANED are accepted, which makes a timing race less
+  likely than it looked.
+
 ### Where this stands
 
 **IOSU may simply not hand an interface to a Cafe OS client for a device
