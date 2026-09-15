@@ -145,7 +145,7 @@ int main(int argc, char **argv)
 
     char why[128] = { 0 };
     const int decoder_ok = video_init(MAX_WIDTH, MAX_HEIGHT, why, sizeof(why)) == 0;
-    const int net_ok = decoder_ok && net_init() == 0;
+    int net_ok = decoder_ok && net_init() == 0;
     if (net_ok) {
         /* No token: step one connects as a viewer. The host lets a
          * viewer watch and refuses it control, which is exactly the
@@ -163,8 +163,33 @@ int main(int argc, char **argv)
         VPADStatus vpad;
         VPADReadError verr;
         VPADRead(VPAD_CHAN_0, &vpad, 1, &verr);
-        if (verr == VPAD_READ_SUCCESS && (vpad.trigger & VPAD_BUTTON_HOME)) {
+        /*
+         * MINUS quits, not HOME, and that is not a preference.
+         *
+         * HOME is taken by the system: it opens the HOME Menu overlay,
+         * which draws itself with GX2. This screen is OSScreen, and the
+         * two do not compose -- so on the console the overlay opened
+         * INVISIBLY. Reported from the sofa as "it said HOME to quit,
+         * that never worked, and I could hear the Wii U menu" -- the
+         * menu was there, being heard and not drawn, with no way to
+         * reach "Close software".
+         *
+         * So this app provides its own way out, and says so on screen.
+         * HOME still works the moment the picture moves to GX2, which
+         * is the next step anyway.
+         */
+        if (verr == VPAD_READ_SUCCESS && (vpad.trigger & VPAD_BUTTON_MINUS)) {
             break;
+        }
+
+        if (!net_ok && verr == VPAD_READ_SUCCESS && (vpad.trigger & VPAD_BUTTON_PLUS)) {
+            /* Asked again rather than requiring a relaunch: the usual
+             * reason to be here is that the network came up a moment
+             * after the program did. */
+            net_ok = net_init() == 0;
+            if (net_ok) {
+                net_connect(HOST_ADDRESS, HOST_PORT, NULL);
+            }
         }
 
         if (net_ok) {
@@ -219,13 +244,14 @@ int main(int argc, char **argv)
         unsigned decoded, empty, errors;
         video_stats(&decoded, &empty, &errors);
 
-        screen_line(0, "capture2cloud -- Wii U -- press HOME to quit");
+        screen_line(0, "capture2cloud -- Wii U -- press MINUS to quit, PLUS to retry");
         if (!decoder_ok) {
             snprintf(line, sizeof(line), "decoder: %s", why);
             screen_line(2, line);
         } else if (!net_ok) {
             snprintf(line, sizeof(line), "network: %s", info->status);
             screen_line(2, line);
+            screen_line(3, "check System Settings > Internet, then press PLUS");
         } else {
             snprintf(line, sizeof(line), "host %s:%u -- %s", HOST_ADDRESS, (unsigned)HOST_PORT,
                      info->status);
@@ -240,6 +266,10 @@ int main(int argc, char **argv)
                      (unsigned long long)(info->rx_bytes / 1024), info->last_step,
                      info->last_errno);
             screen_line(5, line);
+            const uint32_t ip = net_local_ip();
+            snprintf(line, sizeof(line), "this console: %u.%u.%u.%u",
+                     (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+            screen_line(6, line);
         }
 
         OSScreenFlipBuffersEx(SCREEN_TV);
