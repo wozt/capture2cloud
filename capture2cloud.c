@@ -421,6 +421,43 @@ static void on_settings(void *userdata, const AppSettings *want) {
     }
 }
 
+/*
+ * Pairing, from the settings window.
+ *
+ * Backgrounded like the wake script: the exchange takes about a minute
+ * of waiting for somebody to press sync on a pad, and the interface
+ * must not sit on that. Its output goes to this program's log, which is
+ * where the rest of the radio's noise already is.
+ *
+ * The PIN is eight digits and is checked here rather than trusted: it
+ * arrives from a dialog this program wrote, but it is about to be
+ * pasted into a shell command, and a value that reaches a shell should
+ * be one nothing else can have touched.
+ */
+static void on_pair(void *userdata, const char *pin) {
+    (void)userdata;
+    if (!pin) {
+        return;
+    }
+    size_t n = strlen(pin);
+    if (n != 8) {
+        fprintf(stderr, "wiiu: refusing a pairing PIN that is not eight digits\n");
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (pin[i] < '0' || pin[i] > '9') {
+            fprintf(stderr, "wiiu: refusing a pairing PIN that is not digits\n");
+            return;
+        }
+    }
+    char cmd[PATH_MAX + 64];
+    snprintf(cmd, sizeof(cmd), "%s/wiiu/tools/ap-pair.sh %s &", g_project_dir, pin);
+    fprintf(stderr, "wiiu: pairing, PIN %s -- press sync on the pad\n", pin);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "wiiu: the pairing script did not run\n");
+    }
+}
+
 static void on_action(void *userdata, GtkShellAction action) {
     (void)userdata;
     switch (action) {
@@ -747,6 +784,7 @@ int main(int argc, char **argv) {
     GtkShellCallbacks shell_callbacks = {
         .on_settings = on_settings,
         .on_action = on_action,
+        .on_pair = on_pair,
         .userdata = NULL,
     };
     g_settings.web_port = g_web_port;

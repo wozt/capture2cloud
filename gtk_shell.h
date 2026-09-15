@@ -44,6 +44,15 @@ typedef struct {
     void (*on_settings)(void *userdata, const AppSettings *settings);
     /* A button that does something once rather than setting a value. */
     void (*on_action)(void *userdata, GtkShellAction action);
+    /*
+     * Pair a GamePad, with the PIN the person chose.
+     *
+     * Its own callback rather than an action, because an action carries
+     * nothing and this one has eight digits to hand over. They are
+     * digits and not a secret: the pad shows the same four symbols on
+     * its own screen and the whole exchange lasts about a minute.
+     */
+    void (*on_pair)(void *userdata, const char *pin);
     void *userdata;
 } GtkShellCallbacks;
 
