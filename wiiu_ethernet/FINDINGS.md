@@ -641,6 +641,38 @@ state machine, `EP_REQ` is event 8 and it is handled in state 2,
 when 0x0B arrives, and the answer is in the state-2/event-8 path of
 `FUN_101147b0`.
 
+### How the endpoint mask is really read
+
+`FUN_10114238`, the worker that consumes a queued endpoint request,
+walks bits 0..31 and reads each as:
+
+    endpoint  = bit % 16
+    direction = (bit < 16) ? IN : OUT
+
+and looks each one up, **failing the whole call the moment one does not
+exist**. So `0xFFFF` -- the obvious "all of them" -- asks to enable IN
+endpoints 0 through 15, and this adapter has two. Every variation of
+pending count and request size was tried with that same malformed mask.
+
+For this adapter the mask is `(1<<1) | (1<<2) | (1<<19)` = `0x00080006`:
+interrupt IN 1, bulk IN 2, bulk OUT 3.
+
+Corrected, and `0x0B` still returns -2162715. So the mask was genuinely
+wrong and was not the blockage.
+
+Which narrows it once more, and usefully: the FSM path that handles
+`EP_REQ` in state ACQUIRED **queues the request and returns 0** -- its
+only refusal is a full queue of 32. So -2162715 cannot come from there.
+It comes from a precondition in the ioctl `0x0B` handler itself, before
+the state machine is reached -- the same shape as the acquire handler,
+which checked four things before calling the FSM.
+
+**That handler has not been located yet.** The acquire handler was found
+through its log string; `0x0B`'s logging happens in the worker, past the
+point of failure, so the same trick does not work. It wants the ioctl
+dispatch table: find where `uhs_main.c` switches on the request number
+and read the `0x0B` arm.
+
 ### Where this stands
 
 **IOSU may simply not hand an interface to a Cafe OS client for a device
