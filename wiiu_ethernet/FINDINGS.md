@@ -823,3 +823,28 @@ lever avant de toucher au silicium :
 2. Le mécanisme d'application : sur Aroma, quel module patche la RAM
    d'IOSU proprement, et comment on revient en arrière (redémarrage
    simple ? bouton de secours ?).
+
+---
+
+# LE VERROU EST DÉVERROUILLÉ — PATCH APPLIQUÉ ET TESTÉ
+
+## Résultat du patch IOSU
+
+**Avant:** `ioctl 0x0B endpoints -> -2162715` (AdministerEndpoint rejeté)  
+**Après:** `ioctl 0x0B endpoints -> 0` (AdministerEndpoint accepté)
+
+Le NOP écrit à `0x10114338` via Mocha a modifié le comportement du noyau IOSU comme prévu. Le test bulktest montre que l'interface AX88179 peut maintenant administrer ses endpoints.
+
+L'erreur `-2162713` en aval (ioctlv 0x0E bulk) est un problème **distinct**, probablement dans les paramètres du transfert ou l'état interne du endpoint. Mais le verrou d'ownership qui bloquait tout est maintenant franchi.
+
+## Implications
+
+- Le patch RAM-only fonctionne comme conçu
+- Aucune modification persistante (redémarrage restaure)
+- L'ancien adaptateur reste inaffecté (test: pas régressé)
+- Chemin usermode pour AX88179 maintenant ouvert
+
+## Code du patch
+
+[wiiu_patch_iosu/](wiiu_patch_iosu/) — homebrew autonome qui applique le NOP via Mocha à chaque boot (ou une fois si lancé manuellement).
+
