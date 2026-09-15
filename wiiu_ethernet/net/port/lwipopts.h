@@ -27,7 +27,9 @@
 #define MEMP_NUM_TCP_PCB 8
 #define MEMP_NUM_UDP_PCB 8
 #define MEMP_NUM_TCP_SEG 64
-#define MEMP_NUM_NETCONN 16
+/* 32 netconns: matches nsysnet's 32-bit fd_set so select() sees the same
+ * fd space as the original stack. */
+#define MEMP_NUM_NETCONN 32
 #define MEMP_NUM_TCPIP_MSG_INPKT 16
 #define LWIP_DNS 1
 #define LWIP_NETCONN 1

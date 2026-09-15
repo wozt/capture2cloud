@@ -10,6 +10,10 @@
 #include "iosu_patch.h"
 #include "nsysnet_shim.h"
 
+#ifndef AX_DISABLE_SHIM
+#define AX_DISABLE_SHIM 0
+#endif
+
 WUMS_MODULE_EXPORT_NAME("homebrew_ax88179");
 WUMS_MODULE_AUTHOR("wozt");
 WUMS_MODULE_VERSION("0.1.0");
@@ -30,13 +34,15 @@ static int run_network(int argc, const char **argv)
 
     /*
      * The nsysnet interception: replace the socket/DNS exports of
-     * nsysnet.rpl with our lwIP stack for games, the menu and homebrew.
-     * Registered per process (the replacement code lives in this
-     * process's memory) and removed again when the title exits. If the
-     * FunctionPatcher module is missing the adapter still serves the
-     * module itself, just not the titles.
+     * nsysnet.rpl with our lwIP stack for games and homebrew. Registered
+     * per process (the replacement code lives in this process's memory)
+     * and removed again when the title exits. If the FunctionPatcher
+     * module is missing the adapter still serves the module itself.
+     * Build with SHIM=0 to skip this and run the plain network stack.
      */
+#if !AX_DISABLE_SHIM
     nsysnet_shim_install();
+#endif
 
     /*
      * The IOSU patch, applied here and not by a separate app.

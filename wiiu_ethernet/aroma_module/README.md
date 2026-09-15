@@ -26,10 +26,12 @@ isolation).
 - `../net/port/sys_arch.c` — lwIP `NO_SYS=0` port on coreinit
   primitives (threads, semaphores, mutexes, message-queue mailboxes).
 - `nsysnet_shim.c` — replaces `nsysnet.rpl` exports (sockets, select,
-  sockopts, DNS) through the Aroma FunctionPatcher module for games,
-  the Wii U menu and homebrew (`ROOT_RPX`). It translates the nsysnet
-  ABI (no `sa_len`, 16-bit family, different `MSG_*`/`SO_*`/`EAI_*`
-  constants) to lwIP.
+  sockopts, DNS) through the Aroma FunctionPatcher module for games and
+  homebrew (`ROOT_RPX`); the Wii U Menu is excluded on purpose (it mixes
+  nsysnet internals we cannot cover). It translates the nsysnet ABI (no
+  `sa_len`, 16-bit family, different `MSG_*`/`SO_*`/`EAI_*` constants)
+  to lwIP. Build with `make SHIM=0` to disable the interception and run
+  the plain network stack.
 
 ## What it does, and does not, do
 

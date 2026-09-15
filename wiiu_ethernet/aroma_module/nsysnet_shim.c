@@ -141,7 +141,20 @@ DECL_FUNCTION(int, socket, int domain, int type, int protocol)
 {
     if (!ax_net_stack_ready()) { errno = ENETDOWN; return -1; }
     int s = lwip_socket(domain, type, protocol);
-    if (s >= 0 && s < 32) track_fd(s);
+    if (s < 0 && (type & ~0xF) != 0) {
+        /* Some titles OR flag bits into the socket type; retry clean. */
+        s = lwip_socket(domain, type & 0xF, protocol);
+    }
+    if (s >= 0 && s < 32) {
+        track_fd(s);
+        /* lwIP refuses broadcast sends without SO_BROADCAST, nsysnet does
+         * not -- and whb's UDP logger never sets it. Allow it upfront or
+         * every broadcast sendto (logs, LAN discovery) silently fails. */
+        if (type == SOCK_DGRAM) {
+            int one = 1;
+            lwip_setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+        }
+    }
     return s;
 }
 
@@ -232,6 +245,9 @@ DECL_FUNCTION(int, recvfrom, int sockfd, void *buf, size_t len, int flags,
 DECL_FUNCTION(int, select, int nfds, struct nsn_fd_set *readfds, struct nsn_fd_set *writefds,
               struct nsn_fd_set *exceptfds, struct nsn_timeval *timeout)
 {
+    /* nsysnet fds are 0..31; lwIP's fd_set now holds 32 entries too.
+     * Clamp defensively: a larger nfds would just be EINVAL at lwIP. */
+    if (nfds > 32) nfds = 32;
     fd_set lr, lw, le;
     fd_set *pr = NULL, *pw = NULL, *pe = NULL;
     if (readfds)   { FD_ZERO(&lr); for (int i = 0; i < nfds && i < 32; i++) if (readfds->fds_bits & (1u << i)) FD_SET(i, &lr); pr = &lr; }
@@ -502,11 +518,18 @@ static void add_patch(function_replacement_data_t *data, const char *name, int p
     }
 }
 
+/*
+ * Targets: games and the Aroma root process (homebrew). The Wii U Menu
+ * is deliberately excluded: it mixes patched exports with nsysnet
+ * internals we cannot cover (async DNS on system fds, NSSL), and
+ * hybrid fd sets are a hang/crash hazard for no benefit -- menu traffic
+ * can stay on the console's own network.
+ */
 #define SHIM_PATCH(name)                                                          \
     do {                                                                          \
         function_replacement_data_t d1 = REPLACE_FUNCTION_FOR_PROCESS(            \
-            name, LIBRARY_NSYSNET, name, FP_TARGET_PROCESS_GAME_AND_MENU);        \
-        add_patch(&d1, #name, FP_TARGET_PROCESS_GAME_AND_MENU);                   \
+            name, LIBRARY_NSYSNET, name, FP_TARGET_PROCESS_GAME);                 \
+        add_patch(&d1, #name, FP_TARGET_PROCESS_GAME);                            \
         function_replacement_data_t d2 = REPLACE_FUNCTION_FOR_PROCESS(            \
             name, LIBRARY_NSYSNET, name, FP_TARGET_PROCESS_ROOT_RPX);             \
         add_patch(&d2, #name, FP_TARGET_PROCESS_ROOT_RPX);                        \
