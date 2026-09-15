@@ -32,6 +32,9 @@
 #include <coreinit/screen.h>
 #include <sysapp/launch.h>
 #include <vpad/input.h>
+#include <whb/gfx.h>
+#include <whb/log.h>
+#include <whb/log_udp.h>
 #include <whb/proc.h>
 
 int main(int argc, char **argv)
@@ -40,6 +43,8 @@ int main(int argc, char **argv)
     (void)argv;
 
     WHBProcInit();
+    WHBLogUdpInit();
+    WHBLogPrintf("bringup: starting");
     VPADInit();
     OSScreenInit();
 
@@ -138,13 +143,53 @@ int main(int argc, char **argv)
             }
         }
 
-        OSScreenPutFontEx(SCREEN_TV, 2, 10, "touch the pad; MINUS quits");
-        OSScreenPutFontEx(SCREEN_DRC, 1, 10, "touch the pad; MINUS quits");
+        OSScreenPutFontEx(SCREEN_TV, 2, 10, "A = GX2 red test, MINUS quits");
+        OSScreenPutFontEx(SCREEN_DRC, 1, 10, "A = GX2 red test, MINUS quits");
+
+        /*
+         * The one experiment that separates the two remaining stories
+         * about the keyboard.
+         *
+         * Its logs say it is created and running its loop, so setup is
+         * fine and only the picture is missing. Either handing the
+         * display from OSScreen to GX2 does not work in this process at
+         * all, or it works and swkbd in particular draws nothing.
+         *
+         * So: do the handover with nothing in it but a flat red. If the
+         * screens go red, the handover is sound and swkbd is the
+         * problem. If they stay black, the handover is the problem and
+         * no amount of work on swkbd would ever have helped.
+         */
+        if (err == VPAD_READ_SUCCESS && (vpad.trigger & VPAD_BUTTON_A)) {
+            WHBLogPrintf("gx2 test: OSScreenShutdown");
+            OSScreenShutdown();
+            WHBLogPrintf("gx2 test: WHBGfxInit -> %d", (int)WHBGfxInit());
+            for (int frame = 0; frame < 180 && WHBProcIsRunning(); frame++) {
+                WHBGfxBeginRender();
+                WHBGfxBeginRenderTV();
+                WHBGfxClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+                WHBGfxFinishRenderTV();
+                WHBGfxBeginRenderDRC();
+                WHBGfxClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+                WHBGfxFinishRenderDRC();
+                WHBGfxFinishRender();
+            }
+            WHBLogPrintf("gx2 test: WHBGfxShutdown");
+            WHBGfxShutdown();
+            OSScreenInit();
+            OSScreenSetBufferEx(SCREEN_TV, tv);
+            OSScreenSetBufferEx(SCREEN_DRC, drc);
+            OSScreenEnableEx(SCREEN_TV, 1);
+            OSScreenEnableEx(SCREEN_DRC, 1);
+            WHBLogPrintf("gx2 test: back on OSScreen");
+        }
 
         OSScreenFlipBuffersEx(SCREEN_TV);
         OSScreenFlipBuffersEx(SCREEN_DRC);
     }
 
+    WHBLogPrintf("bringup: done");
+    WHBLogUdpDeinit();
     OSScreenShutdown();
     free(tv);
     free(drc);
