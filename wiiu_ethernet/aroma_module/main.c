@@ -31,9 +31,10 @@ static int run_network(int argc, const char **argv)
     /*
      * The nsysnet interception: replace the socket/DNS exports of
      * nsysnet.rpl with our lwIP stack for games, the menu and homebrew.
-     * Registered once per boot here; the patches persist across title
-     * switches. If the FunctionPatcher module is missing the adapter
-     * still serves the module itself, just not the titles.
+     * Registered per process (the replacement code lives in this
+     * process's memory) and removed again when the title exits. If the
+     * FunctionPatcher module is missing the adapter still serves the
+     * module itself, just not the titles.
      */
     nsysnet_shim_install();
 
@@ -102,6 +103,7 @@ static void stop_worker(void)
     atomic_store_explicit(&stopping, true, memory_order_release);
     OSJoinThread(&worker, NULL);
     started = 0;
+    nsysnet_shim_uninstall();
 }
 
 WUMS_INITIALIZE(args)
