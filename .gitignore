@@ -97,3 +97,7 @@ wiiu_ethernet/uhsprobe/build/
 wiiu_ethernet/uhsprobe/*.rpx
 wiiu_ethernet/uhsprobe/*.elf
 wiiu_ethernet/uhsprobe/*.wuhb
+wiiu_ethernet/*/build/
+wiiu_ethernet/*/*.rpx
+wiiu_ethernet/*/*.elf
+wiiu_ethernet/*/*.wuhb
