@@ -34,6 +34,8 @@
 #include <coreinit/time.h>
 #include <sysapp/launch.h>
 #include <vpad/input.h>
+#include <whb/log.h>
+#include <whb/log_udp.h>
 #include <whb/proc.h>
 
 #include "c2s_protocol.h"
@@ -251,6 +253,15 @@ int main(int argc, char **argv)
     (void)argv;
 
     WHBProcInit();
+    /*
+     * Logs over the network, before anything else can fail.
+     *
+     * This console has no shell and no log file, and every fault so far
+     * has had to be described over a chat and guessed at. udplogserver
+     * on the PC receives these; wiiu_console/tools/dev.sh starts it.
+     */
+    WHBLogUdpInit();
+    WHBLogPrintf("capture2cloud: starting");
     VPADInit();
 
     if (screen_start() != 0) {
@@ -428,7 +439,22 @@ int main(int argc, char **argv)
         }
 
         if (quitting) {
-            break;
+    /*
+     * How a program on this console asks to leave.
+     *
+     * The first version broke out of the loop, called SYSLaunchMenu()
+     * and then spun on `while (WHBProcIsRunning()) {}` waiting to be
+     * taken down. Nothing had told ProcUI anything, so that condition
+     * stayed true and the spin never ended -- two black screens and a
+     * forced power-off, which is exactly what came back from the sofa.
+     *
+     * WHBProcStopRunning() is the switch. SYSLaunchMenu() says where to
+     * go next, that says to stop going, and the ordinary loop condition
+     * does the rest.
+     */
+            SYSLaunchMenu();
+            WHBProcStopRunning();
+            quitting = 0;   /* said once; the loop condition ends it */
         }
 
         const uint64_t now = OSTicksToMilliseconds(OSGetSystemTime());
@@ -496,20 +522,8 @@ int main(int argc, char **argv)
     video_exit();
     screen_stop();
 
-    /*
-     * Asked for, rather than assumed.
-     *
-     * Returning from main() does not send this console anywhere: the
-     * first version simply ended, and the report was "it does not bring
-     * me back to the Wii U menu". The system has to be told where to go
-     * next, and then given the chance to take the program down in its
-     * own time -- which is what the loop below is for.
-     */
-    SYSLaunchMenu();
-    while (WHBProcIsRunning()) {
-        OSSleepTicks(OSMillisecondsToTicks(16));
-    }
-
+    WHBLogPrintf("capture2cloud: done");
+    WHBLogUdpDeinit();
     WHBProcShutdown();
     return 0;
 }
