@@ -101,3 +101,7 @@ wiiu_ethernet/*/build/
 wiiu_ethernet/*/*.rpx
 wiiu_ethernet/*/*.elf
 wiiu_ethernet/*/*.wuhb
+wiiu_ethernet/ghidra/
+wiiu_ethernet/*.bin
+wiiu_ethernet/fw.*
+wiiu_ethernet/*.rpl
