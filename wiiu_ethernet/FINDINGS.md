@@ -159,10 +159,43 @@ the AX88179?** If the answer is no, both routes are dead and the adapter
 is simply the wrong one. That is one small homebrew and an afternoon,
 and it is the cheapest question in this whole document.
 
+## The cheapest question, answered: YES
+
+`uhsprobe/` asks `/dev/uhs` for every interface it has, with
+`MATCH_ANY`. On this console, with the adapter plugged in:
+
+    UhsClientOpen -> 0
+    UhsQueryInterfaces -> 2 interface(s)
+      [0] 0b95:1790  dev class ff vendor specific  if ff/ff/00  handle 131074
+            in  ep 81  attr 03 (interrupt)  max 8      <- link status
+            in  ep 82  attr 02 (bulk)       max 512    <- RX
+            out ep 03  attr 02 (bulk)       max 512    <- TX
+      [1] 1058:25a2  mass storage 08/06/50             <- the WD drive
+
+**The host stack enumerates the AX88179 perfectly.** It is only the
+*driver* that will not bind to it. And the endpoint layout is exactly
+what the Linux driver expects of this part: interrupt IN for link
+status, bulk IN, bulk OUT.
+
+`max 512` says it negotiated USB 2.0 high speed. The 179 is a USB 3.0
+part and this console has no USB 3.0 ports, so it is running in its
+high-speed mode -- which is what the Linux driver handles anyway, and
+which caps the link at well above the 9.3 Mbit/s we are trying to beat.
+
+So a userspace driver over `/dev/uhs` is not hypothetical. The device is
+there, addressable, with a handle.
+
+What is still unproven is whether `UhsAcquireInterface` will hand it
+over. Nothing else has claimed it -- no driver binds a vendor-specific
+class it does not know -- so it should be free, but should is not
+measured.
+
 ## Next, in order
 
-1. Ask `/dev/uhs` from a homebrew whether it sees the AX88179 at all.
-   Cheapest possible answer to "is any of this feasible".
+1. Acquire the interface and do one control transfer: read the MAC
+   address out of the adapter. That is the smallest possible proof that
+   we can talk to the hardware, and the Linux driver says exactly which
+   register to ask for.
 2. Read both Linux drivers and write the differences down here --
    register map, PHY bring-up, RX header format, endpoint layout.
 3. Ghidra on segment 29 and compare its init sequence with Linux's

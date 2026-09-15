@@ -93,3 +93,7 @@ wiiu_console/bringup/*/*.wuhb
 # in this repository.
 wiiu_ethernet/reference/
 wiiu_ethernet/ios/
+wiiu_ethernet/uhsprobe/build/
+wiiu_ethernet/uhsprobe/*.rpx
+wiiu_ethernet/uhsprobe/*.elf
+wiiu_ethernet/uhsprobe/*.wuhb
