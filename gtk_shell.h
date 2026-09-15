@@ -18,6 +18,24 @@
 
 typedef struct GtkShell GtkShell;
 
+/*
+ * The client families, each with its own page in the settings window.
+ *
+ * They are separated because they are genuinely different servers with
+ * different settings, not because it looks tidier: the browsers' size
+ * and the console's are two encodes, the GamePad's is a third that no
+ * ordinary decoder can read, and a Wii U console is a fourth on a port
+ * of its own. One page each is the only arrangement in which "why did
+ * the picture change" has one answer.
+ */
+typedef enum {
+    GTK_SHELL_CLIENT_BROWSER = 0,
+    GTK_SHELL_CLIENT_NATIVE,        /* Switch homebrew, Android app */
+    GTK_SHELL_CLIENT_WIIU_PAD,      /* a real GamePad, over the radio */
+    GTK_SHELL_CLIENT_WIIU_CONSOLE,  /* homebrew running on a Wii U */
+    GTK_SHELL_CLIENT_COUNT
+} GtkShellClient;
+
 typedef enum {
     GTK_SHELL_ACTION_SHOW_CAPTURE,
     GTK_SHELL_ACTION_WAKE_CONSOLE,
@@ -34,6 +52,10 @@ typedef enum {
     GTK_SHELL_ACTION_WIIU_AP_START,
     GTK_SHELL_ACTION_WIIU_AP_STOP,
     GTK_SHELL_ACTION_WIIU_DEAUTH,
+    /* The Wii U console client's chain, by hand, for the same reason the
+     * pad's has buttons: a thing with no handle on it cannot be
+     * debugged from the sofa. */
+    GTK_SHELL_ACTION_WIIU_CONSOLE_KEYFRAME,
     GTK_SHELL_ACTION_QUIT
 } GtkShellAction;
 
@@ -82,6 +104,11 @@ void gtk_shell_set_status(GtkShell *shell, const char *text);
 /* What the GamePad bridge is doing, shown on its own line under the
  * setting that turns it on. Written from the host once a second. */
 void gtk_shell_set_wiiu_status(GtkShell *shell, const char *text);
+
+/* One line per client family, on that family's own page: how many are
+ * connected and what they are being sent. Thread-safe, callable before
+ * the window exists. */
+void gtk_shell_set_client_status(GtkShell *shell, GtkShellClient client, const char *text);
 
 /* Shows an error dialog. Thread-safe, callable from any thread. */
 void gtk_shell_show_error(GtkShell *shell, const char *message);

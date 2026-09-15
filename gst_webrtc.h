@@ -93,6 +93,27 @@ int gst_webrtc_stream_get_client_count(GstWebrtcStream *g, int *max_clients);
  * encoded; this only says it is allowed to. */
 void gst_webrtc_stream_set_drc_enabled(GstWebrtcStream *g, int enabled);
 
+/* The GamePad chain's bitrate. Its size is the pad's panel and is not a
+ * setting. */
+void gst_webrtc_stream_set_drc_bitrate(GstWebrtcStream *g, int bitrate_kbps);
+
+/* Whether a Wii U console is served at all, and what it is sent. The
+ * height is 480, 720 or 1080 and the width follows at 16:9; 720 is the
+ * tested path (wiiu_console/SPEC.md). */
+void gst_webrtc_stream_set_wiiu_enabled(GstWebrtcStream *g, int enabled);
+
+/* A recovery point on every chain, for the button that says "start the
+ * picture over". */
+void gst_webrtc_stream_request_keyframe(GstWebrtcStream *g);
+void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitrate_kbps);
+
+/* One chain's audience and what it is encoding for them, for the line
+ * the settings window shows per client family. Returns the number of
+ * clients on that stream; any out pointer may be NULL. `slot` is one of
+ * the SS_STREAM_* values in switch_stream.h. */
+int gst_webrtc_stream_slot_info(GstWebrtcStream *g, int slot, int *width, int *height,
+                                int *fps, int *bitrate_kbps);
+
 void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int width, int height);
 
 /* The capture card's format, which is shared by everyone: the browsers

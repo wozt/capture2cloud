@@ -42,6 +42,18 @@ typedef struct {
      * has, and turning it on without them only produces an error.
      */
     int wiiu_pad_enabled;
+    int wiiu_pad_bitrate_mbps;   /* what that chain is encoded at */
+    /*
+     * Whether a homebrew running ON a Wii U console is being fed.
+     *
+     * Its own flag and not the GamePad's: they are different clients on
+     * different ports with nothing in common but a console maker. One
+     * needs a Realtek adapter and a paired pad; this one needs a network
+     * and nothing else.
+     */
+    int wiiu_console_enabled;
+    int wiiu_console_height;      /* 1080, 720 or 480; 720 is the tested path */
+    int wiiu_console_bitrate_mbps;
     int browser_height;     /* 1080, 720 or 480 -- what the browser gets */
     int bitrate_mbps;       /* the browser encoder's target */
     int capture_mjpeg;      /* 1 = MJPEG from the card, 0 = raw YUYV */
@@ -79,7 +91,9 @@ typedef struct {
 #define APP_SETTINGS_DEFAULTS                                                  \
     {                                                                          \
         .stream_enabled = 0, .web_port = 5080, .switch_enabled = 1,             \
-        .switch_port = 5081, .wiiu_pad_enabled = 0,                            \
+        .switch_port = 5081, .wiiu_pad_enabled = 0, .wiiu_pad_bitrate_mbps = 6,     \
+        .wiiu_console_enabled = 0, .wiiu_console_height = 720,                 \
+        .wiiu_console_bitrate_mbps = 8,                            \
         .browser_height = 1080,         \
         .bitrate_mbps = 12, .capture_mjpeg = 0, .gamepad_enabled = 1,          \
         .gamepad_index = -1, .invert_ry = 0, .lt_threshold = 30,               \
