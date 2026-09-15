@@ -296,8 +296,18 @@ int main(int argc, char **argv)
          * count as twenty presses. */
         int tx = 0, ty = 0, tapped = 0;
         if (have_pad) {
+            /*
+             * ...Ex, with the resolution named.
+             *
+             * VPADGetTPCalibratedPoint without the suffix calibrates
+             * into a DEFAULT resolution, which is not this panel's. The
+             * buttons below are laid out in 854x480 and were being
+             * hit-tested against coordinates in something else, so not
+             * one of them ever responded -- reported from the sofa as
+             * "your touch buttons do not even work", quite rightly.
+             */
             VPADTouchData cal;
-            VPADGetTPCalibratedPoint(VPAD_CHAN_0, &cal, &vpad.tpNormal);
+            VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &cal, &vpad.tpNormal);
             tx = cal.x;
             ty = cal.y;
             const int touching = vpad.tpNormal.touched != 0;
