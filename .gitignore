@@ -87,3 +87,9 @@ wiiu_console/bringup/*/build/
 wiiu_console/bringup/*/*.rpx
 wiiu_console/bringup/*/*.elf
 wiiu_console/bringup/*/*.wuhb
+
+# USB Ethernet research. The Linux drivers are GPL-2.0 and are reference
+# only; the firmware is Nintendo's and console-specific. Neither belongs
+# in this repository.
+wiiu_ethernet/reference/
+wiiu_ethernet/ios/
