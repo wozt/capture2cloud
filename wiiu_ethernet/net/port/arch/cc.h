@@ -5,11 +5,13 @@
 #include <stdio.h>
 #include <sys/time.h>
 #include <whb/log.h>
-/* Route lwIP diagnostics/asserts to the UDP log so a failing assert names
- * itself on the PC instead of just aborting the title. */
+/* lwIP asserts stash their text for debug_abort.c's abort() override so
+ * the fatal screen names the failing assertion; diagnostics go to the
+ * UDP log. */
+extern char ax_last_assert[192];
 #define LWIP_PLATFORM_DIAG(x)  do { WHBLogPrintf x; } while (0)
 #define LWIP_PLATFORM_ASSERT(x) do { \
-    WHBLogPrintf("lwIP ASSERT: %s at %s:%d", x, __FILE__, __LINE__); \
+    snprintf(ax_last_assert, 192, "%s (%s:%d)", x, __FILE__, __LINE__); \
     abort(); \
 } while (0)
 /* Route lwIP errno through newlib's per-thread errno instead of lwIP's

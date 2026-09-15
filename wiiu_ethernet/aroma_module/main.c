@@ -30,7 +30,7 @@ static int run_network(int argc, const char **argv)
 {
     (void)argc; (void)argv;
     WHBLogUdpInit();
-    WHBLogPrintf("AX88179 module: worker started");
+    WHBLogPrintf("AX88179 module: worker started (shim %s)", AX_DISABLE_SHIM ? "OFF" : "on");
 
     /*
      * The nsysnet interception: replace the socket/DNS exports of
@@ -107,7 +107,16 @@ static void stop_worker(void)
 {
     if (!started) return;
     atomic_store_explicit(&stopping, true, memory_order_release);
-    OSJoinThread(&worker, NULL);
+    /* Bounded join: a worker stuck in an ioctl must not deadlock the
+     * whole app transition (that hangs the boot splash). Give it 2 s,
+     * then leave the thread to die with the process. */
+    for (int i = 0; i < 200 && !OSIsThreadTerminated(&worker); i++)
+        OSSleepTicks(OSMillisecondsToTicks(10));
+    if (!OSIsThreadTerminated(&worker)) {
+        WHBLogPrintf("AX88179 module: worker stuck, leaving it to the process teardown");
+    } else {
+        OSJoinThread(&worker, NULL);
+    }
     started = 0;
     nsysnet_shim_uninstall();
 }
