@@ -25,14 +25,18 @@ WUT_ROOT := $(DEVKITPRO)/wut
 #-------------------------------------------------------------------------------
 TARGET		:=	AX88179Module
 BUILD		:=	build
-SOURCES		:=	. ../driver ../net ../vendor/lwip/src/core ../vendor/lwip/src/core/ipv4 ../vendor/lwip/src/netif
+SOURCES		:=	. ../driver ../net ../net/port \
+			../vendor/lwip/src/core ../vendor/lwip/src/core/ipv4 \
+			../vendor/lwip/src/api ../vendor/lwip/src/netif
 DATA		:=	data
 INCLUDES	:=	. ../net ../net/port ../vendor/lwip/src/include
 
 #-------------------------------------------------------------------------------
 # options for code generation
 #-------------------------------------------------------------------------------
-CFLAGS	:=	-Wall -Wextra -O2 -ffunction-sections\
+# -fcommon: lwIP's netdb.c and wut's wutsocket both define h_errno; let the
+# linker merge them instead of erroring (GCC 10+ defaults to -fno-common).
+CFLAGS	:=	-Wall -Wextra -O2 -ffunction-sections -fcommon\
 			$(MACHDEP)
 
 CFLAGS	+=	$(INCLUDE) -D__WIIU__ -D__WUT__
