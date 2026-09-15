@@ -432,15 +432,31 @@ another process.**
 Which of the three fails for us is not observable from outside, because
 a failure is silent by construction. The candidates, in order:
 
-- the lookup itself. UHS offers handle 196611 through a probe
-  indication where a query returns 65537 for the same adapter. If
-  `FUN_10113618` wants one form and we pass the other, it returns 0 and
-  everything after is moot. **This is the cheapest to test: acquire with
-  each of the two handles and see whether either replies.**
+- ~~the lookup itself.~~ **Eliminated.** Measured: a query and a probe
+  indication now report the *same* handle, 196611, slot 3. The earlier
+  65537-versus-196611 discrepancy was the adapter being re-enumerated
+  between runs, not two handle spaces. Acquiring with it is still met
+  with silence, so the lookup succeeds and the rejection is further in.
+- `iface[0x28] != 0` -- the interface is already owned. The most likely
+  of the three now. IOSU's own `usb_eth_asix` driver is a registered
+  class driver; if its filter is broader than a PID match -- vendor
+  only, or interface class -- it may have been probed first, claimed the
+  interface, and then been unable to drive an AX88179. An interface held
+  by a driver that cannot use it would look exactly like this.
 - `iface[0x2c]`, a reservation to a particular pid.
-- the state having moved on between the probe and our call -- though
-  both PROBING and ORPHANED are accepted, which makes a timing race less
-  likely than it looked.
+
+**The next step is one more Ghidra pass, and a specific one**: find every
+write to `iface[0x28]` and `iface[0x2c]` in the UHS server, which names
+who takes ownership and when. Then read the ethernet driver's own
+registration filter in segment 29 (`0x12300000`) to see whether it
+matches `0b95:1790` at all. Both are questions for the disassembler, and
+both are narrow.
+
+If the IOSU driver does claim it, there is an obvious move that needs no
+patching at all: **make it reject the device**. The state machine has a
+REJECT event (11) and logs "Rejected by client in pid %d", so a
+declining client is a normal path -- and an interface its first claimant
+declines should fall to the next registration, which would be ours.
 
 ### Where this stands
 
