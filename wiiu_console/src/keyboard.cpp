@@ -11,7 +11,7 @@
 #include <vpad/input.h>
 #include <whb/gfx.h>
 #include <whb/log.h>
-#include <whb/proc.h>
+#include "proc.h"
 
 namespace {
 
@@ -131,7 +131,7 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
 
     WHBLogPrintf("swkbd: entering its loop");
     int result = 0;   /* cancelled, unless told otherwise */
-    while (WHBProcIsRunning()) {
+    while (proc_running()) {
         VPADStatus vpad;
         VPADReadError verr;
         VPADRead(VPAD_CHAN_0, &vpad, 1, &verr);

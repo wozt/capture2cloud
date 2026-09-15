@@ -35,14 +35,14 @@
 #include <whb/gfx.h>
 #include <whb/log.h>
 #include <whb/log_udp.h>
-#include <whb/proc.h>
+#include "proc.h"
 
 int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
 
-    WHBProcInit();
+    proc_init();
     WHBLogUdpInit();
     WHBLogPrintf("bringup: starting");
     VPADInit();
@@ -51,7 +51,7 @@ int main(int argc, char **argv)
     void *tv = memalign(0x100, OSScreenGetBufferSizeEx(SCREEN_TV));
     void *drc = memalign(0x100, OSScreenGetBufferSizeEx(SCREEN_DRC));
     if (!tv || !drc) {
-        WHBProcShutdown();
+        proc_shutdown();
         return 1;
     }
     OSScreenSetBufferEx(SCREEN_TV, tv);
@@ -68,7 +68,7 @@ int main(int argc, char **argv)
      * decides -- the point is to see what arrives, not what I think
      * arrives, having now been wrong about that twice.
      */
-    while (WHBProcIsRunning()) {
+    while (proc_running()) {
         VPADStatus vpad;
         VPADReadError err;
         VPADRead(VPAD_CHAN_0, &vpad, 1, &err);
@@ -77,7 +77,7 @@ int main(int argc, char **argv)
      * How a program on this console asks to leave.
      *
      * The first version broke out of the loop, called SYSLaunchMenu()
-     * and then spun on `while (WHBProcIsRunning()) {}` waiting to be
+     * and then spun on `while (proc_running()) {}` waiting to be
      * taken down. Nothing had told ProcUI anything, so that condition
      * stayed true and the spin never ended -- two black screens and a
      * forced power-off, which is exactly what came back from the sofa.
@@ -86,8 +86,7 @@ int main(int argc, char **argv)
      * go next, that says to stop going, and the ordinary loop condition
      * does the rest.
      */
-            SYSLaunchMenu();
-            WHBProcStopRunning();
+            proc_stop();
         }
 
         OSScreenClearBufferEx(SCREEN_TV, 0x00000000);
@@ -164,7 +163,7 @@ int main(int argc, char **argv)
             WHBLogPrintf("gx2 test: OSScreenShutdown");
             OSScreenShutdown();
             WHBLogPrintf("gx2 test: WHBGfxInit -> %d", (int)WHBGfxInit());
-            for (int frame = 0; frame < 180 && WHBProcIsRunning(); frame++) {
+            for (int frame = 0; frame < 180 && proc_running(); frame++) {
                 WHBGfxBeginRender();
                 WHBGfxBeginRenderTV();
                 WHBGfxClearColor(1.0f, 0.0f, 0.0f, 1.0f);
@@ -194,6 +193,6 @@ int main(int argc, char **argv)
     free(tv);
     free(drc);
 
-    WHBProcShutdown();
+    proc_shutdown();
     return 0;
 }

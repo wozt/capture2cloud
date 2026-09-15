@@ -36,7 +36,8 @@
 #include <vpad/input.h>
 #include <whb/log.h>
 #include <whb/log_udp.h>
-#include <whb/proc.h>
+
+#include "proc.h"
 
 #include "c2s_protocol.h"
 #include "keyboard.h"
@@ -252,7 +253,7 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
-    WHBProcInit();
+    proc_init();
     /*
      * Logs over the network, before anything else can fail.
      *
@@ -265,7 +266,7 @@ int main(int argc, char **argv)
     VPADInit();
 
     if (screen_start() != 0) {
-        WHBProcShutdown();
+        proc_shutdown();
         return 1;
     }
 
@@ -288,7 +289,7 @@ int main(int argc, char **argv)
     unsigned frames = 0, fps = 0;
     uint64_t fps_at = OSTicksToMilliseconds(OSGetSystemTime());
 
-    while (WHBProcIsRunning()) {
+    while (proc_running()) {
         VPADStatus vpad;
         VPADReadError verr;
         VPADRead(VPAD_CHAN_0, &vpad, 1, &verr);
@@ -440,20 +441,10 @@ int main(int argc, char **argv)
 
         if (quitting) {
     /*
-     * How a program on this console asks to leave.
-     *
-     * The first version broke out of the loop, called SYSLaunchMenu()
-     * and then spun on `while (WHBProcIsRunning()) {}` waiting to be
-     * taken down. Nothing had told ProcUI anything, so that condition
-     * stayed true and the spin never ended -- two black screens and a
-     * forced power-off, which is exactly what came back from the sofa.
-     *
-     * WHBProcStopRunning() is the switch. SYSLaunchMenu() says where to
-     * go next, that says to stop going, and the ordinary loop condition
-     * does the rest.
+     * How a program on this console asks to leave -- see proc.c, which
+     * is where the two goes at this ended up.
      */
-            SYSLaunchMenu();
-            WHBProcStopRunning();
+            proc_stop();
             quitting = 0;   /* said once; the loop condition ends it */
         }
 
@@ -524,6 +515,6 @@ int main(int argc, char **argv)
 
     WHBLogPrintf("capture2cloud: done");
     WHBLogUdpDeinit();
-    WHBProcShutdown();
+    proc_shutdown();
     return 0;
 }
