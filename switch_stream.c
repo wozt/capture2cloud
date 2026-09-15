@@ -50,7 +50,7 @@
  * produces, at 864x480 and a quantiser of 32, none of it negotiable.
  * Nothing else can be on this stream and it can be on nothing else.
  */
-#define SS_STREAM_COUNT 4
+#define SS_STREAM_COUNT 5
 
 /*
  * Four was sized for native clients, back when a browser could not
@@ -166,6 +166,7 @@ typedef struct {
      * per message, and which encode it is fed. */
     int is_ws;
     int on_drc_port;   /* arrived on the GamePad's own port */
+    int on_wiiu_port;  /* arrived on the Wii U console's own port */
     uint32_t last_seen_ms;
     uint32_t last_probe_ms;   /* when we last asked a quiet client if it is there */
     uint8_t rx[SS_RX_CAPACITY];
@@ -194,6 +195,7 @@ struct SwitchStream {
     WebStream *web;
     int listen_fd;
     int drc_listen_fd;   /* the GamePad's own port */
+    int wiiu_listen_fd;  /* the Wii U console's own port */
     uint16_t port;
     uint16_t width, height;
 
@@ -284,6 +286,9 @@ static int client_slot(const SsClient *c) {
      * it put the pad back on the console's chain, where a handheld
      * asking for 480p30 took the pad down to 30 with it. */
     if (c->on_drc_port) return SS_STREAM_DRC;
+    /* Same rule, same reason: a console on a television wants
+     * 720p60 and a phone on 5081 may not. */
+    if (c->on_wiiu_port) return SS_STREAM_WIIU;
     return codec_slot(c->codec);
 }
 
@@ -1110,6 +1115,14 @@ static int accept_thread(void *arg) {
             map[n] = -2;
             n++;
         }
+        const int wiiu_pfd = (s->wiiu_listen_fd >= 0) ? n : -1;
+        if (s->wiiu_listen_fd >= 0) {
+            pfds[n].fd = s->wiiu_listen_fd;
+            pfds[n].events = POLLIN;
+            pfds[n].revents = 0;
+            map[n] = -2;
+            n++;
+        }
 
         SDL_LockMutex(s->mutex);
         for (int i = 0; i < SS_MAX_CLIENTS; i++) {
@@ -1134,13 +1147,16 @@ static int accept_thread(void *arg) {
         const int ready = poll(pfds, n, 200);
         if (ready > 0) {
 
-        for (int door = 0; door < 2; door++) {
-            const int pfd = (door == 0) ? 0 : drc_pfd;
+        for (int door = 0; door < 3; door++) {
+            const int pfd = (door == 0) ? 0 : (door == 1) ? drc_pfd : wiiu_pfd;
             if (pfd < 0 || !(pfds[pfd].revents & POLLIN)) {
                 continue;
             }
             const int is_drc = (door == 1);
-            int fd = accept(is_drc ? s->drc_listen_fd : s->listen_fd, NULL, NULL);
+            const int is_wiiu = (door == 2);
+            int fd = accept(is_drc ? s->drc_listen_fd
+                                   : is_wiiu ? s->wiiu_listen_fd : s->listen_fd,
+                            NULL, NULL);
             if (fd >= 0) {
                 int one = 1;
                 setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
@@ -1162,6 +1178,14 @@ static int accept_thread(void *arg) {
                     s->clients[slot].fd = fd;
                     s->clients[slot].in_use = 1;
                     s->clients[slot].last_seen_ms = now_ms();
+                    if (is_wiiu) {
+                        /* The port is the choice, as it is for the pad:
+                         * nothing else is served here, so the console
+                         * never spends a moment on another client's
+                         * stream while a codec request crosses. */
+                        s->clients[slot].codec = C2S_CODEC_H264;
+                        s->clients[slot].on_wiiu_port = 1;
+                    }
                     if (is_drc) {
                         /* The port is the choice: nothing else can be
                          * served here, and nothing served here can be
@@ -1316,6 +1340,29 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         }
     }
 
+    /* The Wii U console's door, allowed to fail for the same reason the
+     * one above is: a machine that cannot bind it serves everything
+     * else perfectly well. */
+    s->wiiu_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (s->wiiu_listen_fd >= 0) {
+        setsockopt(s->wiiu_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in wiiu_addr;
+        memset(&wiiu_addr, 0, sizeof(wiiu_addr));
+        wiiu_addr.sin_family = AF_INET;
+        wiiu_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        wiiu_addr.sin_port = htons(C2S_WIIU_PORT);
+        if (bind(s->wiiu_listen_fd, (struct sockaddr *)&wiiu_addr, sizeof(wiiu_addr)) != 0 ||
+            listen(s->wiiu_listen_fd, 2) != 0) {
+            fprintf(stderr, "switch_stream: no wii u console port %u (%s); the other "
+                            "clients are unaffected\n",
+                    C2S_WIIU_PORT, strerror(errno));
+            close(s->wiiu_listen_fd);
+            s->wiiu_listen_fd = -1;
+        } else {
+            fprintf(stderr, "switch_stream: wii u consoles on port %u\n", C2S_WIIU_PORT);
+        }
+    }
+
     s->running = 1;
     s->thread = SDL_CreateThread(accept_thread, "switch-stream", s);
     if (!s->thread) {
@@ -1342,6 +1389,10 @@ void switch_stream_stop(SwitchStream *s) {
         }
     }
     close(s->listen_fd);
+    if (s->wiiu_listen_fd >= 0) {
+        close(s->wiiu_listen_fd);
+        s->wiiu_listen_fd = -1;
+    }
     if (s->drc_listen_fd >= 0) {
         close(s->drc_listen_fd);
     }

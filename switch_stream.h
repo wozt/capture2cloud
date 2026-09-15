@@ -58,15 +58,16 @@ void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), vo
  * a change, because the change takes effect some frames after the
  * request and a decoder re-initialised at the wrong moment sees the tail
  * of the old stream. */
-/* Which encode a client is on. Four of them, and not one per codec: the
- * browsers' H.264 and the console's are the same codec at different
- * sizes, so they cannot share one, and the GamePad's is H.264 that no
- * ordinary decoder can read. See switch_stream.c for why the routing
- * key had to stop being the codec. */
+/* Which encode a client is on. Five of them, and not one per codec: the
+ * browsers' H.264, the console's and the Wii U's are the same codec at
+ * different sizes and rates, so they cannot share one, and the
+ * GamePad's is H.264 that no ordinary decoder can read. See
+ * switch_stream.c for why the routing key had to stop being the codec. */
 #define SS_STREAM_VP8  0
 #define SS_STREAM_H264 1
 #define SS_STREAM_WEB  2
 #define SS_STREAM_DRC  3
+#define SS_STREAM_WIIU 4
 
 void switch_stream_announce_stream(SwitchStream *s, int slot,
                                    uint16_t width, uint16_t height);

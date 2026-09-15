@@ -263,7 +263,7 @@ int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int coun
  * is not a GStreamer chain at all -- it scales straight into drc-x264
  * and hands the transport five chunks. It is a slot here because the
  * demand gate that decides what gets fed is per slot. */
-#define SS_STREAM_COUNT_LOCAL 4
+#define SS_STREAM_COUNT_LOCAL 5
 
 /* The browsers' stream: H.264, and at a size a monitor wants rather
  * than the size a handheld wants -- which is the whole reason it cannot
@@ -309,6 +309,20 @@ int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int coun
  * a handheld on the console's chain cannot drag it to 30. */
 #define DRC_SEND_WIDTH  1280
 #define DRC_SEND_HEIGHT 720
+
+/*
+ * A Wii U console's own chain.
+ *
+ * 720p60, which is what that console's hardware decoder and its network
+ * hold comfortably -- 1080p is offered in its menu and is not the tested
+ * path; wiiu_console/SPEC.md has the measurements behind that. Its own
+ * chain rather than the console/phone one for the reason the pad needed
+ * one: on a shared port the size and the frame rate belong to everyone
+ * at once, and a handheld asking for 480p30 took the pad to 30 with it.
+ */
+#define WIIU_SEND_WIDTH  1280
+#define WIIU_SEND_HEIGHT 720
+#define WIIU_H264_BITRATE_KBPS 8000
 
 #define DEFAULT_KEYFRAME_MAX_DIST 300
 #define MIN_KEYFRAME_MAX_DIST 15
@@ -400,6 +414,7 @@ struct GstWebrtcStream {
     GstElement *vsrc_switch264, *venc_switch_h264, *switchsink264;
     GstElement *vsrc_web264, *venc_web_h264, *websink264, *vscale_web264_caps;
     GstElement *vsrc_drc264, *venc_drc_h264, *drcsink264;
+    GstElement *vsrc_wiiu264, *venc_wiiu_h264, *wiiusink264;
 
     /*
      * The Wii U GamePad's encode. No pipeline elements: drc-x264 is
@@ -704,7 +719,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     /* One encoder name per H.264 chain -- see
      * gst_webrtc_pick_h264_encoders() for why they are not all the
      * same one any more. */
-    const char *enc_for[GST_WEBRTC_H264_CHAINS];   /* console, browser, GamePad */
+    const char *enc_for[GST_WEBRTC_H264_CHAINS];   /* console, browser, GamePad, Wii U */
     char forced[64];
     if (!config_get("SWITCH_H264_ENCODER", forced, sizeof(forced))) {
         forced[0] = '\0';
@@ -773,6 +788,22 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
                  "x264enc name=venc_drc_h264 tune=zerolatency speed-preset=veryfast "
                  "threads=1 sliced-threads=false bitrate=%d key-int-max=%d bframes=0",
                  DRC_H264_BITRATE_KBPS, keyframe_max_dist);
+    }
+
+    /* And the Wii U console's, at its own bitrate. Ordinary H.264 --
+     * unlike the pad's, this one is decoded by real hardware on the
+     * other end and needs nothing special. */
+    char wiiu_h264_enc[320];
+    if (g->switch264_nv12) {
+        snprintf(wiiu_h264_enc, sizeof(wiiu_h264_enc),
+                 "%s name=venc_wiiu_h264 bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 "
+                 "rate-control=cbr target-usage=6",
+                 enc_for[3], WIIU_H264_BITRATE_KBPS, keyframe_max_dist);
+    } else {
+        snprintf(wiiu_h264_enc, sizeof(wiiu_h264_enc),
+                 "x264enc name=venc_wiiu_h264 tune=zerolatency speed-preset=veryfast "
+                 "threads=1 sliced-threads=false bitrate=%d key-int-max=%d bframes=0",
+                 WIIU_H264_BITRATE_KBPS, keyframe_max_dist);
     }
 
     char desc[5632];
@@ -933,6 +964,21 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
              "appsink name=drcsink264 emit-signals=true sync=false async=false "
              "max-buffers=2 drop=true "
 
+             /* A Wii U console's own chain: 720p60 and nobody else's
+              * settings, its own appsrc for the same reason every other
+              * one has one -- a branch nobody is on is simply not fed. */
+             "appsrc name=vsrc_wiiu264 format=time is-live=true do-timestamp=true "
+             "max-buffers=1 leaky-type=downstream "
+             "caps=video/x-raw,format=%s,width=%d,height=%d,framerate=60/1 ! "
+             "queue max-size-buffers=1 leaky=downstream ! "
+             "videorate name=vrate_wiiu264 drop-only=true ! "
+             "videoconvert ! "
+             "%s ! "
+             "video/x-h264,stream-format=byte-stream,alignment=au ! "
+             "h264parse config-interval=-1 ! "
+             "appsink name=wiiusink264 emit-signals=true sync=false async=false "
+             "max-buffers=2 drop=true "
+
              "atee. ! queue max-size-buffers=2 leaky=downstream ! "
              "appsink name=switchasink emit-signals=true sync=false async=false "
              "max-buffers=8 drop=true",
@@ -952,7 +998,12 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
               * size looks tidier and removes the one step that was
               * doing the work -- measured, by breaking it that way. */
              "I420", DRC_SEND_WIDTH, DRC_SEND_HEIGHT,
-             drc_h264_enc);
+             drc_h264_enc,
+             /* The console decodes this in hardware, so it is fed in
+              * whatever the encoder prefers rather than forced to
+              * I420 the way the pad's chain is. */
+             g->switch264_nv12 ? "NV12" : "I420", WIIU_SEND_WIDTH, WIIU_SEND_HEIGHT,
+             wiiu_h264_enc);
 
     GError *error = NULL;
     g->pipeline = gst_parse_launch(desc, &error);
@@ -990,11 +1041,17 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->vsrc_drc264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_drc264");
     g->venc_drc_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_drc_h264");
     g->drcsink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "drcsink264");
+    g->vsrc_wiiu264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_wiiu264");
+    g->venc_wiiu_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_wiiu_h264");
+    g->wiiusink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "wiiusink264");
     g->venc_web_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_web_h264");
     g->websink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "websink264");
     g->vscale_web264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_web264_caps");
     if (g->websink264) {
         g_signal_connect(g->websink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
+    }
+    if (g->wiiusink264) {
+        g_signal_connect(g->wiiusink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
     }
     if (g->drcsink264) {
         g_signal_connect(g->drcsink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
@@ -1006,9 +1063,11 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     }
     for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
         const int web = (slot == SS_STREAM_WEB);
-        g->switch_width[slot] = (slot == SS_STREAM_DRC) ? DRC_SEND_WIDTH
+        g->switch_width[slot] = (slot == SS_STREAM_WIIU) ? WIIU_SEND_WIDTH
+                              : (slot == SS_STREAM_DRC) ? DRC_SEND_WIDTH
                               : web ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-        g->switch_height[slot] = (slot == SS_STREAM_DRC) ? DRC_SEND_HEIGHT
+        g->switch_height[slot] = (slot == SS_STREAM_WIIU) ? WIIU_SEND_HEIGHT
+                               : (slot == SS_STREAM_DRC) ? DRC_SEND_HEIGHT
                                : web ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
         g->switch_fps[slot] = 60;
         g->switch_bitrate_kbps[slot] = web ? WEB_VIDEO_BITRATE_KBPS
@@ -1097,7 +1156,8 @@ static GstFlowReturn on_switch_video_sample(GstElement *sink, gpointer user_data
      * chain's bytes does not fail cleanly: it produces a picture, and
      * the picture was bright pink. Routing rather than dropping is the
      * same guarantee, and it is what lets both run at once. */
-    const int slot = (sink == g->drcsink264)     ? SS_STREAM_DRC
+    const int slot = (sink == g->wiiusink264)    ? SS_STREAM_WIIU
+                   : (sink == g->drcsink264)     ? SS_STREAM_DRC
                    : (sink == g->websink264)     ? SS_STREAM_WEB
                    : (sink == g->switchsink264)  ? SS_STREAM_H264
                                                  : SS_STREAM_VP8;
@@ -1216,6 +1276,11 @@ static void on_switch_keyframe_request(void *ctx) {
         gst_element_send_event(g->switchsink264,
                                gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE, TRUE, 0));
     }
+    if (g->wiiusink264) {
+        gst_element_send_event(g->wiiusink264,
+                               gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE,
+                                                                          TRUE, 0));
+    }
     if (g->drcsink264) {
         gst_element_send_event(g->drcsink264,
                                gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE, TRUE, 0));
@@ -1332,8 +1397,12 @@ static void on_switch_demand_changed(void *ctx) {
             continue;
         }
         g->switch_wanted[slot] = wanted;
-        static const char *const names[] = {"native vp8", "native h264",
-                                            "browser h264", "wii u"};
+        /* One per slot, and the compiler is made to check it: an
+         * entry short is an out-of-bounds read on the slot that was
+         * just added, which is exactly what happened when the fifth
+         * one arrived. */
+        static const char *const names[SS_STREAM_COUNT_LOCAL] = {
+            "native vp8", "native h264", "browser h264", "wii u gamepad", "wii u console"};
         fprintf(stderr, "gst_webrtc: %s chain %s\n", names[slot],
                 wanted ? "started (a client is watching it)" : "stopped (nobody left on it)");
         if (wanted) {
@@ -1742,7 +1811,8 @@ static void push_drc_chain(GstWebrtcStream *g, const uint8_t *const plane[3],
 static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const plane[3],
                               const int stride[3], enum AVPixelFormat format,
                               int width, int height, GstClockTime pts) {
-    GstElement *dest = (slot == SS_STREAM_DRC)  ? g->vsrc_drc264
+    GstElement *dest = (slot == SS_STREAM_WIIU) ? g->vsrc_wiiu264
+                     : (slot == SS_STREAM_DRC)  ? g->vsrc_drc264
                      : (slot == SS_STREAM_WEB)  ? g->vsrc_web264
                      : (slot == SS_STREAM_H264) ? g->vsrc_switch264
                                                 : g->vsrc_switch;
@@ -1753,9 +1823,11 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
      * are not the same picture. */
     /* The pad's panel is 864x480 and nothing else, so its chain is fed
      * at exactly that: the client then has nothing left to scale. */
-    const int dw = (slot == SS_STREAM_DRC) ? DRC_ENC_WIDTH
+    const int dw = (slot == SS_STREAM_WIIU) ? WIIU_SEND_WIDTH
+                 : (slot == SS_STREAM_DRC) ? DRC_ENC_WIDTH
                  : (slot == SS_STREAM_WEB) ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-    const int dh = (slot == SS_STREAM_DRC) ? DRC_ENC_HEIGHT
+    const int dh = (slot == SS_STREAM_WIIU) ? WIIU_SEND_HEIGHT
+                 : (slot == SS_STREAM_DRC) ? DRC_ENC_HEIGHT
                  : (slot == SS_STREAM_WEB) ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
 
     /* The GPU encoders take NV12 and nothing else; x264 and vp8 take

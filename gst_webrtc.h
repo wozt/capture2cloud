@@ -117,17 +117,17 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
 
 /* --- which encoder each H.264 chain uses -----------------------------
  *
- * There are three H.264 chains -- the console clients, the browsers, and
- * the Wii U GamePad -- and a fourth coming for the Wii U console itself.
- * They used to share one encoder name chosen at startup, which put every
- * encode on one video engine even on a machine with two.
+ * Four H.264 chains: the console clients, the browsers, the Wii U
+ * GamePad, and a Wii U console. They used to share one encoder name
+ * chosen at startup, which put every encode on one video engine even on
+ * a machine with two.
  *
  * Fills `out` with one element name per chain and returns how many
  * distinct hardware engines it spread them over: 0 means it fell back to
  * the CPU. `forced` is SWITCH_H264_ENCODER from the .env, or NULL.
  * Exposed for the tests -- it needs gst_init() and nothing else.
  */
-#define GST_WEBRTC_H264_CHAINS 3
+#define GST_WEBRTC_H264_CHAINS 4
 int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int count);
 
 #endif
