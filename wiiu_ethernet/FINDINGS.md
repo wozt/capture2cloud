@@ -528,6 +528,8 @@ Which makes the remaining question: what does IOS object to in a
 vectored request that it does not object to in a plain ioctl? The
 candidates, none yet tested:
 
+- ~~the endpoint parameters.~~ **Eliminated.** Five combinations,
+  identical results.
 - ~~the buffer's memory region.~~ **Largely eliminated.** Three sources
   tried in one run -- the program's own `.bss` (`0x105D98C0`), a pointer
   inside the work buffer UHS was given (`0x105C98C0`), and the default
@@ -541,6 +543,23 @@ candidates, none yet tested:
   fail the same way -- which argues against it but does not settle it.
 - `UhsAdministerEndpoint`'s `max_request_size`, which IOSU logged
   accepting but whose value may bound what a later transfer may ask for.
+
+### Endpoint parameters make no difference, and the log went quiet
+
+Five combinations of mask, pending-request count and request size --
+`0xFFFF` and endpoint 2 alone, 1/4/8 pending, 512/2048/16384 bytes. Every
+one: enable `-2162715`, bulk `-2162713`. Identical.
+
+The plan was to disregard those return values and read IOSU's log
+instead, since the log had already proved them wrong once. **The log did
+not record the new attempts.** The only UHS traces on the console are
+still the ones at `00:09:56` from the earlier run -- acquire, enable,
+release -- and no newer log file has been created.
+
+So the system log is real, and it is not a tap that can be opened on
+demand. Whatever made it trace that window was not repeated. Worth
+knowing before someone plans around it: it gave one decisive reading and
+has been silent since.
 
 ### Where this stands
 

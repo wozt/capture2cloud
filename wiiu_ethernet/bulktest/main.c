@@ -1,23 +1,21 @@
 /*
- * Which memory may an ioctlv vector point at?
+ * What does AdministerEndpoint actually establish?
  *
- * Established: the acquire is granted (IOSU's own log says so), the
- * endpoints are enabled, control transfers work -- and only the bulk
- * request is refused, by IOS itself rather than by nsysuhs.rpl. A small
- * ioctl payload is copied; an ioctlv vector is used where it lies. So
- * the buffer's region is the first thing to vary.
+ * It reports -2162715 to us while IOSU's log shows it received and
+ * processed the call with exactly the mask passed. So its return value
+ * is not to be trusted, and neither is the assumption that whatever it
+ * set up is usable -- it may have recorded a request size that bounds
+ * every later transfer.
  *
- * Four sources, one run: the program's own .bss, the default heap, and
- * the MEM1 and MEM2 base heaps. Whichever the transfer accepts is the
- * answer; the log also prints each address so the regions are visible.
+ * Several (pending, size) pairs, each followed by a bulk attempt at the
+ * size it was given. The interesting output is not on this screen: it
+ * is in /storage_slc/sys/logs, where the UHS server traces what it
+ * really did. Each attempt is numbered so the two can be lined up.
  */
 #include <stdio.h>
 #include <string.h>
 
 #include <coreinit/cache.h>
-#include <coreinit/memdefaultheap.h>
-#include <coreinit/memexpheap.h>
-#include <coreinit/memheap.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <nsysuhs/uhs.h>
@@ -26,18 +24,12 @@
 
 #define ASIX_VID    0x0b95
 #define AX88179_PID 0x1790
-
-/* 1 = write (2 in, 0 out), 2 = read (1 in, 1 out). Read out of
- * nsysuhs.rpl; zero takes neither branch. */
 #define UHS_DIR_OUT 1
 #define UHS_DIR_IN  2
 
-#define XFER 2048
-
 static UhsHandle g_handle;
 static uint8_t g_work[128 * 1024] __attribute__((aligned(0x40)));
-static uint8_t g_bss[16 * 1024] __attribute__((aligned(0x40)));
-static UhsInterfaceProfile g_profiles[16];
+static uint8_t g_buf[64 * 1024] __attribute__((aligned(0x40)));
 
 static volatile int g_probed;
 static volatile uint32_t g_if;
@@ -51,26 +43,12 @@ static void on_probe(void *context, UhsInterfaceProfile *profile)
     }
 }
 
-static void try_buffer(const char *what, void *buf)
-{
-    if (!buf) {
-        probe_say("%-14s: could not allocate", what);
-        return;
-    }
-    memset(buf, 0, XFER);
-    DCFlushRange(buf, XFER);
-    const int32_t r = UhsSubmitBulkRequest(&g_handle, g_if, 0x02, UHS_DIR_IN, buf, XFER, 400);
-    DCInvalidateRange(buf, XFER);
-    probe_say("%-14s @ %08X -> %d %s", what, (unsigned)(uintptr_t)buf, (int)r,
-              r >= 0 ? "*** ACCEPTED ***" : "");
-}
-
 int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
 
-    if (probe_init("UHS: which memory for a vector?") != 0) {
+    if (probe_init("UHS: endpoint sizes") != 0) {
         probe_shutdown();
         return 1;
     }
@@ -100,20 +78,33 @@ int main(int argc, char **argv)
         probe_wait(); probe_shutdown(); return 1;
     }
     UhsAcquireInterface(&g_handle, g_if, NULL, NULL);
-    OSSleepTicks(OSMillisecondsToTicks(200));
-    const int32_t en = UhsAdministerEndpoint(&g_handle, g_if, UHS_ADMIN_EP_ENABLE, 0xFFFF, 4,
-                                             XFER);
-    probe_say("interface %u, enable -> %d", (unsigned)g_if, (int)en);
+    OSSleepTicks(OSMillisecondsToTicks(300));
+    probe_say("interface %u acquired", (unsigned)g_if);
 
-    try_buffer("own .bss", g_bss);
-    try_buffer("inside work", g_work + 64 * 1024);
-    try_buffer("default heap", MEMAllocFromDefaultHeapEx(XFER, 0x40));
+    /* Endpoint 2 alone as well as everything, and a spread of sizes. */
+    static const struct { uint32_t mask; uint32_t pending; uint32_t size; } tries[] = {
+        { 0xFFFF, 4,  512 },
+        { 0xFFFF, 1,  512 },
+        { 1u << 2, 4, 512 },
+        { 1u << 2, 4, 2048 },
+        { 0xFFFF, 8, 16384 },
+    };
 
-    MEMHeapHandle mem1 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
-    MEMHeapHandle mem2 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM2);
-    try_buffer("MEM1 heap", mem1 ? MEMAllocFromExpHeapEx(mem1, XFER, 0x40) : NULL);
-    try_buffer("MEM2 heap", mem2 ? MEMAllocFromExpHeapEx(mem2, XFER, 0x40) : NULL);
+    for (unsigned i = 0; i < sizeof(tries) / sizeof(*tries); i++) {
+        const int32_t en = UhsAdministerEndpoint(&g_handle, g_if, UHS_ADMIN_EP_ENABLE,
+                                                 tries[i].mask, tries[i].pending, tries[i].size);
+        memset(g_buf, 0, tries[i].size);
+        DCFlushRange(g_buf, tries[i].size);
+        const int32_t r = UhsSubmitBulkRequest(&g_handle, g_if, 0x02, UHS_DIR_IN, g_buf,
+                                               (int)tries[i].size, 300);
+        DCInvalidateRange(g_buf, tries[i].size);
+        probe_say("#%u mask %04X pend %u size %5u: enable %d, bulk %d %s", i,
+                  (unsigned)tries[i].mask, (unsigned)tries[i].pending, (unsigned)tries[i].size,
+                  (int)en, (int)r, r >= 0 ? "*** ACCEPTED ***" : "");
+        OSSleepTicks(OSMillisecondsToTicks(100));
+    }
 
+    probe_say("now read /storage_slc/sys/logs -- the truth is there");
     UhsReleaseInterface(&g_handle, g_if, false);
     UhsClassDrvUnReg(&g_handle, (uint32_t)reg);
     UhsClientClose(&g_handle);
