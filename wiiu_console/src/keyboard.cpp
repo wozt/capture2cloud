@@ -9,9 +9,9 @@
 #include <padscore/kpad.h>
 #include <proc_ui/procui.h>
 #include <vpad/input.h>
-#include <whb/gfx.h>
 #include <whb/log.h>
 #include "proc.h"
+#include "ui.h"
 
 namespace {
 
@@ -50,22 +50,19 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
     out[0] = '\0';
 
     /*
-     * GX2 comes up for the keyboard and goes away again.
+     * GX2 is already up, and that is the whole point.
      *
-     * The caller has already shut OSScreen down; if it had not, the two
-     * would be writing to the same scan buffers and the result is a
-     * console that shows neither.
+     * The first version called WHBGfxInit() here, because the menu was
+     * OSScreen and something had to bring GX2 up for the keyboard. The
+     * menu is SDL2 now, SDL2 owns GX2, and a second init simply fails
+     * -- which it did, and put "cannot start the graphics layer" on
+     * screen. So this draws inside the frame the program is already
+     * running, with a flush between SDL's batched commands and the
+     * keyboard's raw ones.
      */
-    WHBLogPrintf("swkbd: WHBGfxInit");
-    if (!WHBGfxInit()) {
-        snprintf(why, why_size, "cannot start the graphics layer");
-        return -1;
-    }
-
-    WHBLogPrintf("swkbd: gfx up, FS client");
+    WHBLogPrintf("swkbd: FS client");
     FSClient *fsClient = static_cast<FSClient *>(MEMAllocFromDefaultHeap(sizeof(FSClient)));
     if (!fsClient) {
-        WHBGfxShutdown();
         snprintf(why, why_size, "out of memory");
         return -1;
     }
@@ -83,7 +80,6 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
     if (!createArg.workMemory) {
         FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
         MEMFreeToDefaultHeap(fsClient);
-        WHBGfxShutdown();
         snprintf(why, why_size, "out of memory for the keyboard");
         return -1;
     }
@@ -94,7 +90,6 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
         MEMFreeToDefaultHeap(createArg.workMemory);
         FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
         MEMFreeToDefaultHeap(fsClient);
-        WHBGfxShutdown();
         snprintf(why, why_size, "the keyboard would not open");
         return -1;
     }
@@ -124,7 +119,6 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
         MEMFreeToDefaultHeap(createArg.workMemory);
         FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
         MEMFreeToDefaultHeap(fsClient);
-        WHBGfxShutdown();
         snprintf(why, why_size, "the input form would not appear");
         return -1;
     }
@@ -182,16 +176,14 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
             break;
         }
 
-        WHBGfxBeginRender();
-        WHBGfxBeginRenderTV();
-        WHBGfxClearColor(0.06f, 0.07f, 0.09f, 1.0f);
+        /* SDL clears the frame, then its queue is pushed out, then the
+         * keyboard draws its own GX2 on top of it. Without the flush
+         * SDL's commands would arrive afterwards and cover it. */
+        ui_begin();
+        ui_flush();
         nn::swkbd::DrawTV();
-        WHBGfxFinishRenderTV();
-        WHBGfxBeginRenderDRC();
-        WHBGfxClearColor(0.06f, 0.07f, 0.09f, 1.0f);
         nn::swkbd::DrawDRC();
-        WHBGfxFinishRenderDRC();
-        WHBGfxFinishRender();
+        ui_present();
     }
 
     WHBLogPrintf("swkbd: leaving, result %d", result);
@@ -201,6 +193,5 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
     FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
     FSShutdown();
     MEMFreeToDefaultHeap(fsClient);
-    WHBGfxShutdown();
     return result;
 }

@@ -26,6 +26,10 @@
 #define UI_WIDTH  1280
 #define UI_HEIGHT 720
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct {
     uint8_t r, g, b, a;
 } UiColour;
@@ -56,6 +60,18 @@ void ui_poll(UiInput *in);
 void ui_begin(void);
 void ui_present(void);
 
+/*
+ * Pushes out everything SDL has queued, so raw GX2 drawing can happen
+ * next and land on top rather than underneath.
+ *
+ * SDL's renderer batches; its own documentation says to call this
+ * between its API and a lower-level graphics API. The console's
+ * keyboard is exactly that -- it draws itself with GX2, inside our
+ * frame, because SDL already owns GX2 and a second WHBGfxInit() simply
+ * fails. Which it did, and said so on screen.
+ */
+void ui_flush(void);
+
 void ui_fill(int x, int y, int w, int h, UiColour c);
 /* A filled rectangle with a one-pixel border, for a field or a button. */
 void ui_box(int x, int y, int w, int h, UiColour fill, UiColour border);
@@ -70,5 +86,9 @@ int  ui_text_width(int size, const char *text);
 
 #define UI_SIZE_BODY  28
 #define UI_SIZE_TITLE 44
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CAPTURE2WIIU_UI_H */

@@ -236,6 +236,11 @@ void ui_present(void)
     SDL_RenderPresent(g_renderer);
 }
 
+void ui_flush(void)
+{
+    SDL_RenderFlush(g_renderer);
+}
+
 void ui_fill(int x, int y, int w, int h, UiColour c)
 {
     SDL_Rect r = { x, y, w, h };
