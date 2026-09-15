@@ -321,6 +321,9 @@ static void on_action_button(GtkWidget *w, gpointer user_data) {
 
 /* --- building the window --------------------------------------------- */
 
+/* Defined below, beside the other things the radio page drives. */
+static void on_pair_clicked(GtkWidget *w, gpointer user_data);
+
 static GtkWidget *add_row(GtkWidget *grid, int row, const char *label, GtkWidget *control) {
     GtkWidget *l = gtk_label_new(label);
     gtk_widget_set_halign(l, GTK_ALIGN_START);
@@ -534,6 +537,15 @@ static void build_settings_window(GtkShell *shell) {
                 "back: the pad reassociates in about 0.8s and the session "
                 "starts over. It does NOT need root."),
             FALSE, FALSE, 0);
+        GtkWidget *pair = gtk_button_new_with_label("pair a gamepad...");
+        gtk_widget_set_tooltip_text(pair,
+            "Runs the WPS exchange that introduces a pad to this machine.\n\n"
+            "Only needed once per pad. You choose four symbols here and enter "
+            "the same four on the GamePad's own sync screen; the last four "
+            "digits are always the same and are filled in for you.");
+        g_signal_connect(pair, "clicked", G_CALLBACK(on_pair_clicked), shell);
+        gtk_box_pack_start(GTK_BOX(ap_buttons), pair, FALSE, FALSE, 0);
+
         add_row(grid, row++, "", ap_buttons);
     }
 
@@ -715,6 +727,75 @@ static void on_menu_show_capture(GtkMenuItem *item, gpointer user_data) {
 static void on_menu_quit(GtkMenuItem *item, gpointer user_data) {
     (void)item;
     act(user_data, GTK_SHELL_ACTION_QUIT);
+}
+
+/*
+ * Pairing, which is a ceremony rather than a setting.
+ *
+ * The pad is told a PIN of eight digits, and the first four are chosen
+ * by the person: the GamePad shows them as card suits on its own screen
+ * -- spade, heart, diamond, club -- and the last four are always 5678.
+ * So this asks for four symbols rather than a number, because that is
+ * what is written on the thing you are holding.
+ *
+ * It only arms the access point and the WPS exchange; the pad's own
+ * "sync" is what completes it, and there is about a minute to press it.
+ */
+static void on_pair_clicked(GtkWidget *w, gpointer user_data) {
+    (void)w;
+    GtkShell *shell = user_data;
+
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(
+        "Pair a Wii U GamePad", GTK_WINDOW(shell->settings_window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "Cancel", GTK_RESPONSE_CANCEL, "Start pairing", GTK_RESPONSE_ACCEPT, NULL);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 14);
+    gtk_box_set_spacing(GTK_BOX(box), 10);
+
+    GtkWidget *intro = gtk_label_new(
+        "Choose the four symbols the pad will ask for, then start it.\n"
+        "On the GamePad: Settings, then sync, and enter the same four.");
+    gtk_widget_set_halign(intro, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), intro, FALSE, FALSE, 0);
+
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *pick[4];
+    /* The order IS the encoding: spade 0, heart 1, diamond 2, club 3. */
+    static const char *const kSuits[] = { "\u2660", "\u2665", "\u2666", "\u2663" };
+    for (int i = 0; i < 4; i++) {
+        pick[i] = gtk_combo_box_text_new();
+        for (int s2 = 0; s2 < 4; s2++) {
+            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(pick[i]), kSuits[s2]);
+        }
+        gtk_combo_box_set_active(GTK_COMBO_BOX(pick[i]), i);
+        gtk_box_pack_start(GTK_BOX(row), pick[i], TRUE, TRUE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+
+    GtkWidget *note = gtk_label_new(
+        "The access point restarts while this runs, so anything already "
+        "connected to it drops.");
+    gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+    gtk_widget_set_halign(note, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), note, FALSE, FALSE, 0);
+
+    gtk_widget_show_all(dialog);
+    const int answer = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (answer == GTK_RESPONSE_ACCEPT) {
+        char pin[16];
+        for (int i = 0; i < 4; i++) {
+            int chosen = gtk_combo_box_get_active(GTK_COMBO_BOX(pick[i]));
+            if (chosen < 0) chosen = 0;
+            pin[i] = (char)('0' + chosen);
+        }
+        /* The four the pad always expects after the ones you chose. */
+        memcpy(pin + 4, "5678", 5);
+        if (shell->callbacks.on_pair) {
+            shell->callbacks.on_pair(shell->callbacks.userdata, pin);
+        }
+    }
+    gtk_widget_destroy(dialog);
 }
 
 static void on_icon_popup(GtkStatusIcon *icon, guint button, guint activate_time,

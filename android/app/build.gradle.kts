@@ -14,7 +14,7 @@ android {
         minSdk = 26          // MediaCodec's Opus decoder and a sane camera-free base
         targetSdk = 36
         versionCode = 11
-        versionName = "1.3.0"
+        versionName = "1.3.0.1"
     }
 
     /* The release key lives outside the repository and is never
