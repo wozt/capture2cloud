@@ -109,6 +109,7 @@ static void note_step(const char *step, int err) {
  * whole or not at all. The receive side is untouched -- only the frame
  * loop reads. */
 static OSMutex g_tx_lock;
+static uint32_t g_local_ip;
 static int g_tx_lock_ready = 0;
 
 int net_init(void) {
@@ -128,26 +129,51 @@ int net_init(void) {
     g_tx_lock_ready = 1;
 
     /*
-     * This console does not have a network until it is asked for one.
+     * This console may or may not already have a network.
      *
-     * On the Switch the socket layer is up before main() runs. Here a
-     * socket() call succeeds and then every connect fails, which looks
-     * exactly like a wrong address -- so it is done here, once, and a
-     * failure is reported as itself rather than as a bad host.
+     * On the Switch the socket layer is up before main() runs. Here it
+     * depends on how the program was started: launched from the Wii U
+     * Menu, the console is ALREADY connected and asking it to connect
+     * again fails. The first version of this treated that failure as
+     * "no network connection configured" and refused to go on -- on a
+     * console that was online the whole time. Reported from the sofa,
+     * and quite right.
+     *
+     * So the return codes are not the test. Having an IP address is.
      */
     if (!NNResult_IsSuccess(ACInitialize())) {
         set_status("cannot start the network layer");
         note_step("ACInitialize failed", 0);
         return -1;
     }
-    ACConfigId config = 0;
-    if (!NNResult_IsSuccess(ACGetStartupId(&config)) ||
-        !NNResult_IsSuccess(ACConnectWithConfigId(config))) {
-        set_status("no network connection configured");
-        note_step("ACConnect failed", 0);
+
+    BOOL connected = FALSE;
+    if (!NNResult_IsSuccess(ACIsApplicationConnected(&connected)) || !connected) {
+        /* Not connected yet: bring the default configuration up. Its
+         * result is not checked either, for the same reason. */
+        ACConfigId config = 0;
+        if (NNResult_IsSuccess(ACGetStartupId(&config))) {
+            ACConnectWithConfigId(config);
+        } else {
+            ACConnect();
+        }
+    }
+
+    g_local_ip = 0;
+    if (!NNResult_IsSuccess(ACGetAssignedAddress(&g_local_ip)) || g_local_ip == 0) {
+        set_status("this console is not on a network");
+        note_step("no address assigned", 0);
         return -1;
     }
+    note_step("network up", 0);
     return 0;
+}
+
+/* The console's own address, for the status line. Worth showing: it is
+ * the difference between "the host is unreachable" and "this console is
+ * not on the network at all", and there is no shell here to ask. */
+uint32_t net_local_ip(void) {
+    return g_local_ip;
 }
 
 static void close_socket(void) {

@@ -52,6 +52,11 @@ void net_poll(void);
 
 const NetInfo *net_info(void);
 
+/* This console's own IPv4 address, host byte order, or 0 when it has
+ * none. Shown on screen because "cannot reach the host" and "this
+ * console is not on a network" look identical otherwise. */
+uint32_t net_local_ip(void);
+
 /* Hands over the next complete media frame, if one has arrived.
  * `*payload` points into an internal buffer valid until the next call.
  * Returns the C2sMsgType, or 0 when nothing is ready. */
