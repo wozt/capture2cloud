@@ -712,3 +712,114 @@ get the console onto a wire.
 - [We can now use the AX88772B on the Wii U](https://gbatemp.net/threads/we-can-now-use-the-ax88772b-on-the-wii-u.670646/)
 - [AX88772B/C/D USB Ethernet Patcher for vWii](https://gbatemp.net/threads/ax88772b-c-d-usb-ethernet-patcher-for-vwii.680252/)
 - [Advice for Wii U - USB to Ethernet](https://gbatemp.net/threads/advice-for-wii-u-usb-to-ethernet-2021.602287/)
+
+---
+
+# Le verrou est trouvé, et il tient en une instruction
+
+Tout ce qui précède cherchait *où* `-2162715` naît. C'est réglé, et de
+façon non ambiguë.
+
+## Comment il a été localisé
+
+La table de dispatch des ioctl de `uhs_main` n'est pas un tableau de
+pointeurs : c'est un `switch` compilé en **table de sauts**, à
+`0x101114c4`, atteinte par `ldrls pc,[pc,r3,lsl #2]` après
+`sub r3,#1 / cmp r3,#0x14` (21 entrées, ioctl `0x01`–`0x15`). L'entrée
+`0x04` pointe sur le bras qui appelle l'acquire connu
+(`FUN_10115dac`) : le décodage est donc certifié. L'entrée `0x0B`
+(AdministerEndpoint) pointe sur `0x101116b0`, qui appelle
+**`FUN_10115a98`** — le vrai gestionnaire.
+
+`FUN_10115a98` vérifie trois préconditions (taille de bloc = 0x18,
+résolution du handle d'interface, `iface+0x28 == pid`), **toutes
+passées** : ses trois constantes d'erreur (`-2162705`, `-2162694`,
+`-2162707`) ne sont pas la nôtre. Il appelle ensuite le FSM
+(`FUN_101147b0`, événement 8), qui appelle le worker
+**`FUN_10114238`**.
+
+Fait décisif : `-2162715` (`0xFFDEFFE5`) **n'apparaît qu'une seule fois
+dans toute l'image**, à `0x101144ac`, dans le pool littéral de
+`FUN_10114238`. Il n'y a donc qu'un site possible.
+
+## Ce que fait le worker, et pourquoi il refuse
+
+Pour chaque bit posé dans le masque d'endpoints, `FUN_10114238` :
+
+1. appelle `FUN_10117844(iface, ep%16, direction, &slot)` — qui **trouve
+   le descripteur** de l'endpoint. Les slots vivent dans l'objet
+   interface : IN à `iface+0x5d0+(ep-1)*0x24`, OUT à
+   `iface+0x3b4+(ep-1)*0x24`, chacun de 0x24 octets ;
+2. exige que le bit `iface+0x1c` (l'**index du client** propriétaire,
+   fixé à l'acquisition) soit posé dans le masque de permission du slot :
+   `slot+0x18` (ou `slot+0x14` pour le bit 31).
+
+À cause du court-circuit du `||`, la constante `-2162715` n'est
+renvoyée **que si `FUN_10117844` a réussi** — donc l'endpoint *existe et
+est localisé* — et que le test de masque échoue. Autrement dit :
+
+> **L'endpoint est trouvé. IOSU refuse parce que notre client n'est pas
+> enregistré comme propriétaire de cet endpoint.**
+
+Le même test, au même offset, garde le chemin « query descriptor »
+(`FUN_101139e0`) : un client non-propriétaire voit bien l'interface et
+les numéros d'endpoints (descripteur brut, non filtré) mais pas les
+handles d'administration par endpoint (filtrés). Ce qui explique
+exactement ce qu'on mesure depuis le début — on énumère, on lit la MAC,
+le PHY négocie, et pourtant `0x0B` refuse.
+
+## Le masque de propriété n'est pas accordé depuis l'usermode
+
+Cherché : qui **écrit** `slot+0x18`. L'acquire (ioctl `0x04`) pose
+`iface+0x1c` et passe le contrôle `+0x28 == pid`, mais n'accorde aucun
+bit de propriété d'endpoint à un acquéreur usermode. Aucun bras de la
+table de dispatch (`0x01`–`0x15`) ne fait `slot+0x18 |= 1<<client`.
+Partout où le masque est lu, il est traité comme **préexistant** — posé
+côté noyau au moment où un pilote de classe s'attache au périphérique.
+Un périphérique sans pilote de classe correspondant (notre AX88179)
+n'obtient jamais ses masques de propriété peuplés pour le client
+usermode.
+
+**Conséquence : la voie usermode pure est fermée.** Le déblocage demande
+un changement côté IOSU.
+
+## Le verrou, en assembleur exact
+
+Dans `FUN_10114238`, boucle sur les endpoints demandés :
+
+    10114334  E1933004  orrs r3,r3,r4     ; (masque+0x14 & signe) | (masque+0x18 & 1<<client)
+    10114338  0A000019  beq 0x101143A4    ; si les DEUX masques = 0 -> rejet
+    1011433C  E2877001  add r7,r7,#1      ; sinon, endpoint accepté, continue
+    ...
+    101143A4  E59FB100  ldr r11,[0x101144ac] ; = -2162715
+    101143A8            ... nettoyage, return -2162715
+
+**Un seul mot de 4 octets** décide de tout : le `beq` à `0x10114338`.
+Remplacé par un `NOP` (`E1A00000`), un endpoint trouvé mais « non
+possédé » n'est plus rejeté ; l'exécution tombe sur `add r7,r7,#1` et
+poursuit jusqu'à `FUN_1011b280` (la soumission réelle du transfert).
+
+Chirurgical par construction : pour un endpoint réellement possédé
+(périphériques intégrés, ancien adaptateur via son pilote de classe),
+`orrs` est non nul, le `beq` n'était jamais pris — **le patch est un
+no-op pour eux.** Il n'ajoute qu'une capacité : administrer les
+endpoints d'une interface qu'on a déjà acquise.
+
+Adresse virtuelle IOSU : `0x10114338`. Le segment 17 est mappé à
+`0x10100000` ; l'offset dans l'image du serveur UHS est `0x14338`.
+
+## Ce qui reste à décider (et à valider avant d'écrire quoi que ce soit)
+
+Le patch vit **en RAM**, appliqué au démarrage par un module de type
+Mocha/Aroma, et **disparaît au redémarrage** : rien n'est écrit sur la
+NAND. Mais il modifie la mémoire du noyau IOSU — c'est l'action la plus
+sensible du projet, sous la contrainte « surtout pas briquer ». Donc :
+plan écrit d'abord, validation ensuite, code après. Deux inconnues à
+lever avant de toucher au silicium :
+
+1. `FUN_1011b280`, en aval, a-t-il une seconde garde de propriété ? Si
+   oui, le patch déplace l'échec au lieu de le supprimer. À vérifier sur
+   console, pas prouvable statiquement seul.
+2. Le mécanisme d'application : sur Aroma, quel module patche la RAM
+   d'IOSU proprement, et comment on revient en arrière (redémarrage
+   simple ? bouton de secours ?).
