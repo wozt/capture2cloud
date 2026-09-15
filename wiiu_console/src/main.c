@@ -51,6 +51,8 @@
 
 #define TV_WIDTH   1280
 #define TV_HEIGHT  720
+#define DRC_WIDTH  854
+#define DRC_HEIGHT 480
 
 /* OSScreen's font cell. Text is placed by cell and the touch buttons by
  * pixel, so the two have to agree about where a row is. */
@@ -127,7 +129,7 @@ static const Rect RECT_QUIT    = { 480, 310, 320, 80 };
 #define C_ACCENT  0x2f6f4eFF
 #define C_DANGER  0x6f2f2fFF
 
-static void draw_settings(const Settings *s, const char *note)
+static void draw_settings(const Settings *s, const char *note, int touch_x, int touch_y)
 {
     char host[32], buf[96];
     settings_host_string(s, host, sizeof(host));
@@ -151,6 +153,14 @@ static void draw_settings(const Settings *s, const char *note)
 
     if (note && note[0]) {
         OSScreenPutFontEx(SCREEN_DRC, 1, 17, note);
+    }
+    /* Still on screen because the touch mapping has been wrong twice.
+     * One look at these numbers while touching a corner settles it,
+     * where another round trip does not. */
+    {
+        char t[48];
+        snprintf(t, sizeof(t), "touch %d,%d", touch_x, touch_y);
+        OSScreenPutFontEx(SCREEN_DRC, 1, 19, t);
     }
 
     /* The television says the same thing, for whoever is not holding
@@ -279,19 +289,25 @@ int main(int argc, char **argv)
         int tx = 0, ty = 0, tapped = 0;
         if (have_pad) {
             /*
-             * ...Ex, with the resolution named.
+             * Two things here were wrong twice over, and both are taken
+             * from dimok's homebrew_launcher, which has been driving
+             * this panel with a finger since 2016.
              *
-             * VPADGetTPCalibratedPoint without the suffix calibrates
-             * into a DEFAULT resolution, which is not this panel's. The
-             * buttons below are laid out in 854x480 and were being
-             * hit-tested against coordinates in something else, so not
-             * one of them ever responded -- reported from the sofa as
-             * "your touch buttons do not even work", quite rightly.
+             * The point to calibrate is tpFiltered1, NOT tpNormal.
+             * tpNormal is the raw sample; passing it produced
+             * coordinates that never matched anything, which is why
+             * nothing responded at all.
+             *
+             * And what comes back is in 1280x720, not this panel's
+             * 854x480 -- that reference divides by exactly those
+             * numbers. So the point is scaled into the layout's space
+             * rather than the layout being guessed into the point's.
              */
             VPADTouchData cal;
-            VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &cal, &vpad.tpNormal);
-            tx = cal.x;
-            ty = cal.y;
+            VPADGetTPCalibratedPoint(VPAD_CHAN_0, &cal, &vpad.tpFiltered1);
+            tx = (int)cal.x * DRC_WIDTH / 1280;
+            ty = (int)cal.y * DRC_HEIGHT / 720;
+
             const int touching = vpad.tpNormal.touched != 0;
             if (was_touching && !touching) {
                 tapped = 1;   /* released: this is the tap */
@@ -431,7 +447,7 @@ int main(int argc, char **argv)
                 snprintf(line, sizeof(line), "decoder: %s", why);
                 OSScreenPutFontEx(SCREEN_TV, 2, 8, line);
             }
-            draw_settings(&settings, note);
+            draw_settings(&settings, note, tx, ty);
         } else {
             if (have_frame) {
                 draw_frame(&frame);
