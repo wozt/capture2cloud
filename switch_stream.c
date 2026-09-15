@@ -1287,7 +1287,20 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         return NULL;
     }
 
-    s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /*
+     * SOCK_CLOEXEC, and it matters more than it looks.
+     *
+     * This host forks and execs the GamePad client, which inherited
+     * every listening socket -- `ss -tlnp` showed wiiu_pad holding
+     * 5081, 5082 and 5083 alongside the host. SO_REUSEADDR lets a new
+     * bind past a socket in TIME_WAIT; it does NOT let one past another
+     * process that is actively listening. So a host that died while its
+     * child lived on left all three ports held by a program that cannot
+     * answer on them, and the next start could not bind -- which looks
+     * exactly like "it will not launch" and has nothing in the log to
+     * say why.
+     */
+    s->listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s->listen_fd < 0) {
         perror("switch_stream: socket");
         SDL_DestroyMutex(s->mutex);
@@ -1320,7 +1333,7 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
      * else already holding that port is the usual reason, and a pad is
      * the one client that can be told to use another.
      */
-    s->drc_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    s->drc_listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s->drc_listen_fd >= 0) {
         setsockopt(s->drc_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         struct sockaddr_in drc_addr;
@@ -1343,7 +1356,7 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
     /* The Wii U console's door, allowed to fail for the same reason the
      * one above is: a machine that cannot bind it serves everything
      * else perfectly well. */
-    s->wiiu_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    s->wiiu_listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s->wiiu_listen_fd >= 0) {
         setsockopt(s->wiiu_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
         struct sockaddr_in wiiu_addr;
