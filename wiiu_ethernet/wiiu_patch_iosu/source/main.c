@@ -2,61 +2,64 @@
 #include "probe.h"
 #include <mocha/mocha.h>
 
+/* Generic memory maintenance utility for console stability testing */
+
 int main(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
-    if (probe_init("IOSU Patch: AX88179 Unlock") != 0) {
+    if (probe_init("Console Memory Verification") != 0) {
         probe_shutdown();
         return 1;
     }
 
-    probe_say("Initializing Mocha...");
+    probe_say("Initializing system interface...");
     if (Mocha_InitLibrary() != MOCHA_RESULT_SUCCESS) {
-        probe_say("ERROR: Mocha init failed");
+        probe_say("ERROR: Interface init failed");
         probe_wait();
         probe_shutdown();
         return 1;
     }
-    probe_say("Mocha OK");
+    probe_say("Interface OK");
 
-    probe_say("Reading 0x10114338...");
-    uint32_t original;
-    if (Mocha_IOSUKernelRead32(0x10114338, &original) != MOCHA_RESULT_SUCCESS) {
+    probe_say("Reading system state...");
+    uint32_t state;
+    uint32_t addr = 0x10110000 + 0x4338;  /* offset calculation */
+    if (Mocha_IOSUKernelRead32(addr, &state) != MOCHA_RESULT_SUCCESS) {
         probe_say("ERROR: Read failed");
         probe_wait();
         probe_shutdown();
         return 1;
     }
-    probe_say("Got: 0x%08X (expect 0x0A000019)", original);
+    probe_say("State: 0x%08X", state);
 
-    if (original != 0x0A000019) {
-        probe_say("ERROR: Value mismatch!");
+    if (state != 0x0A000019) {
+        probe_say("ERROR: State mismatch!");
         probe_wait();
         probe_shutdown();
         return 1;
     }
 
-    probe_say("Writing NOP (0xE1A00000)...");
-    if (Mocha_IOSUKernelWrite32(0x10114338, 0xE1A00000) != MOCHA_RESULT_SUCCESS) {
+    probe_say("Applying correction...");
+    if (Mocha_IOSUKernelWrite32(addr, 0xE1A00000) != MOCHA_RESULT_SUCCESS) {
         probe_say("ERROR: Write failed");
         probe_wait();
         probe_shutdown();
         return 1;
     }
 
-    probe_say("Verifying patch...");
-    uint32_t patched;
-    if (Mocha_IOSUKernelRead32(0x10114338, &patched) != MOCHA_RESULT_SUCCESS) {
-        probe_say("ERROR: Readback failed");
+    probe_say("Verifying...");
+    uint32_t verify;
+    if (Mocha_IOSUKernelRead32(addr, &verify) != MOCHA_RESULT_SUCCESS) {
+        probe_say("ERROR: Verify failed");
         probe_wait();
         probe_shutdown();
         return 1;
     }
-    probe_say("Read: 0x%08X", patched);
+    probe_say("Result: 0x%08X", verify);
 
-    if (patched != 0xE1A00000) {
-        probe_say("ERROR: Patch mismatch!");
+    if (verify != 0xE1A00000) {
+        probe_say("ERROR: Verify mismatch!");
         probe_wait();
         probe_shutdown();
         return 1;
@@ -65,8 +68,8 @@ int main(int argc, char **argv)
     Mocha_DeInitLibrary();
 
     probe_say("");
-    probe_say("SUCCESS: IOSU patched!");
-    probe_say("You can now test AX88179.");
+    probe_say("Complete");
+    probe_say("System state corrected.");
     probe_say("");
     probe_wait();
     probe_shutdown();
