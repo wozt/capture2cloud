@@ -303,25 +303,61 @@ real suspicion: the **controller number**. Moving the dongle from the
 front port to the back changes nothing -- the adapter is on controller 0
 either way, and controllers 1 and 2 will not open at all (-1 and -6).
 
+### The flow was wrong, and now it is right -- and it still stops
+
+WiiUBrew's `/dev/uhs` page settles what a dozen permutations could not.
+Acquiring is only half a protocol. **ioctl 0x01, `UhsClassDrvReg`**,
+registers a driver with a filter, and UHS then *calls you* when a
+matching interface appears and hands you its profile. That is exactly
+the shape of the IOSU driver in the decrypted firmware --
+`__uhsIfProbeCallback`, `__handleUhsDevProbe` -- and every probe before
+this queried and acquired instead, which is not the supported flow.
+
+Registered properly:
+
+    UhsClassDrvReg -> 1
+    probe callback ARRIVED
+    offered interface 196611
+    acquire -> 0
+    acquire callback never came
+    enable endpoints -> -2162715
+    bulk in ep2 -> -2162713
+
+**The registration works and the probe arrives.** Note the handle: UHS
+offers 196611, where a query returns 65537 for the same adapter. They
+are different handle spaces, so the earlier attempts were not even
+naming the same thing.
+
+And on the handle UHS itself offered, through the flow the documentation
+describes, the acquire is still accepted and still never completes.
+
 ### So the question is now much narrower
 
 Not "why is bulk refused" but **"why does an acquire that was accepted
 never complete"**. Candidates:
 
-1. The completion arrives on a thread or a message queue that something
-   has to service, and a program that just spins never lets it run.
-   Cheapest to test: do the wait on a separate thread, or with
-   `OSYieldThread` in the loop rather than `OSSleepTicks`.
-2. `UhsAdministerDevice` may be required first -- a configuration set
-   before the stack will part with an interface.
-3. IOSU refuses to hand over an interface on a device it has itself
-   probed, silently, by never answering. If that is it, the userspace
-   route is closed and the IOSU patch is the only one -- which is what
-   the decrypted firmware above is for.
+1. ~~The completion needs a thread or a queue serviced.~~ **Eliminated.**
+   Tried four ways in one run -- sleeping, yielding, pumping ProcUI, and
+   asking from a thread of its own. The callback never arrives in any of
+   them.
+2. ~~`UhsAdministerDevice` first.~~ **Eliminated.** It returns 0, so the
+   device level is administrable; the interface level still is not.
+3. ~~The controller number.~~ **Eliminated.** Front port or back, the
+   adapter is on controller 0, and controllers 1 and 2 do not open.
+4. ~~Querying instead of registering as a class driver.~~ **Fixed, and
+   it was genuinely wrong** -- the probe callback now arrives with a
+   handle from a different space. The acquire still does not complete.
 
-Point 3 still decides the project. But point 1 is an hour, and the
-difference between "never answered" and "answered no" is exactly the
-kind of thing that turns out to be a missing thread.
+What is left is the one that decides the project: **IOSU may simply not
+hand an interface to a Cafe OS client for a device it has itself
+probed**, and it says so by never answering rather than by refusing.
+
+That is now a question to answer in the firmware rather than by
+experiment, and the firmware is decrypted, mapped, and named: segment
+29 at `0x12300000`, with `__handleUhsDevProbe` and `__uhsIfProbeCallback`
+sitting in the strings beside it. The next session starts in Ghidra,
+looking at what the stack does with an acquire request and under what
+condition it declines to answer one.
 
 ## Next, in order
 
