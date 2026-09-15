@@ -23,6 +23,17 @@ typedef enum {
     GTK_SHELL_ACTION_WAKE_CONSOLE,
     GTK_SHELL_ACTION_RESET_DONGLE,
     GTK_SHELL_ACTION_RESTART,
+    /* The GamePad bridge, started and stopped by hand. It normally
+     * starts itself with the host and waits for a pad, but a thing that
+     * either works or does not, with no handle on it, is a thing you
+     * cannot debug from the sofa. */
+    GTK_SHELL_ACTION_WIIU_START,
+    GTK_SHELL_ACTION_WIIU_STOP,
+    /* The radio under it: the access point the pad associates to, and
+     * the one gesture that makes an associated pad come back fresh. */
+    GTK_SHELL_ACTION_WIIU_AP_START,
+    GTK_SHELL_ACTION_WIIU_AP_STOP,
+    GTK_SHELL_ACTION_WIIU_DEAUTH,
     GTK_SHELL_ACTION_QUIT
 } GtkShellAction;
 
@@ -58,6 +69,10 @@ void gtk_shell_set_controllers(GtkShell *shell, const char *const *names, int co
 /* A line under the tray icon's tooltip and in the settings window:
  * whether the stream is up, how many are watching. Thread-safe. */
 void gtk_shell_set_status(GtkShell *shell, const char *text);
+
+/* What the GamePad bridge is doing, shown on its own line under the
+ * setting that turns it on. Written from the host once a second. */
+void gtk_shell_set_wiiu_status(GtkShell *shell, const char *text);
 
 /* Shows an error dialog. Thread-safe, callable from any thread. */
 void gtk_shell_show_error(GtkShell *shell, const char *message);

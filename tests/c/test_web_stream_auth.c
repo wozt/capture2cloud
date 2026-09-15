@@ -584,6 +584,66 @@ static void test_app_paths(void) {
     t_ok("config path ends with .env", strstr(cfg, ".env") != NULL);
 }
 
+/*
+ * Saving a setting must not cost anything else in the file.
+ *
+ * This .env holds a Home Assistant token and the player password, so a
+ * writer that regenerated it -- rather than editing one line of it --
+ * would be one format change away from dropping somebody's
+ * credentials. These read like fussy assertions and are not: every one
+ * of them is a way that has actually happened to somebody's config.
+ */
+static void test_config_set(void) {
+    t_begin("config_set_int (saving a setting keeps the rest of the file)");
+
+    static const char *const original =
+        "# A comment that must survive\n"
+        "PLAYER_PASSWORD=s3cret\n"
+        "HA_TOKEN=abc.def.ghi\n"
+        "\n"
+        "WIIU_PAD_AUTOSTART=0\n"
+        "# WIIU_PAD_AUTOSTART=1   <- a note, not the setting\n"
+        "WEB_PORT=5080\n";
+    write_env(original);
+
+    t_eq_int("the write reports success", config_set_int("WIIU_PAD_AUTOSTART", 1), 0);
+    t_eq_int("and the value is read back", config_get_int("WIIU_PAD_AUTOSTART", 0, 0, 1), 1);
+
+    /* Everything else, still there and still itself. */
+    char pw[128];
+    t_eq_str("the password is untouched",
+             config_get_str("PLAYER_PASSWORD", pw, sizeof(pw), "(gone)"), "s3cret");
+    char tok[128];
+    t_eq_str("the token is untouched",
+             config_get_str("HA_TOKEN", tok, sizeof(tok), "(gone)"), "abc.def.ghi");
+    t_eq_int("other settings are untouched", config_get_int("WEB_PORT", 0, 0, 70000), 5080);
+
+    /* The comment, and the commented-out key that is NOT this setting. */
+    FILE *f = fopen(env_path, "r");
+    char body[2048] = {0};
+    if (f) {
+        fread(body, 1, sizeof(body) - 1, f);
+        fclose(f);
+    }
+    t_ok("the comment survived", strstr(body, "# A comment that must survive") != NULL);
+    t_ok("a commented-out line is not mistaken for the setting",
+         strstr(body, "# WIIU_PAD_AUTOSTART=1   <- a note, not the setting") != NULL);
+    t_ok("the key is written once, not appended beside itself",
+         strstr(body, "WIIU_PAD_AUTOSTART=1\n") != NULL &&
+         strstr(body, "WIIU_PAD_AUTOSTART=0") == NULL);
+
+    /* Back again, because a toggle goes both ways and the second write
+     * edits a line this function wrote rather than one a person did. */
+    t_eq_int("turning it back off", config_set_int("WIIU_PAD_AUTOSTART", 0), 0);
+    t_eq_int("reads back off", config_get_int("WIIU_PAD_AUTOSTART", 1, 0, 1), 0);
+
+    /* A key that is not there yet is added rather than lost. */
+    t_eq_int("a new key is appended", config_set_int("BRAND_NEW_KEY", 7), 0);
+    t_eq_int("and reads back", config_get_int("BRAND_NEW_KEY", 0, 0, 100), 7);
+    t_eq_str("without disturbing the password",
+             config_get_str("PLAYER_PASSWORD", pw, sizeof(pw), "(gone)"), "s3cret");
+}
+
 static void test_config_types(void) {
     t_begin("config_get_int");
 
@@ -624,6 +684,7 @@ int main(void) {
     test_capture_format_is_player_only();
     test_reset_dongle_is_player_only();
     test_app_paths();
+    test_config_set();
     test_config_types();
 
     env_cleanup();

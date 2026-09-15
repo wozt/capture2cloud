@@ -24,6 +24,22 @@
 #define C2S_VERSION     1
 #define C2S_DEFAULT_PORT 5081
 
+/*
+ * And a second port, for a Wii U GamePad only.
+ *
+ * Not a tidiness choice. The console, the phone and the browsers share
+ * eight client slots, and a pad that reconnects in a loop -- which is
+ * what a pad does while its radio is being brought up -- would take
+ * them from clients that have nowhere else to go. That exact failure
+ * has already happened once here, between the browsers and the console,
+ * and the answer then was to stop them sharing a pool.
+ *
+ * It also settles the codec without asking: arriving on this port IS
+ * the request, so there is no round trip where the client is briefly on
+ * a stream it cannot decode.
+ */
+#define C2S_DRC_PORT 5082
+
 /* Sizes are u32 and the sender never exceeds this, so a receiver can
  * reject a malformed length instead of trying to allocate it. A 720p
  * VP8 keyframe is far below this; the margin is for a scene change on a
@@ -64,8 +80,37 @@ typedef struct __attribute__((packed)) {
 typedef enum {
     C2S_CODEC_VP8  = 1,
     C2S_CODEC_OPUS = 2,
-    C2S_CODEC_H264 = 3
+    C2S_CODEC_H264 = 3,
+    /*
+     * H.264 as a Wii U GamePad can decode it, which ordinary H.264 is
+     * not: DRH slicing, macroblock rows instead of NAL units, and no
+     * slice header at all. Only the drc-x264 fork produces it.
+     *
+     * A payload is one C2sDrcFrame followed by its five chunks, because
+     * the chunk boundaries are the message -- the pad's packetiser
+     * wants exactly five and cannot find them by scanning for start
+     * codes: there are none.
+     *
+     * A host without the fork refuses this codec rather than sending
+     * something that looks close, and the client falls back to decoding
+     * ordinary H.264 and encoding it again itself.
+     */
+    C2S_CODEC_DRC_H264 = 4
 } C2sCodec;
+
+/* Fixed by the pad's protocol, not chosen: the panel libdrc feeds is
+ * 864x480 and the slicing is always five chunks. */
+#define C2S_DRC_WIDTH   864
+#define C2S_DRC_HEIGHT  480
+#define C2S_DRC_CHUNKS  5
+
+/* The header on a C2S_CODEC_DRC_H264 video payload. The five chunks
+ * follow it, in order, packed. */
+typedef struct __attribute__((packed)) {
+    uint8_t  chunks;          /* always C2S_DRC_CHUNKS; a guard, not a choice */
+    uint8_t  reserved[3];
+    uint32_t size[C2S_DRC_CHUNKS];
+} C2sDrcFrame;
 
 /* --- framing, both directions -------------------------------------- */
 
@@ -192,12 +237,24 @@ typedef struct __attribute__((packed)) {
 /* The structs above are packed and read byte-for-byte off a socket by
  * two independently built programs. A field silently changing size on
  * one side would produce a stream that connects and then makes no sense,
- * so the sizes are pinned here: a mismatch fails the build instead. */
-_Static_assert(sizeof(C2sHello) == 8, "C2sHello must stay 8 bytes on the wire");
-_Static_assert(sizeof(C2sHelloAck) == 20, "C2sHelloAck must stay 20 bytes on the wire");
-_Static_assert(sizeof(C2sStreamInfo) == 8, "C2sStreamInfo must stay 8 bytes on the wire");
-_Static_assert(sizeof(C2sProfile) == 8, "C2sProfile must stay 8 bytes on the wire");
-_Static_assert(sizeof(C2sShared) == 12, "C2sShared must stay 12 bytes on the wire");
-_Static_assert(sizeof(C2sFrameHeader) == 8, "C2sFrameHeader must stay 8 bytes on the wire");
+ * so the sizes are pinned here: a mismatch fails the build instead.
+ *
+ * Spelled through a macro because one of those programs is C++ now --
+ * the Wii U GamePad client, which has to be, because libdrc is. The
+ * keyword is the only thing that differs between the two languages
+ * here; everything else in this file is types and macros that both
+ * read the same way. */
+#ifdef __cplusplus
+#define C2S_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define C2S_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
+
+C2S_STATIC_ASSERT(sizeof(C2sHello) == 8, "C2sHello must stay 8 bytes on the wire");
+C2S_STATIC_ASSERT(sizeof(C2sHelloAck) == 20, "C2sHelloAck must stay 20 bytes on the wire");
+C2S_STATIC_ASSERT(sizeof(C2sStreamInfo) == 8, "C2sStreamInfo must stay 8 bytes on the wire");
+C2S_STATIC_ASSERT(sizeof(C2sProfile) == 8, "C2sProfile must stay 8 bytes on the wire");
+C2S_STATIC_ASSERT(sizeof(C2sShared) == 12, "C2sShared must stay 12 bytes on the wire");
+C2S_STATIC_ASSERT(sizeof(C2sFrameHeader) == 8, "C2sFrameHeader must stay 8 bytes on the wire");
 
 #endif

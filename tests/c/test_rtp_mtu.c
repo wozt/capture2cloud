@@ -34,6 +34,23 @@ void gamepad_bridge_forget(unsigned source) {
 /* gst_webrtc.c hands encoded frames to the native transport. None of
  * that is exercised here, and linking switch_stream.c would drag its
  * sockets and threads into a test about packet sizes. */
+/* The Wii U encode, stubbed for the same reason as the rest: this test
+ * is about packet sizes, and drc-x264 is a library that may not be
+ * installed. test_drc_encoder.c is where that chain is actually
+ * exercised. */
+DrcEncoder *drc_encoder_open(const char *so, const char *preset, char *err, size_t n) {
+    (void)so; (void)preset;
+    if (err && n) snprintf(err, n, "stubbed out in this test");
+    return NULL;
+}
+void drc_encoder_close(DrcEncoder *e) { (void)e; }
+int drc_encoder_encode(DrcEncoder *e, const uint8_t *i420, int idr, DrcFrame *out) {
+    (void)e; (void)i420; (void)idr; (void)out;
+    return -1;
+}
+int drc_encoder_restart(DrcEncoder *e) { (void)e; return -1; }
+const char *drc_encoder_library(const DrcEncoder *e) { (void)e; return ""; }
+
 void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *d, uint32_t n, int k) {
     (void)s; (void)slot; (void)d; (void)n; (void)k;
 }
@@ -54,6 +71,10 @@ void switch_stream_announce_shared(SwitchStream *s, int slot, uint16_t w, uint16
                                    uint16_t kbps, uint8_t mjpeg) {
     (void)s; (void)slot; (void)w; (void)h; (void)fps; (void)kbps; (void)mjpeg;
 }
+
+void switch_stream_set_drc_available(SwitchStream *s, int a) { (void)s; (void)a; }
+
+int switch_stream_stream_codec(SwitchStream *s, int slot) { (void)s; (void)slot; return 0; }
 
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *d, uint32_t n) {
     (void)s; (void)d; (void)n;

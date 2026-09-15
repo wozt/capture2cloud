@@ -16,6 +16,8 @@ C2C_SOURCES=(
     "$C2C_DIR/web_stream.c"
     "$C2C_DIR/gst_webrtc.c"
     "$C2C_DIR/gamepad_bridge.c"
+    "$C2C_DIR/wiiu_pad.c"
+    "$C2C_DIR/drc_encoder.c"
     "$C2C_DIR/app_config.c"
     "$C2C_DIR/ws_frame.c"
     "$C2C_DIR/video_capture.c"
@@ -29,6 +31,8 @@ C2C_HEADERS=(
     "$C2C_DIR/web_stream.h"
     "$C2C_DIR/gst_webrtc.h"
     "$C2C_DIR/gamepad_bridge.h"
+    "$C2C_DIR/wiiu_pad.h"
+    "$C2C_DIR/drc_encoder.h"
     "$C2C_DIR/app_config.h"
     "$C2C_DIR/video_capture.h"
     "$C2C_DIR/audio_capture.h"
@@ -95,8 +99,14 @@ c2c_build_if_needed() {
         return 1
     fi
 
-    gcc -O2 -Wall -Wextra -o "$C2C_BIN" "${C2C_SOURCES[@]}" \
-        $(pkg-config --cflags --libs $C2C_PKGCONFIG_DEPS) -lm
+    # -I for drc-x264's own header: b_drh_mode is a field no
+    # distribution's x264.h has, and the struct layout differs between
+    # builds, so this must be the fork's. The header is vendored under
+    # wiiu/include (source, and committed); the LIBRARY is opened at run
+    # time rather than linked -- see drc_encoder.c for why that is not a
+    # convenience. -ldl for that, and it stays one gcc line of C.
+    gcc -O2 -Wall -Wextra -I"$C2C_DIR/wiiu/include" -o "$C2C_BIN" "${C2C_SOURCES[@]}" \
+        $(pkg-config --cflags --libs $C2C_PKGCONFIG_DEPS) -lm -ldl
 }
 
 # --- finding a running instance -------------------------------------

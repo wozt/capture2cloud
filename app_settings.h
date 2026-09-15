@@ -33,6 +33,15 @@ typedef struct {
      * small binary protocol, and moving one has no reason to move the
      * other. */
     int switch_port;
+    /*
+     * Whether a real Wii U GamePad is being fed.
+     *
+     * It is a separate program (see wiiu_pad.h), started and stopped
+     * with this flag. Off by default: it needs a Realtek adapter
+     * running an access point and a paired pad, which almost nobody
+     * has, and turning it on without them only produces an error.
+     */
+    int wiiu_pad_enabled;
     int browser_height;     /* 1080, 720 or 480 -- what the browser gets */
     int bitrate_mbps;       /* the browser encoder's target */
     int capture_mjpeg;      /* 1 = MJPEG from the card, 0 = raw YUYV */
@@ -70,7 +79,7 @@ typedef struct {
 #define APP_SETTINGS_DEFAULTS                                                  \
     {                                                                          \
         .stream_enabled = 0, .web_port = 5080, .switch_enabled = 1,             \
-        .switch_port = 5081,                                                   \
+        .switch_port = 5081, .wiiu_pad_enabled = 0,                            \
         .browser_height = 1080,         \
         .bitrate_mbps = 12, .capture_mjpeg = 0, .gamepad_enabled = 1,          \
         .gamepad_index = -1, .invert_ry = 0, .lt_threshold = 30,               \

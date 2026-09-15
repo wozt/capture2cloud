@@ -41,6 +41,8 @@ struct GtkShell {
     SDL_mutex *lock;
     AppSettings settings;
     char status[160];
+    char wiiu_status_text[160];
+    volatile int wiiu_status_dirty;
 
     /* Set while the code is filling the controls in from `settings`, so
      * the "value changed" handlers do not report those as the user
@@ -68,12 +70,14 @@ struct GtkShell {
  * a list of assignments repeated in three places. */
 typedef struct {
     GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
+    GtkWidget *wiiu_pad_enabled;
     GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry, *output_protocol;
     GtkWidget *adapter_sees;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
     GtkWidget *muted, *volume, *direct_sink, *brightness, *contrast, *vsync;
     GtkWidget *status_label;
+    GtkWidget *wiiu_status;
 
     /* The replug dialog. Changing what the adapter emulates is not done
      * when the write returns: the adapter has to be pulled out of the
@@ -136,6 +140,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     SDL_LockMutex(shell->lock);
     if (w == g_c.stream_enabled)       shell->settings.stream_enabled = on;
     else if (w == g_c.switch_enabled)  shell->settings.switch_enabled = on;
+    else if (w == g_c.wiiu_pad_enabled) shell->settings.wiiu_pad_enabled = on;
     else if (w == g_c.gamepad_enabled) shell->settings.gamepad_enabled = on;
     else if (w == g_c.invert_ry)       shell->settings.invert_ry = on;
     else if (w == g_c.direct_sink)     shell->settings.local_direct_sink = on;
@@ -371,6 +376,7 @@ static void load_controls(GtkShell *shell) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.stream_enabled), s.stream_enabled);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), s.wiiu_pad_enabled);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.switch_port), s.switch_port);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.resolution),
                              s.browser_height == 1080 ? 0 : (s.browser_height == 720 ? 1 : 2));
@@ -466,6 +472,70 @@ static void build_settings_window(GtkShell *shell) {
         "disconnects whatever is connected: it has to be changed on the console "
         "as well.");
     g_signal_connect(g_c.switch_port, "value-changed", G_CALLBACK(on_spin), shell);
+
+    g_c.wiiu_pad_enabled = add_row(grid, row++, "serve to wii u gamepad",
+                                   make_check(shell, "on"));
+    gtk_widget_set_tooltip_text(g_c.wiiu_pad_enabled,
+        "Sends the picture and sound to a real Wii U GamePad over the air, with "
+        "its buttons, sticks and touch coming back. It connects to the console "
+        "port above like any other native client.\n\n"
+        "It needs a Realtek adapter running an access point and a pad already "
+        "paired to this machine, and it is a separate program that has to be "
+        "built first -- see wiiu/README.md. Without those this only reports why "
+        "it could not start.");
+
+    /*
+     * What the pad is doing, and a handle on it.
+     *
+     * The bridge waits for a pad, serves it, and stops when it goes --
+     * all of which happens in another process, out of sight. Without
+     * this line the only way to tell "no pad has ever associated" from
+     * "streaming perfectly to a panel you are not looking at" is to
+     * read a terminal.
+     */
+    g_c.wiiu_status = gtk_label_new("");
+    gtk_widget_set_halign(g_c.wiiu_status, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(g_c.wiiu_status), TRUE);
+    add_row(grid, row++, "wii u gamepad status", g_c.wiiu_status);
+
+    {
+        GtkWidget *pad_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(pad_buttons),
+            make_button(shell, "start stream", GTK_SHELL_ACTION_WIIU_START,
+                "Starts the bridge now.\n\n"
+                "It waits for a pad to associate, settles for four seconds, and "
+                "only then connects and encodes -- so pressing this with no pad "
+                "switched on leaves it waiting rather than failing."),
+            FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(pad_buttons),
+            make_button(shell, "stop stream", GTK_SHELL_ACTION_WIIU_STOP,
+                "Stops it, and with it the fourth encoder: that chain is fed "
+                "only while something is watching it, so nothing is encoded for "
+                "the pad once this connection is gone."),
+            FALSE, FALSE, 0);
+        add_row(grid, row++, "", pad_buttons);
+
+        GtkWidget *ap_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(ap_buttons),
+            make_button(shell, "start ap", GTK_SHELL_ACTION_WIIU_AP_START,
+                "Brings up the access point the pad associates to.\n\n"
+                "It runs a forked hostapd and needs root, so this asks for it "
+                "the way the terminal would. Nothing here works until this is "
+                "up -- see wiiu/docs/WIIU_GAMEPAD.md."),
+            FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(ap_buttons),
+            make_button(shell, "stop ap", GTK_SHELL_ACTION_WIIU_AP_STOP,
+                "Takes it down. Every pad on it drops with it."),
+            FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(ap_buttons),
+            make_button(shell, "deauth pad", GTK_SHELL_ACTION_WIIU_DEAUTH,
+                "Asks the pad to associate again.\n\n"
+                "Worth trying when the picture has stopped and will not come "
+                "back: the pad reassociates in about 0.8s and the session "
+                "starts over. It does NOT need root."),
+            FALSE, FALSE, 0);
+        add_row(grid, row++, "", ap_buttons);
+    }
 
     g_c.resolution = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "1080p60");
@@ -746,6 +816,16 @@ static gboolean on_tick(gpointer user_data) {
         shell->settings_dirty = 0;
         load_controls(shell);
     }
+    if (shell->wiiu_status_dirty) {
+        shell->wiiu_status_dirty = 0;
+        char text[160];
+        SDL_LockMutex(shell->lock);
+        snprintf(text, sizeof(text), "%s", shell->wiiu_status_text);
+        SDL_UnlockMutex(shell->lock);
+        if (g_c.wiiu_status) {
+            gtk_label_set_text(GTK_LABEL(g_c.wiiu_status), text);
+        }
+    }
     if (shell->status_dirty) {
         shell->status_dirty = 0;
         char text[160];
@@ -928,6 +1008,16 @@ void gtk_shell_update(GtkShell *shell, const AppSettings *settings) {
     shell->settings = *settings;
     SDL_UnlockMutex(shell->lock);
     shell->settings_dirty = 1;
+}
+
+void gtk_shell_set_wiiu_status(GtkShell *shell, const char *text) {
+    if (!shell || !text) {
+        return;
+    }
+    SDL_LockMutex(shell->lock);
+    snprintf(shell->wiiu_status_text, sizeof(shell->wiiu_status_text), "%s", text);
+    shell->wiiu_status_dirty = 1;
+    SDL_UnlockMutex(shell->lock);
 }
 
 void gtk_shell_set_status(GtkShell *shell, const char *text) {

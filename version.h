@@ -8,6 +8,6 @@
  * Android build so a bump that misses one of them fails the suite
  * rather than shipping three answers to "which version am I running".
  */
-#define C2C_VERSION "1.2.0"
+#define C2C_VERSION "1.3.0"
 
 #endif
