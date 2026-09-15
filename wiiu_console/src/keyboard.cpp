@@ -125,6 +125,8 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
 
     WHBLogPrintf("swkbd: entering its loop");
     int result = 0;   /* cancelled, unless told otherwise */
+    VPADStatus last{};
+    bool have_sample = false;
     while (proc_running()) {
         VPADStatus vpad;
         VPADReadError verr;
@@ -151,8 +153,22 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
             break;
         }
 
+        /*
+         * The last good sample is kept and reused.
+         *
+         * VPADRead produces one sixty times a second and returns
+         * VPAD_READ_NO_SAMPLES in between. Handing the keyboard a null
+         * on those frames means it sees input only on the frames where
+         * a sample happens to land -- so a finger held on a key is a
+         * key pressed intermittently, or not at all.
+         */
+        if (verr == VPAD_READ_SUCCESS) {
+            last = vpad;
+            have_sample = true;
+        }
+
         nn::swkbd::ControllerInfo controllerInfo;
-        controllerInfo.vpad = (verr == VPAD_READ_SUCCESS) ? &vpad : nullptr;
+        controllerInfo.vpad = have_sample ? &last : nullptr;
         nn::swkbd::Calc(controllerInfo);
 
         /* The keyboard loads fonts and runs word prediction on other

@@ -111,7 +111,19 @@ int ui_init(char *why, size_t why_size)
         snprintf(why, why_size, "window: %s", SDL_GetError());
         return -1;
     }
-    g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
+    /*
+     * PRESENTVSYNC, and it is not a nicety.
+     *
+     * Without it this loop runs as fast as the CPU allows, and two
+     * things break at once. The console's keyboard is driven by how
+     * often Calc() is called, so its animations race -- reported as "il
+     * tourne super vite en accéléré". And VPADRead returns a sample
+     * only sixty times a second, so nearly every iteration gets
+     * VPAD_READ_NO_SAMPLES and the keyboard is handed no input at all,
+     * which is why its touch did nothing.
+     */
+    g_renderer = SDL_CreateRenderer(g_window, -1,
+                                    SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!g_renderer) {
         snprintf(why, why_size, "renderer: %s", SDL_GetError());
         return -1;
