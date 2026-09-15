@@ -1,21 +1,28 @@
 /*
- * What does AdministerEndpoint actually establish?
+ * The whole sequence raw, the way usb_mic.rpl does it.
  *
- * It reports -2162715 to us while IOSU's log shows it received and
- * processed the call with exactly the mask passed. So its return value
- * is not to be trusted, and neither is the assumption that whatever it
- * set up is usable -- it may have recorded a request size that bounds
- * every later transfer.
+ * usb_mic drives a USB device every day and imports exactly one
+ * library: coreinit, for IOS_Open/IOS_Ioctl/IOS_Ioctlv. It opens
+ * /dev/uhs itself. It never uses nsysuhs.rpl -- which is the library
+ * every probe here has gone through, and the one thing between us and
+ * a fault that has survived twelve eliminations.
  *
- * Several (pending, size) pairs, each followed by a bulk attempt at the
- * size it was given. The interesting output is not on this screen: it
- * is in /storage_slc/sys/logs, where the UHS server traces what it
- * really did. Each attempt is numbered so the two can be lined up.
+ * So this takes it out of the way. Every request block below is the one
+ * nsysuhs builds, read from its decompilation rather than guessed:
+ *
+ *   ioctl  0x11 query        filter in, profiles out
+ *   ioctl  0x04 acquire      0x0C {if_handle, context, callback}
+ *   ioctl  0x0B endpoints    0x18 {type, if_handle, mask, pending, size, 0}
+ *   ioctlv 0x0E bulk         0xA1 block + the data buffer
+ *
+ * Nothing here writes to the console: opening a device node and issuing
+ * ioctls changes nothing that survives a reboot.
  */
 #include <stdio.h>
 #include <string.h>
 
 #include <coreinit/cache.h>
+#include <coreinit/ios.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <nsysuhs/uhs.h>
@@ -24,23 +31,31 @@
 
 #define ASIX_VID    0x0b95
 #define AX88179_PID 0x1790
+
+#define UHS_IOCTL_QUERY     0x11
+#define UHS_IOCTL_ACQUIRE   0x04
+#define UHS_IOCTL_ADMIN_EP  0x0B
+#define UHS_IOCTLV_BULK     0x0E
+
 #define UHS_DIR_OUT 1
 #define UHS_DIR_IN  2
 
-static UhsHandle g_handle;
-static uint8_t g_work[128 * 1024] __attribute__((aligned(0x40)));
-static uint8_t g_buf[64 * 1024] __attribute__((aligned(0x40)));
+/* IOS reads and writes these directly, so they are aligned and static. */
+static uint8_t g_filter[0x40] __attribute__((aligned(0x40)));
+static uint8_t g_profiles[16 * 0x16C] __attribute__((aligned(0x40)));
+static uint8_t g_req[0x100] __attribute__((aligned(0x40)));
+static uint8_t g_data[4096] __attribute__((aligned(0x40)));
+static IOSVec  g_vecs[2] __attribute__((aligned(0x40)));
 
-static volatile int g_probed;
-static volatile uint32_t g_if;
-
-static void on_probe(void *context, UhsInterfaceProfile *profile)
+static void put32(uint8_t *p, uint32_t v)
 {
-    (void)context;
-    if (profile) {
-        g_if = profile->if_handle;
-        g_probed = 1;
-    }
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
+}
+
+static uint32_t get32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
 int main(int argc, char **argv)
@@ -48,66 +63,90 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
-    if (probe_init("UHS: endpoint sizes") != 0) {
+    if (probe_init("UHS raw: /dev/uhs directly") != 0) {
         probe_shutdown();
         return 1;
     }
 
-    UhsConfig config;
-    memset(&config, 0, sizeof(config));
-    config.controller_num = 0;
-    config.buffer = g_work;
-    config.buffer_size = sizeof(g_work);
-    if (UhsClientOpen(&g_handle, &config) < 0) {
-        probe_say("client will not open");
+    const IOSHandle fd = IOS_Open("/dev/uhs/0", IOS_OPEN_READWRITE);
+    probe_say("IOS_Open(\"/dev/uhs/0\") -> %d", (int)fd);
+    if (fd < 0) {
         probe_wait(); probe_shutdown(); return 1;
     }
 
-    UhsInterfaceFilter filter;
-    memset(&filter, 0, sizeof(filter));
-    filter.match_params = MATCH_DEV_VID | MATCH_DEV_PID;
-    filter.vid = ASIX_VID;
-    filter.pid = AX88179_PID;
+    /* --- query, to find the adapter and its handle ------------------- */
+    memset(g_filter, 0, sizeof(g_filter));
+    put32(g_filter + 0x00, MATCH_DEV_VID | MATCH_DEV_PID);
+    g_filter[0x04] = (uint8_t)(ASIX_VID >> 8);     /* vid at +2 in the struct, */
+    g_filter[0x05] = (uint8_t)ASIX_VID;            /* which is 16-bit fields   */
+    g_filter[0x06] = (uint8_t)(AX88179_PID >> 8);
+    g_filter[0x07] = (uint8_t)AX88179_PID;
+    /* match_params is a u16 at +0, vid u16 at +2, pid u16 at +4 */
+    memset(g_filter, 0, sizeof(g_filter));
+    g_filter[0] = 0x00; g_filter[1] = 0x03;                    /* VID|PID */
+    g_filter[2] = (uint8_t)(ASIX_VID >> 8);  g_filter[3] = (uint8_t)ASIX_VID;
+    g_filter[4] = (uint8_t)(AX88179_PID >> 8); g_filter[5] = (uint8_t)AX88179_PID;
 
-    const int32_t reg = UhsClassDrvReg(&g_handle, &filter, NULL, on_probe);
-    for (int w = 0; w < 3000 && !g_probed; w += 20) {
-        OSSleepTicks(OSMillisecondsToTicks(20));
-    }
-    if (!g_probed) {
-        probe_say("no probe (reg %d)", (int)reg);
+    memset(g_profiles, 0, sizeof(g_profiles));
+    DCFlushRange(g_filter, sizeof(g_filter));
+    DCFlushRange(g_profiles, sizeof(g_profiles));
+    int32_t r = IOS_Ioctl(fd, UHS_IOCTL_QUERY, g_filter, 0x10, g_profiles, sizeof(g_profiles));
+    DCInvalidateRange(g_profiles, sizeof(g_profiles));
+    probe_say("ioctl 0x11 query -> %d interface(s)", (int)r);
+    if (r <= 0) {
+        IOS_Close(fd);
         probe_wait(); probe_shutdown(); return 1;
     }
-    UhsAcquireInterface(&g_handle, g_if, NULL, NULL);
-    OSSleepTicks(OSMillisecondsToTicks(300));
-    probe_say("interface %u acquired", (unsigned)g_if);
+    const uint32_t ifh = get32(g_profiles);
+    probe_say("interface handle %u (slot %u)", (unsigned)ifh, (unsigned)(ifh & 0xFFFF));
 
-    /* Endpoint 2 alone as well as everything, and a spread of sizes. */
-    static const struct { uint32_t mask; uint32_t pending; uint32_t size; } tries[] = {
-        { 0xFFFF, 4,  512 },
-        { 0xFFFF, 1,  512 },
-        { 1u << 2, 4, 512 },
-        { 1u << 2, 4, 2048 },
-        { 0xFFFF, 8, 16384 },
-    };
+    /* --- acquire ----------------------------------------------------- */
+    memset(g_req, 0, sizeof(g_req));
+    put32(g_req + 0, ifh);
+    DCFlushRange(g_req, sizeof(g_req));
+    r = IOS_Ioctl(fd, UHS_IOCTL_ACQUIRE, g_req, 0x0C, NULL, 0);
+    probe_say("ioctl 0x04 acquire -> %d", (int)r);
 
-    for (unsigned i = 0; i < sizeof(tries) / sizeof(*tries); i++) {
-        const int32_t en = UhsAdministerEndpoint(&g_handle, g_if, UHS_ADMIN_EP_ENABLE,
-                                                 tries[i].mask, tries[i].pending, tries[i].size);
-        memset(g_buf, 0, tries[i].size);
-        DCFlushRange(g_buf, tries[i].size);
-        const int32_t r = UhsSubmitBulkRequest(&g_handle, g_if, 0x02, UHS_DIR_IN, g_buf,
-                                               (int)tries[i].size, 300);
-        DCInvalidateRange(g_buf, tries[i].size);
-        probe_say("#%u mask %04X pend %u size %5u: enable %d, bulk %d %s", i,
-                  (unsigned)tries[i].mask, (unsigned)tries[i].pending, (unsigned)tries[i].size,
-                  (int)en, (int)r, r >= 0 ? "*** ACCEPTED ***" : "");
-        OSSleepTicks(OSMillisecondsToTicks(100));
+    /* --- enable the endpoints ---------------------------------------- */
+    memset(g_req, 0, sizeof(g_req));
+    put32(g_req + 0x00, 1);        /* type: ENABLE */
+    put32(g_req + 0x04, ifh);
+    put32(g_req + 0x08, 0xFFFF);   /* endpoint mask */
+    put32(g_req + 0x0C, 4);        /* max pending  (must be <= 0x100)   */
+    put32(g_req + 0x10, 2048);     /* max size     (<= 0x10000000)      */
+    DCFlushRange(g_req, sizeof(g_req));
+    r = IOS_Ioctl(fd, UHS_IOCTL_ADMIN_EP, g_req, 0x18, NULL, 0);
+    probe_say("ioctl 0x0B endpoints -> %d", (int)r);
+
+    /* --- the bulk read, as an ioctlv --------------------------------- */
+    memset(g_req, 0, sizeof(g_req));
+    put32(g_req + 0x00, ifh);
+    g_req[0x04] = 0x02;                 /* endpoint, one byte  */
+    put32(g_req + 0x05, 300);           /* timeout, unaligned  */
+    put32(g_req + 0x09, 3);             /* what nsysuhs always writes here */
+    put32(g_req + 0x0D, UHS_DIR_IN);
+    put32(g_req + 0x11, sizeof(g_data));
+    memset(g_data, 0, sizeof(g_data));
+
+    memset(g_vecs, 0, sizeof(g_vecs));
+    g_vecs[0].vaddr = g_req;
+    g_vecs[0].len = 0xA1;
+    g_vecs[1].vaddr = g_data;
+    g_vecs[1].len = sizeof(g_data);
+
+    DCFlushRange(g_req, sizeof(g_req));
+    DCFlushRange(g_data, sizeof(g_data));
+    DCFlushRange(g_vecs, sizeof(g_vecs));
+    /* read: one vector in (the request), one out (the data) */
+    r = IOS_Ioctlv(fd, UHS_IOCTLV_BULK, 1, 1, g_vecs);
+    DCInvalidateRange(g_data, sizeof(g_data));
+    probe_say("ioctlv 0x0E bulk IN -> %d %s", (int)r, r >= 0 ? "*** ACCEPTED ***" : "");
+    if (r > 0) {
+        probe_say("  first bytes: %02x %02x %02x %02x %02x %02x %02x %02x", g_data[0], g_data[1],
+                  g_data[2], g_data[3], g_data[4], g_data[5], g_data[6], g_data[7]);
     }
 
-    probe_say("now read /storage_slc/sys/logs -- the truth is there");
-    UhsReleaseInterface(&g_handle, g_if, false);
-    UhsClassDrvUnReg(&g_handle, (uint32_t)reg);
-    UhsClientClose(&g_handle);
+    IOS_Close(fd);
     probe_wait();
     probe_shutdown();
     return 0;
