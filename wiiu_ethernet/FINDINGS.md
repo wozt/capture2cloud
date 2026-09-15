@@ -1,3 +1,33 @@
+# Rectification du 2026-09-15 — masque des endpoints UHS
+
+**Les conclusions historiques ci-dessous sur le sens du masque et la
+nécessité d'un patch IOSU ne doivent plus être considérées comme établies.**
+
+Le test `ax88179_driver` diag 2 atteint l'administration bulk IN après
+les accès MAC/PHY, puis retourne -2162715 avec le masque 0x00000004.
+La relecture du code local donne :
+
+- `FUN_10114238` passe direction **1** pour les bits 0..15 et **2** pour
+  les bits 16..31 à `FUN_10117844`.
+- Les directions UHS sont **1=OUT**, **2=IN**. Cela concorde avec
+  `UHSEndpointGetMask` dans le header wut : OUT bas, IN haut.
+- `FUN_10117844` calcule un slot (direction 1 : +0x5d0 ; direction 2 :
+  +0x3b4). Il ne vérifie pas que l'endpoint est présent ; un retour 0
+  ne prouve donc pas que l'endpoint demandé existe. L'interprétation
+  historique « endpoint trouvé donc permission manquante » était excessive.
+- Pour bulk IN 2 / OUT 3, employer **0x00040000 / 0x00000008**,
+  soit **0x00040008**. Avec interrupt IN 1 : **0x00060008**.
+
+Diag 3 corrige les masques d'activation et de désactivation, et affiche
+le masque avec toute erreur d'administration. Compilation et tests hôte
+ne valident pas le transfert réel : résultat console encore nécessaire.
+Aucun patch firmware n'est ajouté ni appliqué dans cette correction.
+
+Sources : code local relu en lecture seule (fonctions ci-dessus),
+[wut uhs.h](https://github.com/devkitPro/wut/blob/master/include/nsysuhs/uhs.h).
+
+---
+
 # USB Ethernet on a Wii U — what is actually known
 
 A running log. Everything here is either measured on the console, read
