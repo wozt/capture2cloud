@@ -484,7 +484,7 @@ static void build_settings_window(GtkShell *shell) {
         "port above like any other native client.\n\n"
         "It needs a Realtek adapter running an access point and a pad already "
         "paired to this machine, and it is a separate program that has to be "
-        "built first -- see wiiu/README.md. Without those this only reports why "
+        "built first -- see wiiu_gamepad/README.md. Without those this only reports why "
         "it could not start.");
 
     /*
@@ -524,7 +524,7 @@ static void build_settings_window(GtkShell *shell) {
                 "Brings up the access point the pad associates to.\n\n"
                 "It runs a forked hostapd and needs root, so this asks for it "
                 "the way the terminal would. Nothing here works until this is "
-                "up -- see wiiu/docs/WIIU_GAMEPAD.md."),
+                "up -- see wiiu_gamepad/docs/WIIU_GAMEPAD.md."),
             FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(ap_buttons),
             make_button(shell, "stop ap", GTK_SHELL_ACTION_WIIU_AP_STOP,

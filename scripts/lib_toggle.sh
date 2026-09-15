@@ -102,10 +102,10 @@ c2c_build_if_needed() {
     # -I for drc-x264's own header: b_drh_mode is a field no
     # distribution's x264.h has, and the struct layout differs between
     # builds, so this must be the fork's. The header is vendored under
-    # wiiu/include (source, and committed); the LIBRARY is opened at run
+    # wiiu_gamepad/include (source, and committed); the LIBRARY is opened at run
     # time rather than linked -- see drc_encoder.c for why that is not a
     # convenience. -ldl for that, and it stays one gcc line of C.
-    gcc -O2 -Wall -Wextra -I"$C2C_DIR/wiiu/include" -o "$C2C_BIN" "${C2C_SOURCES[@]}" \
+    gcc -O2 -Wall -Wextra -I"$C2C_DIR/wiiu_gamepad/include" -o "$C2C_BIN" "${C2C_SOURCES[@]}" \
         $(pkg-config --cflags --libs $C2C_PKGCONFIG_DEPS) -lm -ldl
 }
 

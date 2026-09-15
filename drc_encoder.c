@@ -16,7 +16,7 @@
  * one that must not answer.
  */
 static const char *const DRC_SO_CANDIDATES[] = {
-    "wiiu/vendor/x264/lib/libx264.so.140",
+    "wiiu_gamepad/vendor/x264/lib/libx264.so.140",
     "libx264.so.140",
 };
 
@@ -310,7 +310,7 @@ DrcEncoder *drc_encoder_open(const char *so_path, const char *preset,
         tried = so_path;
     } else {
         char beside[512];
-        exe_relative("wiiu/vendor/x264/lib/libx264.so.140", beside, sizeof(beside));
+        exe_relative("wiiu_gamepad/vendor/x264/lib/libx264.so.140", beside, sizeof(beside));
         if (beside[0]) {
             e->lib = dlopen(beside, RTLD_NOW | RTLD_LOCAL);
             tried = beside;

@@ -72,5 +72,5 @@ android/local.properties
 
 # The Wii U GamePad client: a build output, and two vendored
 # libraries that belong to their own projects.
-wiiu/wiiu_pad
-wiiu/vendor/
+wiiu_gamepad/wiiu_pad
+wiiu_gamepad/vendor/

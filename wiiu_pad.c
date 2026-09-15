@@ -86,7 +86,7 @@ WiiuPad *wiiu_pad_start(const char *project_dir, uint16_t port)
     pad->log_fd = -1;
 
     char binary[1024];
-    snprintf(binary, sizeof(binary), "%s/wiiu/wiiu_pad", project_dir);
+    snprintf(binary, sizeof(binary), "%s/wiiu_gamepad/wiiu_pad", project_dir);
     if (access(binary, X_OK) != 0) {
         /*
          * Said plainly rather than left as a toggle that does nothing.

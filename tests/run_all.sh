@@ -95,7 +95,7 @@ timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreame
 # brings the distribution's x264 into the process, and the whole point of
 # this test is that drc-x264 lives beside it without either answering for
 # the other. Skips itself where drc-x264 is not installed.
-timed "C: wii u encode"     run_c_test test_drc_encoder "libavcodec libavutil" "-I$PROJECT_DIR/wiiu/include -ldl"
+timed "C: wii u encode"     run_c_test test_drc_encoder "libavcodec libavutil" "-I$PROJECT_DIR/wiiu_gamepad/include -ldl"
 
 # Before the security suite, and that order is not cosmetic: the security
 # suite deliberately trips the failed-login lockout, which lasts thirty
