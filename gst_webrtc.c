@@ -320,8 +320,16 @@ int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int coun
  * one: on a shared port the size and the frame rate belong to everyone
  * at once, and a handheld asking for 480p30 took the pad to 30 with it.
  */
-#define WIIU_SEND_WIDTH  1280
-#define WIIU_SEND_HEIGHT 720
+/*
+ * Fed at the maximum and scaled inside the pipeline, exactly as the
+ * browsers' chain is: the size is a setting, and renegotiating an
+ * appsrc's caps while it is running is a great deal more fragile than
+ * moving a capsfilter. The console's menu chooses the height; 720 is the
+ * default and the tested path.
+ */
+#define WIIU_SEND_WIDTH  1920
+#define WIIU_SEND_HEIGHT 1080
+#define WIIU_DEFAULT_HEIGHT 720
 #define WIIU_H264_BITRATE_KBPS 8000
 
 #define DEFAULT_KEYFRAME_MAX_DIST 300
@@ -414,7 +422,7 @@ struct GstWebrtcStream {
     GstElement *vsrc_switch264, *venc_switch_h264, *switchsink264;
     GstElement *vsrc_web264, *venc_web_h264, *websink264, *vscale_web264_caps;
     GstElement *vsrc_drc264, *venc_drc_h264, *drcsink264;
-    GstElement *vsrc_wiiu264, *venc_wiiu_h264, *wiiusink264;
+    GstElement *vsrc_wiiu264, *venc_wiiu_h264, *wiiusink264, *vscale_wiiu264_caps;
 
     /*
      * The Wii U GamePad's encode. No pipeline elements: drc-x264 is
@@ -427,6 +435,7 @@ struct GstWebrtcStream {
      */
     DrcEncoder *drc_enc;
     volatile int drc_allowed;       /* the "serve to wii u gamepad" setting */
+    volatile int wiiu_allowed;      /* the "serve to wii u console" setting */
     int         drc_tried;          /* so a missing library is reported once */
     uint8_t    *drc_i420;           /* 864x480, letterboxed, planes packed */
     struct SwsContext *drc_sws;
@@ -972,6 +981,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
              "caps=video/x-raw,format=%s,width=%d,height=%d,framerate=60/1 ! "
              "queue max-size-buffers=1 leaky=downstream ! "
              "videorate name=vrate_wiiu264 drop-only=true ! "
+             "videoscale name=vscale_wiiu264 ! capsfilter name=vscale_wiiu264_caps ! "
              "videoconvert ! "
              "%s ! "
              "video/x-h264,stream-format=byte-stream,alignment=au ! "
@@ -1044,6 +1054,7 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->vsrc_wiiu264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_wiiu264");
     g->venc_wiiu_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_wiiu_h264");
     g->wiiusink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "wiiusink264");
+    g->vscale_wiiu264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_wiiu264_caps");
     g->venc_web_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_web_h264");
     g->websink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "websink264");
     g->vscale_web264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_web264_caps");
@@ -1393,6 +1404,9 @@ static void on_switch_demand_changed(void *ctx) {
         if (slot == SS_STREAM_DRC && !g->drc_allowed) {
             wanted = 0;
         }
+        if (slot == SS_STREAM_WIIU && !g->wiiu_allowed) {
+            wanted = 0;
+        }
         if (wanted == g->switch_wanted[slot]) {
             continue;
         }
@@ -1423,6 +1437,111 @@ static void on_switch_demand_changed(void *ctx) {
  * nobody is using. Turning it on does not start anything by itself:
  * something still has to connect and ask for that stream.
  */
+/*
+ * The "serve to wii u console" setting, applied while running.
+ *
+ * Simpler than the GamePad's above: there is no library to open and no
+ * radio underneath, so this is only a gate. Off means the chain is never
+ * fed whatever connects -- the same belt-and-braces the pad has, so a
+ * console pointed at this host by hand cannot start an encode on a
+ * machine where the feature is switched off.
+ */
+/* A recovery point on every chain, asked for from the settings window.
+ * The same thing the transport asks for when a client says its picture
+ * has stopped; a chain nobody is on is not running and ignores it. */
+void gst_webrtc_stream_request_keyframe(GstWebrtcStream *g) {
+    if (g) {
+        on_switch_keyframe_request(g);
+    }
+}
+
+void gst_webrtc_stream_set_wiiu_enabled(GstWebrtcStream *g, int enabled) {
+    if (!g) {
+        return;
+    }
+    g->wiiu_allowed = enabled ? 1 : 0;
+    if (!g->wiiu_allowed) {
+        g->switch_wanted[SS_STREAM_WIIU] = 0;
+    }
+}
+
+/*
+ * The console chain's picture, from the settings window.
+ *
+ * `height` is 480, 720 or 1080 and the width follows it at 16:9 --
+ * offering a width as well would let the two disagree, and the console
+ * is on a television. 720 is the tested path; 1080 is offered because
+ * the hardware sometimes manages it, and the menu says as much.
+ */
+void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitrate_kbps) {
+    if (!g) {
+        return;
+    }
+    if (height != 480 && height != 720 && height != 1080) {
+        height = WIIU_DEFAULT_HEIGHT;
+    }
+    /* 16:9, and even in both axes: H.264 has no half chroma pixel. */
+    int width = height * 16 / 9;
+    width &= ~1;
+
+    if (g->vscale_wiiu264_caps) {
+        GstCaps *caps = gst_caps_new_simple("video/x-raw",
+                                            "width", G_TYPE_INT, width,
+                                            "height", G_TYPE_INT, height, NULL);
+        g_object_set(g->vscale_wiiu264_caps, "caps", caps, NULL);
+        gst_caps_unref(caps);
+    }
+    if (bitrate_kbps > 0) {
+        if (bitrate_kbps < 500) bitrate_kbps = 500;
+        if (bitrate_kbps > 30000) bitrate_kbps = 30000;
+        if (g->venc_wiiu_h264) {
+            g_object_set(g->venc_wiiu_h264, "bitrate", bitrate_kbps, NULL);
+        }
+        g->switch_bitrate_kbps[SS_STREAM_WIIU] = bitrate_kbps;
+    }
+    g->switch_width[SS_STREAM_WIIU] = width;
+    g->switch_height[SS_STREAM_WIIU] = height;
+
+    /* Told, not left to be discovered: a decoder re-initialised on the
+     * old size shows the tail of the old stream as garbage. */
+    if (g->switch_out) {
+        switch_stream_announce_stream(g->switch_out, SS_STREAM_WIIU,
+                                      (uint16_t)width, (uint16_t)height);
+        announce_shared_slot(g, SS_STREAM_WIIU);
+    }
+    on_switch_keyframe_request(g);
+}
+
+/* The GamePad chain's bitrate. Its size is the pad's panel and is not a
+ * setting; see drc_encoder.h on why none of those numbers are. */
+void gst_webrtc_stream_set_drc_bitrate(GstWebrtcStream *g, int bitrate_kbps) {
+    if (!g || bitrate_kbps <= 0) {
+        return;
+    }
+    if (bitrate_kbps < 500) bitrate_kbps = 500;
+    if (bitrate_kbps > 20000) bitrate_kbps = 20000;
+    if (g->venc_drc_h264) {
+        g_object_set(g->venc_drc_h264, "bitrate", bitrate_kbps, NULL);
+    }
+    g->switch_bitrate_kbps[SS_STREAM_DRC] = bitrate_kbps;
+    announce_shared_slot(g, SS_STREAM_DRC);
+}
+
+/* How many clients each chain has, and what it is encoding for them.
+ * The settings window shows one line per client family; without this it
+ * would have to guess from the one global status line. */
+int gst_webrtc_stream_slot_info(GstWebrtcStream *g, int slot, int *width, int *height,
+                                int *fps, int *bitrate_kbps) {
+    if (!g || slot < 0 || slot >= SS_STREAM_COUNT_LOCAL) {
+        return 0;
+    }
+    if (width)   *width   = g->switch_width[slot];
+    if (height)  *height  = g->switch_height[slot];
+    if (fps)     *fps     = g->switch_fps[slot];
+    if (bitrate_kbps) *bitrate_kbps = g->switch_bitrate_kbps[slot];
+    return g->switch_out ? switch_stream_stream_client_count(g->switch_out, slot) : 0;
+}
+
 void gst_webrtc_stream_set_drc_enabled(GstWebrtcStream *g, int enabled) {
     if (!g || g->drc_allowed == (enabled ? 1 : 0)) {
         return;

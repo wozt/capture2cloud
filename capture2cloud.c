@@ -279,6 +279,58 @@ static int open_capture_window(void) {
     return 0;
 }
 
+/*
+ * One line per client family for the settings window, once a second.
+ *
+ * Each page shows its own: four encodes with four audiences, and a
+ * single global "3 watching" could never say which of them a picture
+ * belonged to. The numbers come from the chain itself rather than being
+ * tracked here, so a line cannot disagree with what is being encoded.
+ */
+static void publish_client_status(void) {
+    static const struct {
+        int slot;
+        GtkShellClient client;
+    } MAP[] = {
+        { SS_STREAM_WEB,  GTK_SHELL_CLIENT_BROWSER },
+        { SS_STREAM_H264, GTK_SHELL_CLIENT_NATIVE },
+        { SS_STREAM_DRC,  GTK_SHELL_CLIENT_WIIU_PAD },
+        { SS_STREAM_WIIU, GTK_SHELL_CLIENT_WIIU_CONSOLE },
+    };
+
+    for (size_t i = 0; i < sizeof(MAP) / sizeof(*MAP); i++) {
+        int w = 0, h = 0, fps = 0, kbps = 0;
+        const int clients = gst_webrtc_stream_slot_info(g_gst, MAP[i].slot, &w, &h, &fps, &kbps);
+        char line[160];
+        if (clients <= 0) {
+            /* Said plainly, because it is the good case: a chain with
+             * nobody on it is not fed at all, and that is the rule that
+             * makes five encodes affordable on one machine. */
+            snprintf(line, sizeof(line), "nothing connected — not encoding");
+        } else {
+            snprintf(line, sizeof(line), "%d connected — %dx%d@%d, %d kbps", clients, w, h,
+                     fps > 0 ? fps : 60, kbps);
+        }
+        gtk_shell_set_client_status(g_shell, MAP[i].client, line);
+    }
+
+    /*
+     * The browsers' line counts the H.264 chain only, and that is not
+     * the whole audience: a browser on WebRTC is on the VP8 chain
+     * instead. Both are browsers, so both are said.
+     */
+    int vw = 0, vh = 0, vfps = 0, vkbps = 0;
+    const int vp8 = gst_webrtc_stream_slot_info(g_gst, SS_STREAM_VP8, &vw, &vh, &vfps, &vkbps);
+    if (vp8 > 0) {
+        char line[160];
+        int w = 0, h = 0, fps = 0, kbps = 0;
+        const int h264 = gst_webrtc_stream_slot_info(g_gst, SS_STREAM_WEB, &w, &h, &fps, &kbps);
+        snprintf(line, sizeof(line), "%d on h264 (%dx%d, %d kbps), %d on vp8 (%dx%d, %d kbps)",
+                 h264, w, h, kbps, vp8, vw, vh, vkbps);
+        gtk_shell_set_client_status(g_shell, GTK_SHELL_CLIENT_BROWSER, line);
+    }
+}
+
 static void on_settings(void *userdata, const AppSettings *want) {
     (void)userdata;
     AppSettings *have = &g_settings;
@@ -325,6 +377,38 @@ static void on_settings(void *userdata, const AppSettings *want) {
             wiiu_pad_stop(g_wiiu_pad);
             g_wiiu_pad = NULL;
         }
+    }
+    if (want->wiiu_pad_bitrate_mbps != have->wiiu_pad_bitrate_mbps &&
+        want->wiiu_pad_bitrate_mbps > 0) {
+        have->wiiu_pad_bitrate_mbps = want->wiiu_pad_bitrate_mbps;
+        gst_webrtc_stream_set_drc_bitrate(g_gst, have->wiiu_pad_bitrate_mbps * 1000);
+        config_set_int("WIIU_PAD_BITRATE_MBPS", have->wiiu_pad_bitrate_mbps);
+    }
+    /*
+     * The Wii U console client. Its own flag, its own chain, and nothing
+     * to start: unlike the pad's, there is no separate program here --
+     * the client runs on the console and knocks on the door itself.
+     */
+    if (want->wiiu_console_enabled != have->wiiu_console_enabled) {
+        have->wiiu_console_enabled = want->wiiu_console_enabled;
+        gst_webrtc_stream_set_wiiu_enabled(g_gst, have->wiiu_console_enabled);
+        /* Remembered across restarts for the reason the pad's is: it is
+         * a decision about this machine, not a preference belonging to
+         * whoever last opened the window. */
+        config_set_int("WIIU_CONSOLE_ENABLED", have->wiiu_console_enabled ? 1 : 0);
+    }
+    if (want->wiiu_console_height != have->wiiu_console_height ||
+        want->wiiu_console_bitrate_mbps != have->wiiu_console_bitrate_mbps) {
+        if (want->wiiu_console_height > 0) {
+            have->wiiu_console_height = want->wiiu_console_height;
+        }
+        if (want->wiiu_console_bitrate_mbps > 0) {
+            have->wiiu_console_bitrate_mbps = want->wiiu_console_bitrate_mbps;
+        }
+        gst_webrtc_stream_set_wiiu_profile(g_gst, have->wiiu_console_height,
+                                           have->wiiu_console_bitrate_mbps * 1000);
+        config_set_int("WIIU_CONSOLE_HEIGHT", have->wiiu_console_height);
+        config_set_int("WIIU_CONSOLE_BITRATE_MBPS", have->wiiu_console_bitrate_mbps);
     }
     if (want->wiiu_pad_enabled != have->wiiu_pad_enabled ||
         (want->wiiu_pad_enabled && !g_wiiu_pad)) {
@@ -500,6 +584,14 @@ static void on_action(void *userdata, GtkShellAction action) {
             /* And the encoder with it, rather than leaving a chain
              * waiting for a client that was just told to go. */
             gst_webrtc_stream_set_drc_enabled(g_gst, 0);
+            break;
+        case GTK_SHELL_ACTION_WIIU_CONSOLE_KEYFRAME:
+            /* Every chain gets one, not just the console's: the request
+             * is "start the picture over" and the host has one gesture
+             * for that. A chain nobody is on ignores it, because a
+             * chain nobody is on is not running. */
+            gst_webrtc_stream_request_keyframe(g_gst);
+            fprintf(stderr, "wiiu: keyframe asked for by hand\n");
             break;
         case GTK_SHELL_ACTION_WIIU_AP_START:
         case GTK_SHELL_ACTION_WIIU_AP_STOP:
@@ -729,12 +821,28 @@ int main(int argc, char **argv) {
     /* Off unless asked for: it needs radio hardware most machines do
      * not have, and starting it without that only produces an error. */
     g_settings.wiiu_pad_enabled = (int)config_get_int("WIIU_PAD_AUTOSTART", 0, 0, 1);
+    g_settings.wiiu_pad_bitrate_mbps =
+        (int)config_get_int("WIIU_PAD_BITRATE_MBPS", 6, 2, 20);
+    /* Off unless asked for, like the pad's, and for a milder reason: a
+     * chain nobody is on costs nothing, but a machine that has never
+     * seen a Wii U should not be listening on its behalf. */
+    g_settings.wiiu_console_enabled = (int)config_get_int("WIIU_CONSOLE_ENABLED", 0, 0, 1);
+    g_settings.wiiu_console_height = (int)config_get_int("WIIU_CONSOLE_HEIGHT", 720, 480, 1080);
+    g_settings.wiiu_console_bitrate_mbps =
+        (int)config_get_int("WIIU_CONSOLE_BITRATE_MBPS", 8, 2, 30);
     web_stream_set_native_counter(g_web, count_native_clients, NULL);
     web_stream_set_native_adopt(g_web, adopt_web_socket, NULL);
     g_switch = g_settings.switch_enabled
                    ? switch_stream_start(g_web, (uint16_t)g_settings.switch_port)
                    : NULL;
     gst_webrtc_stream_set_switch_output(g_gst, g_switch);
+    /* The console client's chain, from what was remembered. Applied at
+     * startup and not only on a change, or a host restarted with the
+     * box ticked would serve nobody. */
+    gst_webrtc_stream_set_wiiu_enabled(g_gst, g_settings.wiiu_console_enabled);
+    gst_webrtc_stream_set_wiiu_profile(g_gst, g_settings.wiiu_console_height,
+                                       g_settings.wiiu_console_bitrate_mbps * 1000);
+    gst_webrtc_stream_set_drc_bitrate(g_gst, g_settings.wiiu_pad_bitrate_mbps * 1000);
     /*
      * Before the transport can be asked for that stream, and at startup
      * rather than only when the setting is changed.
@@ -927,6 +1035,7 @@ int main(int argc, char **argv) {
                 pad_status_at = now_pad;
                 gtk_shell_set_wiiu_status(g_shell,
                     g_wiiu_pad ? wiiu_pad_status(g_wiiu_pad) : "not running");
+                publish_client_status();
             }
         }
 

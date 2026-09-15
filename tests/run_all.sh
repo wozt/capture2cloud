@@ -58,6 +58,30 @@ needs_build() {
     [ -n "$(find "$SCRIPT_DIR/c" -newer "$bin" -print -quit 2>/dev/null)" ]
 }
 
+# Same as run_c_test, with a virtual display for a test that opens a
+# window. Xvfb, not the real X server: a test must not steal focus or
+# pop windows over whatever somebody is doing.
+run_c_test_x11() {
+    local name="$1"
+    shift
+    local pkgs="$1"
+    shift
+    local extra="${1:-}"
+
+    echo "═══ C: $name ═══"
+    if needs_build "$BUILD_DIR/$name"; then
+        if ! $LOW gcc -O1 -Wall -Wextra -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
+            $(pkg-config --cflags --libs $pkgs) $extra 2>&1; then
+            echo "  COMPILE FAILED"
+            failed=1
+            return
+        fi
+    fi
+    if ! $LOW xvfb-run -a "$BUILD_DIR/$name"; then
+        failed=1
+    fi
+}
+
 run_c_test() {
     local name="$1"
     shift
@@ -91,6 +115,14 @@ timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscal
 timed "C: websocket frame" run_c_test test_ws_frame "glib-2.0"
 timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
 timed "C: h264 encoders"   run_c_test test_h264_encoders "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
+# The settings window, opened for real on a virtual display: GTK reports
+# a broken layout at run time and never at compile time. Skipped rather
+# than failed where Xvfb is not installed.
+if command -v xvfb-run >/dev/null 2>&1; then
+    timed "C: gtk layout"      run_c_test_x11 test_gtk_layout "sdl2 gtk+-3.0 x11 glib-2.0"
+else
+    echo "═══ C: gtk layout ═══"; echo "  xvfb-run not installed; skipped"
+fi
 
 # The fourth encode. Linked against libavcodec on purpose: that is what
 # brings the distribution's x264 into the process, and the whole point of

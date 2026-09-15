@@ -43,6 +43,8 @@ struct GtkShell {
     char status[160];
     char wiiu_status_text[160];
     volatile int wiiu_status_dirty;
+    char client_status_text[GTK_SHELL_CLIENT_COUNT][160];
+    volatile int client_status_dirty;
 
     /* Set while the code is filling the controls in from `settings`, so
      * the "value changed" handlers do not report those as the user
@@ -70,7 +72,12 @@ struct GtkShell {
  * a list of assignments repeated in three places. */
 typedef struct {
     GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
-    GtkWidget *wiiu_pad_enabled;
+    GtkWidget *wiiu_pad_enabled, *wiiu_pad_bitrate;
+    GtkWidget *wiiu_console_enabled, *wiiu_console_resolution, *wiiu_console_bitrate;
+    /* One line per client family, so "nothing is watching" can be told
+     * apart from "something is watching and the picture is wrong"
+     * without reading a terminal. Indexed by GtkShellClient. */
+    GtkWidget *client_status[GTK_SHELL_CLIENT_COUNT];
     GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry, *output_protocol;
     GtkWidget *adapter_sees;
     GtkWidget *lt_threshold, *rt_threshold;
@@ -141,6 +148,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     if (w == g_c.stream_enabled)       shell->settings.stream_enabled = on;
     else if (w == g_c.switch_enabled)  shell->settings.switch_enabled = on;
     else if (w == g_c.wiiu_pad_enabled) shell->settings.wiiu_pad_enabled = on;
+    else if (w == g_c.wiiu_console_enabled) shell->settings.wiiu_console_enabled = on;
     else if (w == g_c.gamepad_enabled) shell->settings.gamepad_enabled = on;
     else if (w == g_c.invert_ry)       shell->settings.invert_ry = on;
     else if (w == g_c.direct_sink)     shell->settings.local_direct_sink = on;
@@ -165,6 +173,8 @@ static void on_scale(GtkWidget *w, gpointer user_data) {
     const int v = (int)gtk_range_get_value(GTK_RANGE(w));
     SDL_LockMutex(shell->lock);
     if (w == g_c.bitrate)           shell->settings.bitrate_mbps = v;
+    else if (w == g_c.wiiu_pad_bitrate)     shell->settings.wiiu_pad_bitrate_mbps = v;
+    else if (w == g_c.wiiu_console_bitrate) shell->settings.wiiu_console_bitrate_mbps = v;
     else if (w == g_c.lt_threshold) shell->settings.lt_threshold = v;
     else if (w == g_c.rt_threshold) shell->settings.rt_threshold = v;
     else if (w == g_c.deadzone[0])  shell->settings.stick_deadzone[0] = v;
@@ -291,6 +301,9 @@ static void on_combo(GtkWidget *w, gpointer user_data) {
     if (w == g_c.resolution) {
         static const int HEIGHTS[] = {1080, 720, 480};
         if (i >= 0 && i < 3) shell->settings.browser_height = HEIGHTS[i];
+    } else if (w == g_c.wiiu_console_resolution) {
+        static const int HEIGHTS[] = {1080, 720, 480};
+        if (i >= 0 && i < 3) shell->settings.wiiu_console_height = HEIGHTS[i];
     } else if (w == g_c.capture_format) {
         shell->settings.capture_mjpeg = (i == 1);
     } else if (w == g_c.gamepad_device) {
@@ -357,6 +370,19 @@ static GtkWidget *make_button(GtkShell *shell, const char *label, GtkShellAction
     return b;
 }
 
+/* A client family's statistics line: selectable, wrapping, and dim until
+ * the host has something to put in it. Written once a second from the
+ * program, which is the only side that knows who is connected. */
+static GtkWidget *add_client_status(GtkWidget *grid, int row, const char *label) {
+    GtkWidget *w = gtk_label_new("nothing connected");
+    gtk_widget_set_halign(w, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(w), TRUE);
+    gtk_label_set_line_wrap(GTK_LABEL(w), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(w), 52);
+    add_row(grid, row, label, w);
+    return w;
+}
+
 static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **grid_out) {
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
@@ -380,6 +406,13 @@ static void load_controls(GtkShell *shell) {
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), s.wiiu_pad_enabled);
+    gtk_range_set_value(GTK_RANGE(g_c.wiiu_pad_bitrate), s.wiiu_pad_bitrate_mbps);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_console_enabled),
+                                 s.wiiu_console_enabled);
+    gtk_range_set_value(GTK_RANGE(g_c.wiiu_console_bitrate), s.wiiu_console_bitrate_mbps);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.wiiu_console_resolution),
+                             s.wiiu_console_height == 1080 ? 0
+                             : s.wiiu_console_height == 480 ? 2 : 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.switch_port), s.switch_port);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.resolution),
                              s.browser_height == 1080 ? 0 : (s.browser_height == 720 ? 1 : 2));
@@ -446,13 +479,27 @@ static void build_settings_window(GtkShell *shell) {
     gtk_container_add(GTK_CONTAINER(win), box);
 
     GtkWidget *notebook = gtk_notebook_new();
+    /* Eight tabs do not fit the window's width, and a tab that is off
+     * the edge with no way to reach it is a setting that does not
+     * exist. */
+    gtk_notebook_set_scrollable(GTK_NOTEBOOK(notebook), TRUE);
     gtk_box_pack_start(GTK_BOX(box), notebook, TRUE, TRUE, 0);
 
     GtkWidget *grid;
     int row;
 
-    /* --- stream: the server's settings, shared by everyone watching --- */
-    make_page("stream", notebook, &grid);
+    /*
+     * One page per client family, and a line of statistics on each.
+     *
+     * They used to share one "stream" page, which put the browsers'
+     * resolution three rows above the GamePad's access point with
+     * nothing to say they were unrelated. They are genuinely separate
+     * servers: four encodes, four ports, four audiences. Whose picture
+     * a control changes is now the page it is on.
+     */
+
+    /* --- browsers ---------------------------------------------------- */
+    make_page("browsers", notebook, &grid);
     row = 0;
     g_c.stream_enabled = add_row(grid, row++, "serve to browsers",
                                  make_check(shell, "on"));
@@ -460,32 +507,76 @@ static void build_settings_window(GtkShell *shell) {
                        gtk_spin_button_new_with_range(1, 65535, 1));
     g_signal_connect(g_c.port, "value-changed", G_CALLBACK(on_spin), shell);
 
+    g_c.resolution = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "1080p60");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "720p60");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "480p60");
+    gtk_widget_set_tooltip_text(g_c.resolution,
+        "What the browser stream is encoded at. Shared: one encoder feeds every "
+        "browser, so this changes what everyone watching in a browser sees. The "
+        "other three clients have their own sizes and are not affected.");
+    g_signal_connect(g_c.resolution, "changed", G_CALLBACK(on_combo), shell);
+    add_row(grid, row++, "resolution", g_c.resolution);
+
+    g_c.bitrate = add_row(grid, row++, "bitrate (Mbps)", make_scale(shell, 2, 50, 1, ""));
+
+    g_c.client_status[GTK_SHELL_CLIENT_BROWSER] =
+        add_client_status(grid, row++, "watching now");
+
+    /* --- switch and phone -------------------------------------------- */
+    make_page("switch / phone", notebook, &grid);
+    row = 0;
     g_c.switch_enabled = add_row(grid, row++, "serve to switch",
                                  make_check(shell, "on"));
     gtk_widget_set_tooltip_text(g_c.switch_enabled,
-        "Whether the Switch client's server is listening. Separate from the web "
-        "one because they are separate servers -- and a session with nobody on a "
-        "Switch has no reason to hold a port open.");
-    g_c.switch_port = add_row(grid, row++, "console port",
+        "Whether the native client's server is listening -- the Switch homebrew "
+        "and the Android app both use it. Separate from the web one because they "
+        "are separate servers, and a session with nobody on a Switch has no "
+        "reason to hold a port open.");
+    g_c.switch_port = add_row(grid, row++, "port",
                               gtk_spin_button_new_with_range(1, 65535, 1));
     gtk_widget_set_tooltip_text(g_c.switch_port,
-        "Where the Switch client connects. Its own port, because the two streams "
+        "Where the native clients connect. Its own port, because the two streams "
         "are two servers -- the browser's is HTTP, this one is a small binary "
         "protocol -- and moving one has no reason to move the other. Changing it "
         "disconnects whatever is connected: it has to be changed on the console "
         "as well.");
     g_signal_connect(g_c.switch_port, "value-changed", G_CALLBACK(on_spin), shell);
 
+    g_c.client_status[GTK_SHELL_CLIENT_NATIVE] =
+        add_client_status(grid, row++, "connected now");
+    {
+        GtkWidget *note = gtk_label_new(
+            "These clients choose their own size, frame rate and bitrate, and "
+            "they share one stream: what one asks for, the others get. See "
+            "SHARED_SETTINGS.md.");
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(note), 52);
+        gtk_widget_set_halign(note, GTK_ALIGN_START);
+        add_row(grid, row++, "", note);
+    }
+
+    /* --- a real Wii U GamePad ---------------------------------------- */
+    make_page("wii u pad", notebook, &grid);
+    row = 0;
     g_c.wiiu_pad_enabled = add_row(grid, row++, "serve to wii u gamepad",
                                    make_check(shell, "on"));
     gtk_widget_set_tooltip_text(g_c.wiiu_pad_enabled,
         "Sends the picture and sound to a real Wii U GamePad over the air, with "
-        "its buttons, sticks and touch coming back. It connects to the console "
-        "port above like any other native client.\n\n"
+        "its buttons, sticks and touch coming back.\n\n"
         "It needs a Realtek adapter running an access point and a pad already "
         "paired to this machine, and it is a separate program that has to be "
-        "built first -- see wiiu_gamepad/README.md. Without those this only reports why "
-        "it could not start.");
+        "built first -- see wiiu_gamepad/README.md. Without those this only "
+        "reports why it could not start.");
+
+    g_c.wiiu_pad_bitrate = add_row(grid, row++, "bitrate (Mbps)",
+                                   make_scale(shell, 2, 20, 1, ""));
+    gtk_widget_set_tooltip_text(g_c.wiiu_pad_bitrate,
+        "What this chain is encoded at before the client re-encodes it for the "
+        "pad's own decoder.\n\n"
+        "Modest on purpose: that second pass runs at a quantiser pinned to 32, "
+        "so bits spent here beyond what it keeps are bits thrown away. The pad's "
+        "SIZE is its panel's and is not a setting.");
 
     /*
      * What the pad is doing, and a handle on it.
@@ -499,7 +590,12 @@ static void build_settings_window(GtkShell *shell) {
     g_c.wiiu_status = gtk_label_new("");
     gtk_widget_set_halign(g_c.wiiu_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.wiiu_status), TRUE);
-    add_row(grid, row++, "wii u gamepad status", g_c.wiiu_status);
+    gtk_label_set_line_wrap(GTK_LABEL(g_c.wiiu_status), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(g_c.wiiu_status), 52);
+    add_row(grid, row++, "bridge status", g_c.wiiu_status);
+
+    g_c.client_status[GTK_SHELL_CLIENT_WIIU_PAD] =
+        add_client_status(grid, row++, "stream");
 
     {
         GtkWidget *pad_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -549,26 +645,70 @@ static void build_settings_window(GtkShell *shell) {
         add_row(grid, row++, "", ap_buttons);
     }
 
-    g_c.resolution = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "1080p60");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "720p60");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "480p60");
-    gtk_widget_set_tooltip_text(g_c.resolution,
-        "What the browser stream is encoded at. Shared: one encoder feeds every "
-        "browser, so this changes what everyone watching sees. The console's own "
-        "stream has its own size and is not affected.");
-    g_signal_connect(g_c.resolution, "changed", G_CALLBACK(on_combo), shell);
-    add_row(grid, row++, "browser resolution", g_c.resolution);
+    /* --- a homebrew running ON a Wii U -------------------------------- */
+    make_page("wii u console", notebook, &grid);
+    row = 0;
+    g_c.wiiu_console_enabled = add_row(grid, row++, "serve to wii u console",
+                                       make_check(shell, "on"));
+    gtk_widget_set_tooltip_text(g_c.wiiu_console_enabled,
+        "Serves a homebrew running on the Wii U itself, which decodes in the "
+        "console's own hardware and draws on the television.\n\n"
+        "Nothing to do with the GamePad page: that one talks to a pad over a "
+        "radio with no Wii U involved. This one needs a network and nothing "
+        "else. Off means the chain is never fed, whatever connects.");
 
-    g_c.bitrate = add_row(grid, row++, "bitrate (Mbps)", make_scale(shell, 2, 50, 1, ""));
+    g_c.wiiu_console_resolution = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution),
+                                   "1080p60 (not supported)");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution), "720p60");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution), "480p60");
+    gtk_widget_set_tooltip_text(g_c.wiiu_console_resolution,
+        "What that console is sent. Its own size: it does not share this with "
+        "the Switch or the phone, so a handheld asking for 480p cannot drag a "
+        "television down with it.\n\n"
+        "720p60 is the tested path. 1080p is offered because some consoles "
+        "manage it and is not supported: the reports are blocky video and "
+        "colour errors, and the console's own single-band Wi-Fi gives out "
+        "first. A USB Ethernet adapter is what makes the difference.");
+    g_signal_connect(g_c.wiiu_console_resolution, "changed", G_CALLBACK(on_combo), shell);
+    add_row(grid, row++, "resolution", g_c.wiiu_console_resolution);
 
+    g_c.wiiu_console_bitrate = add_row(grid, row++, "bitrate (Mbps)",
+                                       make_scale(shell, 2, 30, 1, ""));
+    gtk_widget_set_tooltip_text(g_c.wiiu_console_bitrate,
+        "Its own, like its size. Start low if it is on the console's built-in "
+        "Wi-Fi -- roughly 20 to 30 Mbit in practice, and the radio is the first "
+        "thing to give out.");
+
+    g_c.client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
+        add_client_status(grid, row++, "connected now");
+
+    {
+        /* In a box so it keeps its own width, like the pad page's
+         * buttons: a control handed to add_row alone is stretched to
+         * the column, and a full-width button reads as a banner. */
+        GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(row_box),
+            make_button(shell, "force a keyframe", GTK_SHELL_ACTION_WIIU_CONSOLE_KEYFRAME,
+                "Sends a recovery point now.\n\n"
+                "For a console that has joined mid-stream, or one whose picture "
+                "has frozen while the connection is plainly still up."),
+            FALSE, FALSE, 0);
+        add_row(grid, row++, "", row_box);
+    }
+
+    /* --- capture: the one thing genuinely shared by all four --------- */
+    make_page("capture", notebook, &grid);
+    row = 0;
     g_c.capture_format = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.capture_format), "YUYV (raw)");
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.capture_format), "MJPEG (decoded)");
     gtk_widget_set_tooltip_text(g_c.capture_format,
         "How the card delivers frames. YUYV costs no decode at all and is the "
         "default; MJPEG moves a fraction of the bytes over USB, which matters if "
-        "the USB3 path is shared.");
+        "the USB3 path is shared.\n\n"
+        "This one really is shared: it is the card, upstream of all four "
+        "encoders.");
     g_signal_connect(g_c.capture_format, "changed", G_CALLBACK(on_combo), shell);
     add_row(grid, row++, "capture format", g_c.capture_format);
 
@@ -655,7 +795,10 @@ static void build_settings_window(GtkShell *shell) {
     g_c.vsync = add_row(grid, row++, "drawing", make_check(shell, "wait for the display (vsync)"));
 
     /* --- console --- */
-    make_page("console", notebook, &grid);
+    /* The console being CAPTURED -- its power, its adapter, this
+     * program. Named "hardware" since a page called "wii u console"
+     * appeared above it and two pages called console is one too many. */
+    make_page("hardware", notebook, &grid);
     row = 0;
     add_row(grid, row++, "power",
             make_button(shell, "wake the console", GTK_SHELL_ACTION_WAKE_CONSOLE,
@@ -695,6 +838,25 @@ static void build_settings_window(GtkShell *shell) {
     set_window_icon(win);
     shell->settings_window = win;
     load_controls(shell);
+}
+
+/* Opens the settings window from outside, for the layout probe in the
+ * tests. Nothing in the program calls it; the tray menu below is how a
+ * person opens it. */
+void gtk_shell_debug_show_settings(GtkShell *shell);
+static gboolean debug_show_cb(gpointer user_data) {
+    GtkShell *shell = user_data;
+    if (shell->settings_window) {
+        load_controls(shell);
+        gtk_widget_show_all(shell->settings_window);
+        gtk_window_present(GTK_WINDOW(shell->settings_window));
+    }
+    return G_SOURCE_REMOVE;
+}
+void gtk_shell_debug_show_settings(GtkShell *shell) {
+    if (shell) {
+        g_idle_add(debug_show_cb, shell);
+    }
 }
 
 /* --- the tray icon ---------------------------------------------------- */
@@ -897,6 +1059,18 @@ static gboolean on_tick(gpointer user_data) {
         shell->settings_dirty = 0;
         load_controls(shell);
     }
+    if (shell->client_status_dirty) {
+        shell->client_status_dirty = 0;
+        char text[GTK_SHELL_CLIENT_COUNT][160];
+        SDL_LockMutex(shell->lock);
+        memcpy(text, shell->client_status_text, sizeof(text));
+        SDL_UnlockMutex(shell->lock);
+        for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; i++) {
+            if (g_c.client_status[i]) {
+                gtk_label_set_text(GTK_LABEL(g_c.client_status[i]), text[i]);
+            }
+        }
+    }
     if (shell->wiiu_status_dirty) {
         shell->wiiu_status_dirty = 0;
         char text[160];
@@ -1089,6 +1263,17 @@ void gtk_shell_update(GtkShell *shell, const AppSettings *settings) {
     shell->settings = *settings;
     SDL_UnlockMutex(shell->lock);
     shell->settings_dirty = 1;
+}
+
+void gtk_shell_set_client_status(GtkShell *shell, GtkShellClient client, const char *text) {
+    if (!shell || !text || client < 0 || client >= GTK_SHELL_CLIENT_COUNT) {
+        return;
+    }
+    SDL_LockMutex(shell->lock);
+    snprintf(shell->client_status_text[client], sizeof(shell->client_status_text[client]),
+             "%s", text);
+    SDL_UnlockMutex(shell->lock);
+    shell->client_status_dirty = 1;
 }
 
 void gtk_shell_set_wiiu_status(GtkShell *shell, const char *text) {
