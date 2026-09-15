@@ -82,21 +82,97 @@ that reason is the size of this project. What matters:
   packet", which is exactly the failure that looks like nothing at all
 - the URB/endpoint layout, since the 179 is a USB 3.0 part
 
+## The firmware is open — done
+
+`fw.img`, 14,668,288 bytes, pulled read-only off the console. An **ancast
+image**: magic `EFA282D9`, device type **2 (Starbuck, the ARM side)`,
+body `0xDFD000` bytes at offset `0x200`, which accounts for the file
+exactly.
+
+**The key is at OTP offset 0x090.** Not looked up — found, and the method
+matters because the obvious one does not work. The image carries a SHA-1
+at `0x1B0`, and it is tempting to brute-force the OTP against it. That
+fails: checked, and that hash is of the body **as stored, encrypted**.
+It cannot confirm a decryption.
+
+What does confirm one is entropy. Every 16-byte window of the OTP was
+tried as an AES-128-CBC key and the result measured:
+
+    ciphertext                     7.9971 bits/byte
+    otp 0x090                      6.0438      <- structure
+    every other candidate          7.9963 .. 7.9979
+
+One candidate, no ambiguity, and the plaintext it produces is firmware
+padding. The IV does not matter: CBC resynchronises after one block, so
+an unknown IV costs the first sixteen bytes and nothing else.
+
+`tools/ancast.py` does this. The key value appears nowhere in this
+repository, and neither the OTP nor any decrypted image is committed.
+
+## Where the driver is
+
+Confirmed inside the decrypted image, which names itself:
+
+    usb_eth_asix.c                  the driver's own source filename
+    __ax8817xReadCommand            register access
+    __ax8817xWriteCommand
+    USB Ethernet Network Interface
+    BMCR = 0x%04x                   PHY registers, in its debug strings
+    ANLPAR = 0x%04x
+    BMSR = 0x%04x
+
+and its whole function table beside them: `__handleUhsDevProbe`,
+`__uhsIfProbeCallback`, `__UsbEthCtrlrConfigure`, `__UsbEthCtrlSendFrame`,
+`__UsbEthCtrlReceiveFrame`, `__UsbEthCtrlHandleUrbCompletion`,
+`__postLinkStatusUrb`, `__openControllerDriver`, `__removeDriver`.
+
+The image is an ARM ELF at file offset `0x604`, 72 program headers --
+each IOSU module is a segment with its own load address.
+
+| what | segment | vaddr | file offset | size |
+|---|---|---|---|---|
+| the module's **code** | 29 | `0x12300000` | `0x2E2694` | `0x131844` |
+| its strings/rodata | 30 | `0x12440000` | `0x413ED8` | `0x288E8` |
+| `/dev/uhs` (USB host stack) | 18 | `0x10140000` | `0x0F51D0` | `0x4694` |
+
+**For Ghidra**: load `ios/fw.dec` as raw ARM (big-endian off, 32-bit),
+map file `0x2E2694` at `0x12300000` for the code and `0x413ED8` at
+`0x12440000` for the data, then let it find the string references. The
+function names above are in the data segment, so the labels come free.
+
+## The thing worth thinking about before writing any ARM
+
+`/dev/uhs` is the USB host stack, and **it is reachable from PPC
+userspace** -- wut exposes it (`UhsClientOpen`, bulk and control
+transfers). A homebrew can already drive an arbitrary USB device without
+touching IOSU at all.
+
+That opens a second route that nobody seems to have tried, and it avoids
+patching a system component entirely: implement the AX88179 in the
+homebrew, in userspace, over `/dev/uhs`. The cost is that the console's
+own network stack would not know about it -- packets would have to be
+carried by something of ours. For this project specifically that may be
+acceptable, since what we want is one TCP stream from one host.
+
+It is worth measuring before choosing: **does `/dev/uhs` even enumerate
+the AX88179?** If the answer is no, both routes are dead and the adapter
+is simply the wrong one. That is one small homebrew and an afternoon,
+and it is the cheapest question in this whole document.
+
 ## Next, in order
 
-1. Read both Linux drivers and write down the differences here.
-2. Pull `fw.img` and find out what it actually is — packed, encrypted,
-   or plain. The OTP and SEEPROM dumps are on the SD card, so the keys
-   exist if it needs them.
-3. Locate the USB Ethernet module inside it. The stock driver knows
-   product id `0x7720`; a search for that value is the cheapest way in.
-4. Ghidra on the ARM module, and note what the init sequence looks like
-   next to Linux's.
-5. Only then decide whether this is a patch or a rewrite.
+1. Ask `/dev/uhs` from a homebrew whether it sees the AX88179 at all.
+   Cheapest possible answer to "is any of this feasible".
+2. Read both Linux drivers and write the differences down here --
+   register map, PHY bring-up, RX header format, endpoint layout.
+3. Ghidra on segment 29 and compare its init sequence with Linux's
+   `asix_devices.c`.
+4. Only then choose: patch IOSU, or a userspace driver over `/dev/uhs`.
 
-Step 5 is where this gets decided, and it is fair to say now that a
-rewrite inside a system component, with no debugger and "the LED does
-not light" as the only feedback, is where the last attempt stopped.
+A rewrite inside a system component, with no debugger and "the LED does
+not light" as the only feedback, is where the last attempt stopped. Step
+1 exists so that we find out cheaply whether we would be walking into
+the same wall.
 
 ## An honest alternative, kept in view
 
