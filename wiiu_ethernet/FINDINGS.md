@@ -190,12 +190,58 @@ over. Nothing else has claimed it -- no driver binds a vendor-specific
 class it does not know -- so it should be free, but should is not
 measured.
 
+## And the console can TALK to it
+
+`macread/` acquires the interface and performs one control transfer --
+the one Linux's `ax88179_178a.c` uses to read the MAC address, taken
+from that driver rather than guessed: `bmRequestType 0xC0`, `bRequest
+0x01` (AX_ACCESS_MAC), `wValue 0x10` (AX_NODE_ID), `wIndex 6`, six bytes.
+
+    UhsAcquireInterface -> 0 (granted)
+    control transfer (read MAC) -> 6
+    MAC: 00:0e:c6:b0:41:dc
+
+`00:0e:c6` is ASIX's own OUI. The adapter answered with its real
+hardware address.
+
+So the entire userspace path is proven: **enumerate, acquire, control
+transfer, read a register.** Nothing here is hypothetical any more.
+Everything that follows is work rather than doubt -- and the doubt is
+what usually kills a project like this.
+
+One loose end, noted rather than chased: the filtered query reported
+different endpoint addresses and a different interface handle than the
+MATCH_ANY query did. The MAC came back correct, so the right device was
+addressed, but the endpoint array is not being read the way this code
+assumes. That has to be right before a single packet moves, because a
+bulk transfer to the wrong endpoint fails silently.
+
+## Could it be an Aroma plugin instead of an app?
+
+Yes, and it is probably the right final shape. A WUPS plugin runs in the
+background beside whatever title is loaded, which is exactly what a
+driver wants to be. The plugin format is not the hard part.
+
+The hard part is what a driver is *for*. Moving frames over the adapter
+is now clearly possible; making the console's own TCP/IP stack send its
+traffic through them is a separate problem, and a bigger one. Two shapes:
+
+- **Transparent.** Aroma's FunctionPatcherModule can patch functions in
+  `nsysnet`, so a plugin could intercept the socket layer and carry it
+  over our own stack. Everything on the console would benefit. This is
+  the ambitious version and it needs a TCP/IP implementation.
+- **Just for us.** capture2cloud wants exactly one TCP stream from one
+  host. A small stack that does ARP, IPv4 and one TCP connection is a
+  weekend, not a career, and it would not care about the rest of the
+  system.
+
+The second is the one that gets a picture on the television. The first
+is the one worth doing if this turns out to be interesting on its own.
+
 ## Next, in order
 
-1. Acquire the interface and do one control transfer: read the MAC
-   address out of the adapter. That is the smallest possible proof that
-   we can talk to the hardware, and the Linux driver says exactly which
-   register to ask for.
+1. Fix the endpoint reading -- the loose end above -- and confirm the
+   bulk IN/OUT addresses against what MATCH_ANY reported.
 2. Read both Linux drivers and write the differences down here --
    register map, PHY bring-up, RX header format, endpoint layout.
 3. Ghidra on segment 29 and compare its init sequence with Linux's
