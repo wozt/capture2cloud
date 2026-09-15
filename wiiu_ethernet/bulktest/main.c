@@ -111,7 +111,22 @@ int main(int argc, char **argv)
     memset(g_req, 0, sizeof(g_req));
     put32(g_req + 0x00, 1);        /* type: ENABLE */
     put32(g_req + 0x04, ifh);
-    put32(g_req + 0x08, 0xFFFF);   /* endpoint mask */
+    /*
+     * The mask names endpoints by direction, not by number.
+     *
+     * The worker that consumes this request walks bits 0..31 and reads
+     * each as: endpoint = bit % 16, direction = (bit < 16) ? IN : OUT.
+     * It looks each one up and fails the WHOLE call the moment one does
+     * not exist.
+     *
+     * So 0xFFFF -- the obvious "all of them" -- asks to enable IN
+     * endpoints 0 through 15, and this adapter has two. That is why
+     * every variation of pending count and size made no difference: the
+     * mask was wrong in all of them.
+     *
+     * This adapter: interrupt IN 1, bulk IN 2, bulk OUT 3.
+     */
+    put32(g_req + 0x08, (1u << 1) | (1u << 2) | (1u << (16 + 3)));
     put32(g_req + 0x0C, 4);        /* max pending  (must be <= 0x100)   */
     put32(g_req + 0x10, 2048);     /* max size     (<= 0x10000000)      */
     DCFlushRange(g_req, sizeof(g_req));

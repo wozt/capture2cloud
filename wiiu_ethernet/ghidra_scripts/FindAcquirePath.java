@@ -17,13 +17,7 @@ import ghidra.program.model.symbol.*;
 public class FindAcquirePath extends GhidraScript {
     @Override
     public void run() throws Exception {
-        String[] wanted = {
-            "Acquired by client",
-            "Sending probe indication",
-            "Evaluating registrations",
-            "Rejected by client",
-            "Released and LOCKED",
-        };
+        String[] wanted = { "Enable endpoints" };
 
         Set<Function> interesting = new LinkedHashSet<>();
         Listing listing = currentProgram.getListing();

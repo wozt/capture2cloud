@@ -8,7 +8,7 @@ import ghidra.program.model.listing.Function;
 public class DecompAt extends GhidraScript {
     @Override
     public void run() throws Exception {
-        String[] addresses = { "101147b0", "10115c2c" };
+        String[] addresses = { "10114238", "101148f8" };
         DecompInterface decomp = new DecompInterface();
         decomp.openProgram(currentProgram);
         for (String a : addresses) {
