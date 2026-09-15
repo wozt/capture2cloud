@@ -597,6 +597,50 @@ the problem all along. It is also entirely read-only with respect to the
 console: opening a device node and issuing ioctls changes nothing on
 the NAND.
 
+### Raw /dev/uhs: nsysuhs is exonerated, and the real chain appears
+
+The whole sequence done directly, the way usb_mic does it -- our own
+`IOS_Open("/dev/uhs/0")`, our own request blocks built from nsysuhs's
+decompilation:
+
+    IOS_Open("/dev/uhs/0")      ->  2113801090   (a handle)
+    ioctl  0x11 query           ->  1 interface
+    ioctl  0x04 acquire         ->  0            (granted)
+    ioctl  0x0B endpoints       ->  -2162715
+    ioctlv 0x0E bulk IN         ->  -2162713
+
+**Identical to going through the library.** So nsysuhs.rpl was never the
+problem, and the request blocks here are right -- the query parsed, the
+handle came back, the acquire was granted, all from hand-built buffers.
+
+And it reorders the whole picture. Lining up every call now known:
+
+    0x11  query       ioctl    works
+    0x04  acquire     ioctl    works
+    0x0C  control     ioctlv   works        <- and this is a VECTORED call
+    0x0B  endpoints   ioctl    refused
+    0x0E  bulk        ioctlv   refused
+    0x0D  interrupt   ioctlv   refused
+
+So it is **not** ioctl versus ioctlv: control is vectored and works. What
+separates the two groups is that **a control transfer goes to endpoint
+0, which needs no enabling**, while bulk and interrupt need endpoints
+that `UhsAdministerEndpoint` was supposed to enable -- and that call is
+the one that fails.
+
+**Everything hangs on `0x0B`.** It is received (IOSU logged "Enable
+endpoints 0x0000ffff" with exactly the mask passed), its arguments pass
+the library's own validation (`pending <= 0x100`, `size <= 0x10000000`),
+its block layout is `{type, if_handle, mask, pending, size, 0}` read
+from the library rather than guessed -- and IOS still returns -2162715.
+
+That is now one call to explain rather than a class of them, and the
+firmware to explain it with is decrypted and mapped. In the UHS server's
+state machine, `EP_REQ` is event 8 and it is handled in state 2,
+`ACQUIRED`. The next question is whether our interface is in that state
+when 0x0B arrives, and the answer is in the state-2/event-8 path of
+`FUN_101147b0`.
+
 ### Where this stands
 
 **IOSU may simply not hand an interface to a Cafe OS client for a device
