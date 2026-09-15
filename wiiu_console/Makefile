@@ -26,9 +26,13 @@ DATA		:=	data
 # Switch client does.
 INCLUDES	:=	src ..
 
+# These become the channel's name, icon and splash on the Wii U menu.
+# A .wuhb is an .rpx plus this metadata, and the homebrew_on_menu plugin
+# is what puts one on the menu as a channel -- see README.md.
 APP_NAME	:=	Capture2Cloud
 APP_SHORTNAME	:=	Capture2Cloud
 APP_AUTHOR	:=	wozt
+APP_ICON	:=	$(TOPDIR)/../assets/icon-128.png
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -115,7 +119,7 @@ $(BUILD):
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).rpx $(TARGET).elf
+	@rm -fr $(BUILD) $(TARGET).rpx $(TARGET).elf $(TARGET).wuhb
 
 #---------------------------------------------------------------------------------
 else
@@ -126,8 +130,12 @@ DEPENDS	:=	$(OFILES:.o=.d)
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-all	:	$(OUTPUT).rpx
+# The .wuhb as well as the .rpx: the .rpx is what wiiload sends over the
+# network while developing, the .wuhb is what goes on the SD card and
+# shows up as a channel.
+all	:	$(OUTPUT).wuhb
 
+$(OUTPUT).wuhb	:	$(OUTPUT).rpx
 $(OUTPUT).rpx	:	$(OUTPUT).elf
 $(OUTPUT).elf	:	$(OFILES)
 
