@@ -118,12 +118,26 @@ bool write_all(int fd, const void *from, size_t len)
     return true;
 }
 
+/*
+ * One message at a time, because two threads send on this socket.
+ *
+ * The input thread sends pad state; the receive loop sends keyframe and
+ * codec requests, and now a keepalive. A message is a header followed by
+ * a body, so without this a header from one thread could land between
+ * the header and the body of the other -- and the host, which reads a
+ * length and then that many bytes, would be desynchronised from that
+ * moment on. It had not bitten yet because the two threads rarely spoke
+ * at once; recovery is exactly when they both do.
+ */
+static std::mutex g_send_mutex;
+
 bool send_message(int fd, uint8_t type, const void *body, uint32_t len)
 {
     C2sFrameHeader h;
     memset(&h, 0, sizeof(h));
     h.type = type;
     h.size = len;
+    std::lock_guard<std::mutex> hold(g_send_mutex);
     if (!write_all(fd, &h, sizeof(h)))
         return false;
     return len == 0 || write_all(fd, body, len);
@@ -478,6 +492,7 @@ void input_loop(drc::Streamer *streamer, int fd, PadMenu *menu)
     int8_t last[C2S_PAD_SLOTS];
     memset(last, 0, sizeof(last));
     bool ever = false;
+    auto last_sent = std::chrono::steady_clock::now();
 
     while (!g_stop) {
         drc::InputData in;
@@ -501,7 +516,32 @@ void input_loop(drc::Streamer *streamer, int fd, PadMenu *menu)
                 memcpy(last, slots, sizeof(slots));
                 if (!send_message(fd, C2S_MSG_INPUT, slots, sizeof(slots)))
                     return;
+                last_sent = std::chrono::steady_clock::now();
             }
+        }
+
+        /*
+         * Something to say when the pad has nothing to say.
+         *
+         * The host drops a native client that has sent nothing for ten
+         * seconds, and the only thing this client sends unprompted is
+         * the block above -- which sends only when something MOVED. So
+         * a pad resting on the table for ten seconds was killing the
+         * session, and a pad away being reauthenticated was killing it
+         * every single time: in the log, every "still stuck" was
+         * followed by "silent too long", twelve whole session restarts
+         * in twelve minutes.
+         *
+         * The host has learnt to ask before reaping, but it is the
+         * client that goes quiet, so the client is where this belongs:
+         * it costs five bytes every three seconds and it does not
+         * depend on the host being new enough to probe.
+         */
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_sent >= std::chrono::seconds(3)) {
+            if (!send_message(fd, C2S_MSG_PING, nullptr, 0))
+                return;
+            last_sent = now;
         }
         /* 200 Hz, comfortably above the pad's own 60. What PollInput
          * actually updates at was never measured. */
