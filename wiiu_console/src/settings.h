@@ -33,4 +33,9 @@ int  settings_save(const Settings *s, char *why, unsigned why_size);
 /* "192.168.2.100", for passing to net_connect and for the screen. */
 void settings_host_string(const Settings *s, char *out, unsigned out_size);
 
+/* The other direction, for what somebody typed. Returns 0 when the text
+ * was four numbers in range, -1 otherwise -- and on -1 the settings are
+ * left exactly as they were, so a typo cannot quietly become 0.0.0.0. */
+int settings_set_host_string(Settings *s, const char *text);
+
 #endif /* CAPTURE2WIIU_SETTINGS_H */
