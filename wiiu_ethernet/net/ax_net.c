@@ -80,6 +80,15 @@ static void setup_cb(void *v)
 {
     struct setup_ctx *c = v;
     ip4_addr_t zero = {0};
+    /* Re-entrant: a previous start whose stop never ran (callback
+     * allocation failure, worker killed mid-path) leaves the netif in
+     * lwIP's list, and re-adding it trips the "netif already added"
+     * assert. Remove whatever is left before adding again. */
+    if (netif_dhcp_data(&iface) != NULL) {
+        dhcp_stop(&iface);
+        dhcp_cleanup(&iface);
+    }
+    netif_remove(&iface);
     memset(&iface, 0, sizeof(iface));
     if (!netif_add(&iface, &zero, &zero, &zero, c->ax, init_interface, tcpip_input)) {
         c->err = ERR_IF;
