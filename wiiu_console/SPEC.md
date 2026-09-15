@@ -12,6 +12,10 @@ but a network.
 > **Status: specification only.** Nothing is built. Everything below that
 > is measured is marked; everything else is from research or from how the
 > other clients work, and is a plan rather than a fact.
+>
+> The four questions that shaped it have been answered and the answers
+> are folded in. They are kept at the end as decisions, with what each
+> one costs.
 
 ---
 
@@ -39,13 +43,10 @@ produces blocky video or colour errors. The console's own Wi-Fi is
 single-band 802.11n and is the first thing to give out; a USB Ethernet
 adapter is what makes 720p60 comfortable.
 
-So the plan is **720p60 as the default and the tested path**, with 1080p
-offered in the menu and honestly labelled as unlikely to hold. If it
-does hold on a wired console, nothing stops it.
-
-This is worth settling before any code: the whole shape of the client —
-what the host encodes, what the decoder is configured for — follows from
-the answer. See the questions at the end.
+**Decided: 720p60 is the default and the tested path.** 1080p is in the
+menu, labelled as unlikely to hold, and nothing stops it on a console
+that manages it. The client is built and measured at 720p60; 1080p is
+offered rather than supported.
 
 ---
 
@@ -143,25 +144,33 @@ It is not a dialog that blocks: it draws itself inside the render loop —
 so the client has to be built around a loop that can host it. Worth
 knowing before the loop is written rather than after.
 
-Once accepted, the host returns a session token. Store the **token**, not
-the password, the way the page does — and if it is stored on the SD card
-at all, that is a decision to take deliberately rather than by accident.
+Once accepted, the host returns a session token. **The token is kept on
+the SD card, and the password never is.**
+
+That is a credential on removable media, and the thing that makes it
+acceptable is not a mitigation anyone added: the host keeps its session
+table in memory only, so every token dies when the host process does. A
+token read off a card after a restart is already worthless, and the
+keyboard is there to type the password again. Worth knowing so nobody
+"improves" the host by persisting its sessions.
+
+What must NOT be stored is the password itself -- the same rule the page
+and the Android client follow.
 
 ---
 
 ## What is already decided by the host
 
-- The transport is `c2s_protocol.h` on port **5081**, the console port,
-  shared with the Switch homebrew and the phone.
-- **Shared settings are shared.** Resolution, frame rate and bitrate on
-  that chain belong to every native client at once. A client that
-  arrives and pushes its own saved values changes the picture for
-  whoever is already watching, so it is *told* what the stream is and
-  moves its own controls to match. `../SHARED_SETTINGS.md` has the rule
-  and why.
-- If this client should have its own encode instead — the way the
-  GamePad client got port 5082 and `SS_STREAM_DRC` — that is a host
-  change, and a question below.
+- The transport is `c2s_protocol.h`.
+- **It gets its own encode and its own port.** A fifth `SS_STREAM_*`
+  beside VP8, H264, WEB and DRC, on port **5083**, fed only while a Wii U
+  client holds it — the same shape the GamePad client ended up needing.
+  Port 5081 is shared with the Switch and the phone, and there the
+  resolution, frame rate and bitrate belong to everyone at once: a
+  handheld asking for 480p30 took the GamePad down to 30 with it, which
+  is the failure this avoids. `../SHARED_SETTINGS.md` has the rule.
+- That costs host work -- a chain, a slot, a codec value on the wire, a
+  demand gate -- and the work is already patterned four times over.
 
 ---
 
@@ -175,29 +184,37 @@ at all, that is a decision to take deliberately rather than by accident.
 
 ---
 
-## Questions
+## Decisions, and what each one costs
 
-1. **1080p.** Given the reports, is 720p60 acceptable as the default and
-   tested path, with 1080p offered but unsupported? Or should the client
-   be built for 1080p first and the reports treated as somebody else's
-   problem?
+**720p60 is the path.** 1080p is offered and not supported. Cost: a menu
+entry that can disappoint, which is better than a client built around a
+resolution it cannot hold.
 
-2. **Its own encode, or the shared one?** Joining port 5081 means the
-   Switch and the phone share its resolution and bitrate. Its own chain —
-   a fifth `SS_STREAM_*` and another port — costs host work but means the
-   console never drags the others down, and vice versa. The GamePad
-   client needed exactly that in the end.
+**Its own chain, port 5083.** Cost: host work, four times patterned.
+Buys: the console and the Switch stop deciding each other's picture.
 
-3. **Wired or wireless?** If a USB Ethernet adapter is part of the setup,
-   the bitrate can be far higher and 1080p becomes worth trying. If it is
-   the console's own Wi-Fi, the ceiling is much lower and the defaults
-   should say so.
+**The network is not known yet, so plan for the worse one.** Defaults are
+set for the console's own single-band Wi-Fi -- roughly 20 to 30 Mbit in
+practice -- and the menu goes up from there for whoever has a USB
+Ethernet adapter. Getting this wrong in the generous direction is a
+client that stutters out of the box; getting it wrong in the careful
+direction is one setting to raise.
 
-4. **Where does the token live?** Nowhere, and typed each launch, is the
-   simplest and safest. On the SD card is more convenient and is a
-   credential sitting on a removable card.
+**The token lives on the SD card, the password never does.** See above
+for why the host's in-memory session table is what makes that tolerable.
 
-5. **Does the GamePad menu need to work while the GamePad is showing the
-   stream?** The corner marker says yes. Confirming it, because it means
-   the menu is composited over live video rather than drawn instead of
-   it — which is more work and was worth it on the other client.
+**The menu is composited over live video.** The corner marker in both
+modes says so: in GamePad mode the stream has the screen and the menu is
+drawn on top of it, not instead of it. That is more work than swapping
+buffers and it is what the GamePad client needed too.
+
+## Still open
+
+- **Whether SDL2 is worth it.** It brings the menu, the input and the
+  font for free, and it is what Moonlight's port uses. It is also a
+  software surface, and the video must not go through one: the hardware
+  decoder's output belongs in a GX2 texture. Possibly SDL2 for the menu
+  and GX2 for the picture, possibly neither.
+- **What the decoder actually does at 1080p.** The reports say colour
+  errors, which sounds like a buffer layout rather than a hard limit.
+  Worth ten minutes with the real decoder before believing a forum.
