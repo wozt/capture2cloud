@@ -40,6 +40,21 @@
  */
 #define C2S_DRC_PORT 5082
 
+/*
+ * And a third, for a client running ON a Wii U console.
+ *
+ * Same reasoning as the port above, plus one that is specific to it:
+ * `C2sShared` makes the size, the frame rate and the bitrate belong to
+ * every client on a port at once. On 5081 a handheld asking for 480p30
+ * took the GamePad down to 30 with it -- measured, and the reason 5082
+ * exists. A console on a television wants 720p60 and a phone on a train
+ * wants neither, so they do not share a port.
+ *
+ * ../SHARED_SETTINGS.md has the rule; wiiu_console/SPEC.md has why this
+ * client in particular could not live with it.
+ */
+#define C2S_WIIU_PORT 5083
+
 /* Sizes are u32 and the sender never exceeds this, so a receiver can
  * reject a malformed length instead of trying to allocate it. A 720p
  * VP8 keyframe is far below this; the margin is for a scene change on a

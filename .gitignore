@@ -74,3 +74,8 @@ android/local.properties
 # libraries that belong to their own projects.
 wiiu_gamepad/wiiu_pad
 wiiu_gamepad/vendor/
+
+# The Wii U console homebrew's build output.
+wiiu_console/build/
+wiiu_console/capture2wiiu.rpx
+wiiu_console/capture2wiiu.elf
