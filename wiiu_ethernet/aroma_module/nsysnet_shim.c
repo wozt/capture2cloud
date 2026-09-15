@@ -556,3 +556,20 @@ int nsysnet_shim_install(void)
     WHBLogPrintf("AX88179 shim: %d patches registered", handle_count);
     return 0;
 }
+
+/*
+ * Called when the title hosting this module instance exits. The
+ * replacement functions live in this process's memory: leaving the
+ * patches registered would let them fire on dead code after finalize,
+ * and the patcher's list would grow with every title switch. The next
+ * title's module instance re-registers from its own APPLICATION_STARTS.
+ */
+void nsysnet_shim_uninstall(void)
+{
+    if (!installed) return;
+    for (int i = handle_count - 1; i >= 0; i--)
+        FunctionPatcher_RemoveFunctionPatch(handles[i]);
+    handle_count = 0;
+    installed = 0;
+    FunctionPatcher_DeInitLibrary();
+}
