@@ -91,4 +91,10 @@ const char *config_get_str(const char *key, char *out, size_t out_size, const ch
  * so a typo degrades to a sane limit instead of a broken run. */
 long config_get_int(const char *key, long fallback, long min_value, long max_value);
 
+/* Writes one key back to the .env so a setting survives a restart.
+ * Every other line is copied through byte for byte -- this file holds
+ * credentials, and a save that reformatted it would be a save that can
+ * lose them. Returns 0 on success. */
+int config_set_int(const char *key, long value);
+
 #endif

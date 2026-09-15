@@ -88,6 +88,11 @@ int gst_webrtc_stream_get_client_count(GstWebrtcStream *g, int *max_clients);
  * at whatever the card delivers and the scale happens on the way to the
  * encoder. Below 1080p that also saves the encoder most of its work,
  * which is the point on a busy scene. */
+/* Whether the Wii U GamePad's encode may run at all -- the "serve to
+ * wii u gamepad" setting. A pad still has to connect before anything is
+ * encoded; this only says it is allowed to. */
+void gst_webrtc_stream_set_drc_enabled(GstWebrtcStream *g, int enabled);
+
 void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int width, int height);
 
 /* The capture card's format, which is shared by everyone: the browsers

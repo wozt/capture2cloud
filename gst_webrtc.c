@@ -2,6 +2,7 @@
 
 #include "gst_webrtc.h"
 #include "switch_stream.h"
+#include "drc_encoder.h"
 #include "c2s_protocol.h"
 
 #include <gst/video/video.h>
@@ -131,7 +132,11 @@ static const char *const H264_ENCODER_PREFERENCE[] = {
 /* The three streams this file feeds, named as switch_stream.h names
  * them. A local alias for the count so the arrays below can be sized
  * without the header's name leaking into every one of them. */
-#define SS_STREAM_COUNT_LOCAL 3
+/* Four now: the three GStreamer chains, and the Wii U GamePad's, which
+ * is not a GStreamer chain at all -- it scales straight into drc-x264
+ * and hands the transport five chunks. It is a slot here because the
+ * demand gate that decides what gets fed is per slot. */
+#define SS_STREAM_COUNT_LOCAL 4
 
 /* The browsers' stream: H.264, and at a size a monitor wants rather
  * than the size a handheld wants -- which is the whole reason it cannot
@@ -140,6 +145,43 @@ static const char *const H264_ENCODER_PREFERENCE[] = {
 #define WEB_VIDEO_WIDTH  1920
 #define WEB_VIDEO_HEIGHT 1080
 #define WEB_VIDEO_BITRATE_KBPS 8000
+
+/*
+ * How often the Wii U chain emits a recovery point nobody asked for.
+ * Zero -- the default -- means never, and never is right.
+ *
+ * Measured: at 3000 the pad asked for a keyframe SIXTY times a second,
+ * continuously; with this off it asks about once. Every recovery point
+ * is a fresh encoder, and a fresh encoder restarts x264's intra refresh
+ * wave and renumbers its frames, which is precisely the discontinuity
+ * the pad cannot follow. Insurance that causes the accident.
+ *
+ * Nothing is lost by removing it, because intra refresh IS the recovery
+ * mechanism here: the wave repairs loss as it sweeps, continuously,
+ * without a keyframe at all. A pad that has lost the sequence outright
+ * still asks, and that request is answered -- see push_drc_chain.
+ *
+ * Left tunable because it is the first thing anybody will want to try
+ * again, and the number above is the answer.
+ */
+#define DRC_IDR_INTERVAL_MS ((Uint32)config_get_int("WIIU_IDR_INTERVAL_MS", 0, 0, 60000))
+
+/* And the shortest gap between two of them, however often the pad asks.
+ * An intra frame cannot fit DRH's five packets, so answering quickly
+ * feeds the very loop the request came from. */
+#define DRC_IDR_MIN_GAP_MS 10000
+
+/* The pad's own chain when it takes ordinary H.264. Modest: the
+ * client re-encodes it at a quantiser of 32 anyway, so bits spent
+ * here beyond what that pass keeps are bits thrown away. */
+#define DRC_H264_BITRATE_KBPS 6000
+
+/* What the pad's chain SENDS, which is not what the pad displays. The
+ * client reduces this to 864x480, and that reduction is load-bearing:
+ * see the caps note in the pipeline. Its own size and its own sixty, so
+ * a handheld on the console's chain cannot drag it to 30. */
+#define DRC_SEND_WIDTH  1280
+#define DRC_SEND_HEIGHT 720
 
 #define DEFAULT_KEYFRAME_MAX_DIST 300
 #define MIN_KEYFRAME_MAX_DIST 15
@@ -230,6 +272,33 @@ struct GstWebrtcStream {
      * is never fed, so it costs nothing. */
     GstElement *vsrc_switch264, *venc_switch_h264, *switchsink264;
     GstElement *vsrc_web264, *venc_web_h264, *websink264, *vscale_web264_caps;
+    GstElement *vsrc_drc264, *venc_drc_h264, *drcsink264;
+
+    /*
+     * The Wii U GamePad's encode. No pipeline elements: drc-x264 is
+     * opened at run time and driven directly, because the library must
+     * not be linked (see drc_encoder.h) and because there is nothing to
+     * negotiate -- one size, one quantiser, five chunks.
+     *
+     * Opened the first time a pad actually asks for this stream, so a
+     * host with no drc-x264 pays nothing and says so once.
+     */
+    DrcEncoder *drc_enc;
+    volatile int drc_allowed;       /* the "serve to wii u gamepad" setting */
+    int         drc_tried;          /* so a missing library is reported once */
+    uint8_t    *drc_i420;           /* 864x480, letterboxed, planes packed */
+    struct SwsContext *drc_sws;
+    int         drc_src_w, drc_src_h;
+    enum AVPixelFormat drc_src_format;
+    int         drc_fit_w, drc_fit_h, drc_fit_x;
+    volatile int drc_want_idr;
+    Uint32       drc_last_idr_ms;
+    struct SwsContext *drc_send_sws;   /* the 720p the client reduces */
+    uint8_t    *drc_send_buf;
+    int         drc_send_w, drc_send_h;
+    enum AVPixelFormat drc_send_format;
+    uint8_t    *drc_msg;            /* header + the five chunks, one buffer */
+    size_t      drc_msg_cap;
     GstElement *vscale_switch264_caps;
     /* The VA encoders take NV12 and nothing else, x264enc takes I420.
      * The conversion happens in the scaler that feeds the branch either
@@ -577,7 +646,30 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
                  WEB_VIDEO_BITRATE_KBPS, keyframe_max_dist);
     }
 
-    char desc[4608];
+    /*
+     * And the pad's own, at its own size and its own rate.
+     *
+     * Ordinary H.264 -- the pad's client decodes this and libdrc encodes
+     * it again in the pad's format, which is the path that measures
+     * stable. What it must NOT be is the console's chain: that one is
+     * shared with the Switch and the phone, so a handheld asking for
+     * 480p30 took the pad down with it. 864x480 is exactly what libdrc
+     * feeds the panel, so the client has nothing left to scale.
+     */
+    char drc_h264_enc[320];
+    if (g->switch264_nv12) {
+        snprintf(drc_h264_enc, sizeof(drc_h264_enc),
+                 "%s name=venc_drc_h264 bitrate=%d key-int-max=%d b-frames=0 ref-frames=1 "
+                 "rate-control=cbr target-usage=6",
+                 g->switch264_encoder, DRC_H264_BITRATE_KBPS, keyframe_max_dist);
+    } else {
+        snprintf(drc_h264_enc, sizeof(drc_h264_enc),
+                 "x264enc name=venc_drc_h264 tune=zerolatency speed-preset=veryfast "
+                 "threads=1 sliced-threads=false bitrate=%d key-int-max=%d bframes=0",
+                 DRC_H264_BITRATE_KBPS, keyframe_max_dist);
+    }
+
+    char desc[5632];
     snprintf(desc, sizeof(desc),
              /* max-buffers=1 + leaky matters more than it looks. appsrc
               * defaults to max-bytes=200000 with leaky-type=none, and a
@@ -717,6 +809,24 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
 
              /* Audio for the same client, tapped off the encoder the
               * browser already uses: one Opus stream serves both. */
+             /* The Wii U GamePad's own chain: its panel's size, always
+              * sixty, and nobody else's settings. Its own appsrc rather
+              * than a tee off another branch, for the reason the others
+              * have one -- a branch nobody is on is simply not fed, and
+              * a tee cannot be left unfed without stalling what it
+              * shares a negotiation with. */
+             "appsrc name=vsrc_drc264 format=time is-live=true do-timestamp=true "
+             "max-buffers=1 leaky-type=downstream "
+             "caps=video/x-raw,format=%s,width=%d,height=%d,framerate=60/1 ! "
+             "queue max-size-buffers=1 leaky=downstream ! "
+             "videorate name=vrate_drc264 drop-only=true ! "
+             "videoconvert ! "
+             "%s ! "
+             "video/x-h264,stream-format=byte-stream,alignment=au ! "
+             "h264parse config-interval=-1 ! "
+             "appsink name=drcsink264 emit-signals=true sync=false async=false "
+             "max-buffers=2 drop=true "
+
              "atee. ! queue max-size-buffers=2 leaky=downstream ! "
              "appsink name=switchasink emit-signals=true sync=false async=false "
              "max-buffers=8 drop=true",
@@ -726,7 +836,17 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
              g->switch264_nv12 ? "NV12" : "I420", SWITCH_VIDEO_WIDTH, SWITCH_VIDEO_HEIGHT,
              h264_enc,
              g->switch264_nv12 ? "NV12" : "I420", WEB_VIDEO_WIDTH, WEB_VIDEO_HEIGHT,
-             web_h264_enc);
+             web_h264_enc,
+             /* I420 always, and 720p rather than the panel's 864x480.
+              *
+              * The client downscales this to the panel, and THAT is
+              * what makes the two-pass path fit: a reduction smooths
+              * the picture, and the smoothing is what keeps a DRH chunk
+              * inside its 1400-byte packet. Sending the panel's exact
+              * size looks tidier and removes the one step that was
+              * doing the work -- measured, by breaking it that way. */
+             "I420", DRC_SEND_WIDTH, DRC_SEND_HEIGHT,
+             drc_h264_enc);
 
     GError *error = NULL;
     g->pipeline = gst_parse_launch(desc, &error);
@@ -761,11 +881,17 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->venc_switch_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_switch_h264");
     g->switchsink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchsink264");
     g->vsrc_web264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_web264");
+    g->vsrc_drc264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_drc264");
+    g->venc_drc_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_drc_h264");
+    g->drcsink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "drcsink264");
     g->venc_web_h264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "venc_web_h264");
     g->websink264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "websink264");
     g->vscale_web264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_web264_caps");
     if (g->websink264) {
         g_signal_connect(g->websink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
+    }
+    if (g->drcsink264) {
+        g_signal_connect(g->drcsink264, "new-sample", G_CALLBACK(on_switch_video_sample), g);
     }
     g->vsrc_switch264 = gst_bin_get_by_name(GST_BIN(g->pipeline), "vsrc_switch264");
     g->vscale_switch264_caps = gst_bin_get_by_name(GST_BIN(g->pipeline), "vscale_switch264_caps");
@@ -774,8 +900,10 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     }
     for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
         const int web = (slot == SS_STREAM_WEB);
-        g->switch_width[slot] = web ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-        g->switch_height[slot] = web ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
+        g->switch_width[slot] = (slot == SS_STREAM_DRC) ? DRC_SEND_WIDTH
+                              : web ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
+        g->switch_height[slot] = (slot == SS_STREAM_DRC) ? DRC_SEND_HEIGHT
+                               : web ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
         g->switch_fps[slot] = 60;
         g->switch_bitrate_kbps[slot] = web ? WEB_VIDEO_BITRATE_KBPS
                                            : SWITCH_VIDEO_BITRATE_KBPS;
@@ -863,7 +991,8 @@ static GstFlowReturn on_switch_video_sample(GstElement *sink, gpointer user_data
      * chain's bytes does not fail cleanly: it produces a picture, and
      * the picture was bright pink. Routing rather than dropping is the
      * same guarantee, and it is what lets both run at once. */
-    const int slot = (sink == g->websink264)     ? SS_STREAM_WEB
+    const int slot = (sink == g->drcsink264)     ? SS_STREAM_DRC
+                   : (sink == g->websink264)     ? SS_STREAM_WEB
                    : (sink == g->switchsink264)  ? SS_STREAM_H264
                                                  : SS_STREAM_VP8;
     GstBuffer *buf = gst_sample_get_buffer(sample);
@@ -981,6 +1110,18 @@ static void on_switch_keyframe_request(void *ctx) {
         gst_element_send_event(g->switchsink264,
                                gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE, TRUE, 0));
     }
+    if (g->drcsink264) {
+        gst_element_send_event(g->drcsink264,
+                               gst_video_event_new_upstream_force_key_unit(GST_CLOCK_TIME_NONE, TRUE, 0));
+    }
+    /*
+     * The GamePad's chain is not a GStreamer branch and cannot be sent
+     * an event: it is a flag the encode reads on its next frame, and
+     * what it does there is throw the encoder away. Under intra refresh
+     * that is the only thing that produces a real recovery point --
+     * asking x264 for an IDR just restarts its refresh wave.
+     */
+    g->drc_want_idr = 1;
 }
 
 /* A client saying what it can actually decode. Applied to the native
@@ -1069,12 +1210,24 @@ static void on_switch_demand_changed(void *ctx) {
         return;
     }
     for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
-        const int wanted = switch_stream_stream_client_count(g->switch_out, slot) > 0;
+        int wanted = switch_stream_stream_client_count(g->switch_out, slot) > 0;
+        /*
+         * The GamePad's chain answers to two things, not one: a pad has
+         * to be connected AND the setting has to be on. The setting
+         * alone already stops the client being launched, so this is the
+         * belt to that braces -- it keeps drc-x264 unopened when
+         * somebody starts a pad client by hand against a host where the
+         * feature is switched off.
+         */
+        if (slot == SS_STREAM_DRC && !g->drc_allowed) {
+            wanted = 0;
+        }
         if (wanted == g->switch_wanted[slot]) {
             continue;
         }
         g->switch_wanted[slot] = wanted;
-        static const char *const names[] = {"native vp8", "native h264", "browser h264"};
+        static const char *const names[] = {"native vp8", "native h264",
+                                            "browser h264", "wii u"};
         fprintf(stderr, "gst_webrtc: %s chain %s\n", names[slot],
                 wanted ? "started (a client is watching it)" : "stopped (nobody left on it)");
         if (wanted) {
@@ -1085,6 +1238,55 @@ static void on_switch_demand_changed(void *ctx) {
             on_switch_keyframe_request(g);
         }
     }
+}
+
+/*
+ * The "serve to wii u gamepad" setting, applied while running.
+ *
+ * Turning it off drops the chain at the next demand change and frees
+ * drc-x264 with it, rather than leaving an encoder resident for a pad
+ * nobody is using. Turning it on does not start anything by itself:
+ * something still has to connect and ask for that stream.
+ */
+void gst_webrtc_stream_set_drc_enabled(GstWebrtcStream *g, int enabled) {
+    if (!g || g->drc_allowed == (enabled ? 1 : 0)) {
+        return;
+    }
+    g->drc_allowed = enabled ? 1 : 0;
+    if (enabled) {
+        /*
+         * Opened now rather than at the first frame, because the answer
+         * decides what this host may OFFER. A client asking for that
+         * codec has to be told yes or no when it asks, and "yes" from a
+         * host that then discovers it has no drc-x264 is a stream that
+         * never starts, with nothing saying why.
+         */
+        if (!g->drc_enc) {
+            char err[256];
+            g->drc_enc = drc_encoder_open(NULL, NULL, err, sizeof(err));
+            g->drc_tried = 1;
+            if (g->drc_enc) {
+                fprintf(stderr, "gst_webrtc: wii u encode available (%s)\n",
+                        drc_encoder_library(g->drc_enc));
+            } else {
+                fprintf(stderr, "gst_webrtc: no wii u encode -- %s\n", err);
+            }
+        }
+    } else {
+        g->switch_wanted[SS_STREAM_DRC] = 0;
+        if (g->drc_enc) {
+            drc_encoder_close(g->drc_enc);
+            g->drc_enc = NULL;
+        }
+        /* Asked again next time: a library that was missing may have
+         * been installed since, and the message is worth repeating for
+         * a setting somebody just turned on. */
+        g->drc_tried = 0;
+    }
+    if (g->switch_out) {
+        switch_stream_set_drc_available(g->switch_out, g->drc_enc != NULL);
+    }
+    on_switch_demand_changed(g);
 }
 
 void gst_webrtc_stream_set_capture_mjpeg(GstWebrtcStream *g, int mjpeg) {
@@ -1103,6 +1305,11 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
     switch_stream_set_keyframe_request(out, on_switch_keyframe_request, g);
     switch_stream_set_profile_request(out, on_switch_profile_request, g);
     switch_stream_set_demand_changed(out, on_switch_demand_changed, g);
+    /* Whatever the setting decided before this transport existed: the
+     * settings are applied at startup and the port opens after them, so
+     * without this the very thing the setting turned on would be
+     * refused to the first client that asked for it. */
+    switch_stream_set_drc_available(out, g->drc_enc != NULL);
     /* The shape of all three, before anyone connects. A client adopted
      * onto a stream whose size nobody had announced yet was told the
      * size of a different one -- harmless, since the decoder reads the
@@ -1119,12 +1326,318 @@ void gst_webrtc_stream_set_switch_output(GstWebrtcStream *g, SwitchStream *out) 
  * Separate from push_i420() because the two differ in output size and in
  * which appsrc they feed, and sharing one function would mean a
  * converter rebuilt on every alternate call. */
+/*
+ * The GamePad's chain, end to end: scale, letterbox, encode, send.
+ *
+ * Everything the other three negotiate is fixed here. 864x480 is the
+ * panel libdrc feeds; the picture is 16:9, so it goes in as 852x480
+ * with six pixels of black each side rather than stretched -- the pad
+ * cannot letterbox for itself, and a stretched circle stays stretched.
+ *
+ * Even widths only: an odd one has no chroma column to match it.
+ */
+/*
+ * Letterboxes the capture into the pad's 864x480, in I420.
+ *
+ * One place, for both encoders on this stream, because doing it twice
+ * is how a green band appears: the bars are a region nobody writes, and
+ * an untouched chroma plane is green rather than black. They are
+ * rewritten every frame rather than once when the scaler is built --
+ * 622 KB of memset against a class of bug where a bar keeps whatever
+ * was there before a size change.
+ *
+ * Returns 0 if the frame could not be prepared.
+ */
+static int drc_letterbox(GstWebrtcStream *g, const uint8_t *const plane[3],
+                         const int stride[3], enum AVPixelFormat format,
+                         int width, int height) {
+    if (!g->drc_i420) {
+        g->drc_i420 = malloc((size_t)DRC_ENC_WIDTH * DRC_ENC_HEIGHT * 3 / 2);
+        if (!g->drc_i420) {
+            return 0;
+        }
+    }
+    if (!g->drc_sws || g->drc_src_w != width || g->drc_src_h != height ||
+        g->drc_src_format != format) {
+        if (g->drc_sws) {
+            sws_freeContext(g->drc_sws);
+            g->drc_sws = NULL;
+        }
+        int fit_w = DRC_ENC_WIDTH, fit_h = DRC_ENC_HEIGHT;
+        if (width > 0 && height > 0) {
+            if ((long long)width * DRC_ENC_HEIGHT > (long long)height * DRC_ENC_WIDTH) {
+                fit_w = DRC_ENC_WIDTH;
+                fit_h = (int)((long long)DRC_ENC_WIDTH * height / width);
+            } else {
+                fit_h = DRC_ENC_HEIGHT;
+                fit_w = (int)((long long)DRC_ENC_HEIGHT * width / height);
+            }
+        }
+        /*
+         * Multiples of EIGHT, and the reason is the bars rather than
+         * the picture.
+         *
+         * The panel is 864 wide, which is a multiple of eight, so a
+         * picture that is also one leaves two bars of equal, even,
+         * chroma-aligned width. Rounding to four gave 852 at x=4: four
+         * pixels on the left, eight on the right, and a chroma column
+         * at the edge that nothing wrote -- which is green, not black.
+         * Rounding to eight gives 848 with eight each side, which is
+         * what WIIU_GAMEPAD_HANDOVER.md said in the first place.
+         */
+        fit_w &= ~7;
+        fit_h &= ~7;
+        if (fit_w < 8) fit_w = 8;
+        if (fit_h < 8) fit_h = 8;
+        g->drc_sws = sws_getContext(width, height, format, fit_w, fit_h,
+                                    AV_PIX_FMT_YUV420P, SWS_AREA, NULL, NULL, NULL);
+        if (!g->drc_sws) {
+            return 0;
+        }
+        g->drc_src_w = width;
+        g->drc_src_h = height;
+        g->drc_src_format = format;
+        g->drc_fit_w = fit_w;
+        g->drc_fit_h = fit_h;
+        g->drc_fit_x = ((DRC_ENC_WIDTH - fit_w) / 2) & ~7;
+        fprintf(stderr, "gst_webrtc: wii u stream %dx%d drawn as %dx%d at %d,%d\n",
+                width, height, fit_w, fit_h, g->drc_fit_x,
+                ((DRC_ENC_HEIGHT - fit_h) / 2) & ~7);
+    }
+
+    const size_t y_size = (size_t)DRC_ENC_WIDTH * DRC_ENC_HEIGHT;
+    /* Black, every frame: Y=16 and C=128 is black in this range, and
+     * zero would be blacker than the format allows. */
+    memset(g->drc_i420, 16, y_size);
+    memset(g->drc_i420 + y_size, 128, y_size / 2);
+
+    const int fit_y = ((DRC_ENC_HEIGHT - g->drc_fit_h) / 2) & ~7;
+    uint8_t *dst[4] = {
+        g->drc_i420 + (size_t)fit_y * DRC_ENC_WIDTH + g->drc_fit_x,
+        g->drc_i420 + y_size + (size_t)(fit_y / 2) * (DRC_ENC_WIDTH / 2) + g->drc_fit_x / 2,
+        g->drc_i420 + y_size + y_size / 4
+                    + (size_t)(fit_y / 2) * (DRC_ENC_WIDTH / 2) + g->drc_fit_x / 2,
+        NULL
+    };
+    int dst_stride[4] = { DRC_ENC_WIDTH, DRC_ENC_WIDTH / 2, DRC_ENC_WIDTH / 2, 0 };
+    const uint8_t *src[4] = { plane[0], plane[1], plane[2], NULL };
+    int src_stride[4] = { stride[0], stride[1], stride[2], 0 };
+    sws_scale(g->drc_sws, src, src_stride, 0, height, dst, dst_stride);
+    return 1;
+}
+
+/*
+ * The pad's stream as ordinary H.264, for the client that decodes it
+ * and encodes it again.
+ *
+ * The same letterboxed 864x480 the chunk encoder is given, handed to a
+ * GStreamer branch instead. Its own branch rather than the console's,
+ * because the console's is shared with the Switch and the phone -- a
+ * handheld asking for 480p30 there took the pad to 30 with it.
+ */
+static void push_drc_h264_chain(GstWebrtcStream *g, const uint8_t *const plane[3],
+                                const int stride[3], enum AVPixelFormat format,
+                                int width, int height, GstClockTime pts) {
+    if (!g->vsrc_drc264) {
+        return;
+    }
+    /* Not letterboxed here: this goes out at 720p and the client fits it
+     * to the panel, because its reduction is what smooths the picture
+     * enough for a chunk to fit one packet. Letterboxing on this side
+     * would send the panel's exact size and leave nothing to reduce. */
+    if (!g->drc_send_sws || g->drc_send_w != width || g->drc_send_h != height ||
+        g->drc_send_format != format) {
+        if (g->drc_send_sws) {
+            sws_freeContext(g->drc_send_sws);
+        }
+        g->drc_send_sws = sws_getContext(width, height, format,
+                                         DRC_SEND_WIDTH, DRC_SEND_HEIGHT,
+                                         AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR,
+                                         NULL, NULL, NULL);
+        if (!g->drc_send_sws) {
+            return;
+        }
+        g->drc_send_w = width;
+        g->drc_send_h = height;
+        g->drc_send_format = format;
+        free(g->drc_send_buf);
+        g->drc_send_buf = malloc((size_t)DRC_SEND_WIDTH * DRC_SEND_HEIGHT * 3 / 2);
+        if (!g->drc_send_buf) {
+            return;
+        }
+    }
+    const size_t y = (size_t)DRC_SEND_WIDTH * DRC_SEND_HEIGHT;
+    uint8_t *dst[4] = { g->drc_send_buf, g->drc_send_buf + y,
+                        g->drc_send_buf + y + y / 4, NULL };
+    int dst_stride[4] = { DRC_SEND_WIDTH, DRC_SEND_WIDTH / 2, DRC_SEND_WIDTH / 2, 0 };
+    const uint8_t *src[4] = { plane[0], plane[1], plane[2], NULL };
+    int src_stride[4] = { stride[0], stride[1], stride[2], 0 };
+    sws_scale(g->drc_send_sws, src, src_stride, 0, height, dst, dst_stride);
+
+    const size_t size = (size_t)DRC_SEND_WIDTH * DRC_SEND_HEIGHT * 3 / 2;
+    GstBuffer *buffer = gst_buffer_new_allocate(NULL, size, NULL);
+    if (!buffer) {
+        return;
+    }
+    gst_buffer_fill(buffer, 0, g->drc_send_buf, size);
+    GST_BUFFER_PTS(buffer) = pts;
+    GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(1, GST_SECOND, 60);
+    GstFlowReturn ret = GST_FLOW_OK;
+    g_signal_emit_by_name(g->vsrc_drc264, "push-buffer", buffer, &ret);
+    gst_buffer_unref(buffer);
+}
+
+static void push_drc_chain(GstWebrtcStream *g, const uint8_t *const plane[3],
+                           const int stride[3], enum AVPixelFormat format,
+                           int width, int height) {
+    if (!g->drc_enc) {
+        /* Once. A machine without the fork loses this stream and
+         * nothing else, and saying so every frame would be a wall. */
+        if (g->drc_tried) {
+            return;
+        }
+        g->drc_tried = 1;
+        char err[256];
+        g->drc_enc = drc_encoder_open(NULL, NULL, err, sizeof(err));
+        if (!g->drc_enc) {
+            fprintf(stderr, "gst_webrtc: no wii u stream -- %s\n", err);
+            return;
+        }
+        fprintf(stderr, "gst_webrtc: wii u stream using %s\n",
+                drc_encoder_library(g->drc_enc));
+    }
+
+    if (!drc_letterbox(g, plane, stride, format, width, height)) {
+        return;
+    }
+
+    /*
+     * A recovery point on request, and one every few seconds anyway.
+     *
+     * The request half is not enough on its own, and that is what made
+     * the picture freeze and stay frozen. Intra refresh repairs
+     * ordinary loss as a sweep, but a decoder that has lost the
+     * SEQUENCE has nothing to rejoin: it asks, and if that one request
+     * is lost -- a dropped frame on the socket, a client restarting,
+     * the host's own rate limit -- nothing ever asks again and the
+     * panel stays dark while the audio plays on. libdrc has the same
+     * escape hatch for the same reason, as DRC_KEYINT.
+     *
+     * Three seconds bounds any freeze to three seconds, and costs one
+     * intra frame in a hundred and eighty.
+     */
+    /*
+     * A recovery point is expensive here in a way it is nowhere else,
+     * and answering every request for one is a trap.
+     *
+     * DRH gives each of five chunks a single 1400-byte packet, so a
+     * frame has about 7 KB and no more. An INTRA frame at the pinned
+     * quantiser of 32 does not fit in that -- measured at up to 19 KB,
+     * fourteen times the packet -- so it is split, the pad cannot read
+     * a split chunk, and it asks for another recovery point. Which is
+     * also intra. Which also does not fit.
+     *
+     * That loop is what sixty keyframe requests a second were: not a
+     * pad failing to decode the stream, a pad failing to decode the
+     * answer. Intra refresh is the repair mechanism for everything
+     * short of losing the sequence outright -- it spreads the same
+     * intra macroblocks over thirty frames, which is precisely how they
+     * fit -- so requests are answered rarely, and the wave does the
+     * rest.
+     */
+    const Uint32 now_ms_drc = SDL_GetTicks();
+    const Uint32 idr_interval = DRC_IDR_INTERVAL_MS;
+    int want_idr = 0;
+    if (!g->drc_last_idr_ms) {
+        want_idr = 1;                       /* the stream has to start */
+    } else if (g->drc_want_idr &&
+               now_ms_drc - g->drc_last_idr_ms >= DRC_IDR_MIN_GAP_MS) {
+        want_idr = 1;
+    } else if (idr_interval > 0 && now_ms_drc - g->drc_last_idr_ms >= idr_interval) {
+        want_idr = 1;
+    }
+    if (want_idr) {
+        g->drc_want_idr = 0;
+        g->drc_last_idr_ms = now_ms_drc;
+        want_idr = 1;
+        /* A restart, not a forced IDR: with intra refresh on, x264
+         * answers the request by restarting its refresh wave and never
+         * emits NAL_SLICE_IDR again. A fresh encoder is the only thing
+         * that produces one. */
+        drc_encoder_restart(g->drc_enc);
+    }
+
+    DrcFrame f;
+    if (drc_encoder_encode(g->drc_enc, g->drc_i420, want_idr, &f) != 0) {
+        return;
+    }
+
+    /* Header and chunks in one buffer, because the transport sends one
+     * message and the boundaries ARE the message: there are no start
+     * codes to find them by. */
+    size_t total = sizeof(C2sDrcFrame);
+    for (int i = 0; i < DRC_ENC_CHUNKS; i++) {
+        total += f.size[i];
+    }
+    if (g->drc_msg_cap < total) {
+        uint8_t *bigger = realloc(g->drc_msg, total);
+        if (!bigger) {
+            return;
+        }
+        g->drc_msg = bigger;
+        g->drc_msg_cap = total;
+    }
+    C2sDrcFrame head;
+    memset(&head, 0, sizeof(head));
+    head.chunks = C2S_DRC_CHUNKS;
+    for (int i = 0; i < DRC_ENC_CHUNKS; i++) {
+        head.size[i] = f.size[i];
+    }
+    memcpy(g->drc_msg, &head, sizeof(head));
+    size_t at = sizeof(head);
+    for (int i = 0; i < DRC_ENC_CHUNKS; i++) {
+        memcpy(g->drc_msg + at, f.chunk[i], f.size[i]);
+        at += f.size[i];
+    }
+    /*
+     * The one number that decides whether the pad can read this.
+     *
+     * A DRH chunk has to fit in a single 1400-byte vstrm packet; one
+     * that does not is split, and a split chunk is what makes the pad
+     * ask for a keyframe on every frame. Reported once a second behind
+     * VERBOSE, because it is otherwise invisible: the stream is valid
+     * H.264 either way and nothing else complains.
+     */
+    if (app_verbose()) {
+        static Uint32 at = 0;
+        static uint32_t worst = 0, frames = 0, over = 0;
+        uint32_t biggest = 0;
+        for (int i = 0; i < DRC_ENC_CHUNKS; i++) {
+            if (f.size[i] > biggest) biggest = f.size[i];
+        }
+        if (biggest > worst) worst = biggest;
+        if (biggest > 1400) over++;
+        frames++;
+        const Uint32 now_v = SDL_GetTicks();
+        if (!at) at = now_v;
+        if (now_v - at >= 1000) {
+            fprintf(stderr, "gst_webrtc: wii u %u frames, biggest chunk %u B, "
+                            "%u over 1400\n", frames, worst, over);
+            at = now_v; worst = 0; frames = 0; over = 0;
+        }
+    }
+
+    switch_stream_send_video(g->switch_out, SS_STREAM_DRC, g->drc_msg,
+                             (uint32_t)total, f.is_idr);
+}
+
 /* Feeds ONE of the two native chains. Returns nothing: a chain that
  * cannot be set up is simply not fed this frame. */
 static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const plane[3],
                               const int stride[3], enum AVPixelFormat format,
                               int width, int height, GstClockTime pts) {
-    GstElement *dest = (slot == SS_STREAM_WEB)  ? g->vsrc_web264
+    GstElement *dest = (slot == SS_STREAM_DRC)  ? g->vsrc_drc264
+                     : (slot == SS_STREAM_WEB)  ? g->vsrc_web264
                      : (slot == SS_STREAM_H264) ? g->vsrc_switch264
                                                 : g->vsrc_switch;
     if (!dest) {
@@ -1132,8 +1645,12 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
     }
     /* Each chain is fed at its own size: a handheld's and a monitor's
      * are not the same picture. */
-    const int dw = (slot == SS_STREAM_WEB) ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-    const int dh = (slot == SS_STREAM_WEB) ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
+    /* The pad's panel is 864x480 and nothing else, so its chain is fed
+     * at exactly that: the client then has nothing left to scale. */
+    const int dw = (slot == SS_STREAM_DRC) ? DRC_ENC_WIDTH
+                 : (slot == SS_STREAM_WEB) ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
+    const int dh = (slot == SS_STREAM_DRC) ? DRC_ENC_HEIGHT
+                 : (slot == SS_STREAM_WEB) ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
 
     /* The GPU encoders take NV12 and nothing else; x264 and vp8 take
      * I420. Producing the right one here is free -- the conversion from
@@ -1218,7 +1735,20 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
     g->switch_frame++;
 
     for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
-        if (g->switch_wanted[slot]) {
+        if (!g->switch_wanted[slot]) {
+            continue;
+        }
+        if (slot == SS_STREAM_DRC) {
+            /* Two encodes share this stream and only one is ever fed:
+             * the chunks drc-x264 makes, or ordinary H.264 the client
+             * decodes and encodes again. The pad says which. */
+            if (switch_stream_stream_codec(g->switch_out, SS_STREAM_DRC) ==
+                C2S_CODEC_DRC_H264) {
+                push_drc_chain(g, plane, stride, format, width, height);
+            } else {
+                push_drc_h264_chain(g, plane, stride, format, width, height, pts);
+            }
+        } else {
             push_switch_chain(g, slot, plane, stride, format, width, height, pts);
         }
     }

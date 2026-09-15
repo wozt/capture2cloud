@@ -66,3 +66,11 @@ android/local.properties
 # from them is also in git history (up to 0abbbb3), so ignoring them
 # loses nothing that cannot be recovered with `git show`.
 /legacy/
+
+
+.mcp.json
+
+# The Wii U GamePad client: a build output, and two vendored
+# libraries that belong to their own projects.
+wiiu/wiiu_pad
+wiiu/vendor/

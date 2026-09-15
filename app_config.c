@@ -206,6 +206,82 @@ const char *config_get_str(const char *key, char *out, size_t out_size, const ch
     return fallback;
 }
 
+/*
+ * Writes one key back to the .env, leaving every other byte of it
+ * exactly as it was.
+ *
+ * This file holds real credentials -- the Home Assistant token, the
+ * player password -- so it is rewritten line by line rather than
+ * regenerated: anything this function does not recognise is copied
+ * through untouched, comments and blank lines included. A setting that
+ * saved itself by reformatting the file would be a setting that quietly
+ * dropped somebody's token the first time the format changed.
+ *
+ * Written to a temporary file in the same directory and renamed over
+ * the original, so an interrupted write leaves the old file whole
+ * rather than a half-written one with no password in it.
+ */
+int config_set_int(const char *key, long value) {
+    if (!key || !*key) {
+        return -1;
+    }
+    char path[512];
+    app_config_path(path, sizeof(path));
+
+    FILE *in = fopen(path, "r");
+    char tmp[600];
+    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= sizeof(tmp)) {
+        if (in) fclose(in);
+        return -1;
+    }
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        if (in) fclose(in);
+        fprintf(stderr, "config: cannot write %s\n", tmp);
+        return -1;
+    }
+
+    const size_t key_len = strlen(key);
+    int replaced = 0;
+    if (in) {
+        char line[4096];
+        while (fgets(line, sizeof(line), in)) {
+            /* The key, then '=', with leading spaces allowed and
+             * nothing else before it. A commented-out line stays
+             * commented: it is not this setting, it is a note about
+             * it. */
+            const char *at = line;
+            while (*at == ' ' || *at == '\t') {
+                at++;
+            }
+            if (!replaced && strncmp(at, key, key_len) == 0 && at[key_len] == '=') {
+                fprintf(out, "%s=%ld\n", key, value);
+                replaced = 1;
+                continue;
+            }
+            fputs(line, out);
+        }
+        fclose(in);
+    }
+    if (!replaced) {
+        fprintf(out, "%s=%ld\n", key, value);
+    }
+    if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
+        fclose(out);
+        unlink(tmp);
+        return -1;
+    }
+    fclose(out);
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        fprintf(stderr, "config: cannot replace %s\n", path);
+        return -1;
+    }
+    /* The cached copy is now a generation behind its own file. */
+    app_config_invalidate();
+    return 0;
+}
+
 long config_get_int(const char *key, long fallback, long min_value, long max_value) {
     char buf[64];
     if (!config_get(key, buf, sizeof(buf))) {

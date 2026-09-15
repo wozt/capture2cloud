@@ -35,10 +35,22 @@
  *
  * A client belongs to exactly one, for its whole life.
  */
-#define SS_STREAM_VP8  0  /* native, VP8 */
-#define SS_STREAM_H264 1  /* native, H.264 */
-#define SS_STREAM_WEB  2  /* browsers over the WebSocket, H.264, bigger */
-#define SS_STREAM_COUNT 3
+/* SS_STREAM_VP8, _H264, _WEB and _DRC are in the header: the pipeline
+ * routes by them too. What they mean:
+ *
+ *   VP8   native, VP8
+ *   H264  native, H.264, the size a handheld wants
+ *   WEB   browsers over the WebSocket, H.264, the size a monitor wants
+ *//*
+ * And a fourth, for a real Wii U GamePad.
+ *
+ * It cannot share the console's H.264 for a better reason than size:
+ * the pad's decoder cannot read ordinary H.264 at all. It needs DRH
+ * slicing -- macroblock rows, no slice header -- which only drc-x264
+ * produces, at 864x480 and a quantiser of 32, none of it negotiable.
+ * Nothing else can be on this stream and it can be on nothing else.
+ */
+#define SS_STREAM_COUNT 4
 
 /*
  * Four was sized for native clients, back when a browser could not
@@ -133,6 +145,7 @@ typedef struct {
      * same stream of C2S messages; the difference is one frame header
      * per message, and which encode it is fed. */
     int is_ws;
+    int on_drc_port;   /* arrived on the GamePad's own port */
     uint32_t last_seen_ms;
     uint8_t rx[SS_RX_CAPACITY];
     uint32_t rx_len;
@@ -159,6 +172,7 @@ struct SwitchStream {
      * who may control. */
     WebStream *web;
     int listen_fd;
+    int drc_listen_fd;   /* the GamePad's own port */
     uint16_t port;
     uint16_t width, height;
 
@@ -179,6 +193,8 @@ struct SwitchStream {
      * and must not take the client lock to do it. */
     volatile int live[SS_STREAM_COUNT];
     volatile int demand_dirty;
+    /* Whether the GamePad's encode can be offered at all. */
+    volatile int drc_available;
 
     uint32_t max_frame_bytes_by_slot[SS_STREAM_COUNT];
     C2sShared shared[SS_STREAM_COUNT];
@@ -233,19 +249,29 @@ static uint32_t now_ms(void) {
 /* Which stream a native client asking for this codec belongs to.
  * Anything else is not a codec this transport carries. */
 static int codec_slot(int codec) {
+    if (codec == C2S_CODEC_DRC_H264) return SS_STREAM_DRC;
     return codec == C2S_CODEC_H264 ? SS_STREAM_H264 : SS_STREAM_VP8;
 }
 
 /* And the one a client is actually on, which for a browser is decided
  * by how it connected rather than by what it asked for. */
 static int client_slot(const SsClient *c) {
-    return c->is_ws ? SS_STREAM_WEB : codec_slot(c->codec);
+    if (c->is_ws) return SS_STREAM_WEB;
+    /* A pad stays on its own stream whatever codec it asks for. The
+     * port it arrived on is the decision; the codec only says which of
+     * the two encodes that stream should carry. Letting the codec move
+     * it put the pad back on the console's chain, where a handheld
+     * asking for 480p30 took the pad down to 30 with it. */
+    if (c->on_drc_port) return SS_STREAM_DRC;
+    return codec_slot(c->codec);
 }
 
 /* What a stream is encoded in. The browsers' stream and the console's
  * are both H.264; they differ in size, not in codec. */
 static uint8_t slot_codec(int slot) {
-    return (uint8_t)(slot == SS_STREAM_VP8 ? C2S_CODEC_VP8 : C2S_CODEC_H264);
+    if (slot == SS_STREAM_VP8) return C2S_CODEC_VP8;
+    if (slot == SS_STREAM_DRC) return C2S_CODEC_DRC_H264;
+    return C2S_CODEC_H264;
 }
 /* slot_filter < 0 means every client; otherwise only those on that
  * stream. Video is always filtered -- handing a client another
@@ -612,6 +638,29 @@ static void note_demand_changed(SwitchStream *s) {
     if (s && s->demand_cb) s->demand_cb(s->demand_ctx);
 }
 
+/* Which encode the clients on a stream are asking for. The GamePad's
+ * stream can carry either: drc-x264 chunks it hands straight to its
+ * radio, or ordinary H.264 it decodes and encodes again. */
+int switch_stream_stream_codec(SwitchStream *s, int slot) {
+    if (!s || slot < 0 || slot >= SS_STREAM_COUNT) return 0;
+    int codec = 0;
+    SDL_LockMutex(s->mutex);
+    for (int i = 0; i < SS_MAX_CLIENTS; i++) {
+        if (s->clients[i].in_use && s->clients[i].handshake_done &&
+            client_slot(&s->clients[i]) == slot) {
+            codec = s->clients[i].codec;
+            break;
+        }
+    }
+    SDL_UnlockMutex(s->mutex);
+    return codec;
+}
+
+void switch_stream_set_drc_available(SwitchStream *s, int available) {
+    if (!s) return;
+    s->drc_available = available ? 1 : 0;
+}
+
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size) {
     /* One encode, everybody: sound has no stream groups. */
     broadcast(s, -1, C2S_MSG_AUDIO, 0, data, size);
@@ -682,12 +731,35 @@ static void handle_hello(SwitchStream *s, int index) {
     }
 
     ack.accepted = 1;
-    ack.may_control = web_stream_may_control(s->web, token) ? 1 : 0;
+    /*
+     * A pad is a player, always, and no password is involved.
+     *
+     * It did not arrive over the network: it came in on its own port,
+     * from a radio this machine runs, having paired with this machine.
+     * Somebody holding it is already somebody standing in the room. A
+     * password would protect nothing and would mean putting one where
+     * a program with no keyboard could read it.
+     *
+     * The codec is set at accept time from which port the connection
+     * came in on, so this is that decision and not a second one.
+     */
+    ack.may_control = (c->codec == C2S_CODEC_DRC_H264)
+                          ? 1
+                          : (web_stream_may_control(s->web, token) ? 1 : 0);
     /* H.264 to start with, and the client says otherwise if it wants to.
      * Both native clients decode H.264 in hardware and ask for it; VP8
      * as the opening codec meant every connection began by spinning up
-     * a software encoder that was about to be abandoned. */
-    c->codec = C2S_CODEC_H264;
+     * a software encoder that was about to be abandoned.
+     *
+     * Unless the door already decided. A connection accepted on the
+     * GamePad's own port is on that stream before a byte of its
+     * handshake is read, and overwriting it here put the client on
+     * ordinary H.264 for as long as it took to ask -- which it then
+     * did, reporting a stream that "is not what this client asked
+     * for" twice on the way to being right. */
+    if (c->codec != C2S_CODEC_DRC_H264) {
+        c->codec = C2S_CODEC_H264;
+    }
     {
         const int slot = codec_slot(c->codec);
         ack.width = s->group_stream_known[slot] ? s->group_width[slot] : s->width;
@@ -722,6 +794,7 @@ static void handle_hello(SwitchStream *s, int index) {
 
     fprintf(stderr, "switch_stream: client %d connected as %s, on %s\n", index,
             c->may_control ? "PLAYER" : "viewer",
+            c->codec == C2S_CODEC_DRC_H264 ? "wii u" :
             c->codec == C2S_CODEC_H264 ? "h264" : "vp8");
 }
 
@@ -916,11 +989,23 @@ static void handle_messages(SwitchStream *s, int index) {
                  * which is why it was gated -- and why a phone that
                  * wanted H.264 could not have it while somebody else
                  * was on VP8. */
+                /* The GamePad's codec is refused unless the host can
+                 * actually make it -- no drc-x264, or the setting off.
+                 * Refusing is what lets the client fall back; accepting
+                 * and then sending nothing would look like a dead
+                 * stream. */
+                if (h.size == 1 && payload[0] == C2S_CODEC_DRC_H264 && !s->drc_available) {
+                    fprintf(stderr, "switch_stream: client %d asked for the wii u "
+                                    "encode; this host cannot make it\n", index);
+                    break;
+                }
                 if (h.size == 1
-                    && (payload[0] == C2S_CODEC_VP8 || payload[0] == C2S_CODEC_H264)
+                    && (payload[0] == C2S_CODEC_VP8 || payload[0] == C2S_CODEC_H264
+                        || payload[0] == C2S_CODEC_DRC_H264)
                     && c->codec != payload[0]) {
                     c->codec = payload[0];
                     fprintf(stderr, "switch_stream: client %d now on %s\n", index,
+                            c->codec == C2S_CODEC_DRC_H264 ? "wii u" :
                             c->codec == C2S_CODEC_H264 ? "h264" : "vp8");
                     /* Its decoder has to be rebuilt for the other
                      * encode, and the first thing it must see there is
@@ -993,6 +1078,18 @@ static int accept_thread(void *arg) {
         map[n] = -1;
         n++;
 
+        /* -2 rather than -1: the accept below has to know which door a
+         * client came in through, because that is what decides the
+         * stream it is on. */
+        const int drc_pfd = (s->drc_listen_fd >= 0) ? n : -1;
+        if (s->drc_listen_fd >= 0) {
+            pfds[n].fd = s->drc_listen_fd;
+            pfds[n].events = POLLIN;
+            pfds[n].revents = 0;
+            map[n] = -2;
+            n++;
+        }
+
         SDL_LockMutex(s->mutex);
         for (int i = 0; i < SS_MAX_CLIENTS; i++) {
             if (s->clients[i].in_use) {
@@ -1016,8 +1113,13 @@ static int accept_thread(void *arg) {
         const int ready = poll(pfds, n, 200);
         if (ready > 0) {
 
-        if (pfds[0].revents & POLLIN) {
-            int fd = accept(s->listen_fd, NULL, NULL);
+        for (int door = 0; door < 2; door++) {
+            const int pfd = (door == 0) ? 0 : drc_pfd;
+            if (pfd < 0 || !(pfds[pfd].revents & POLLIN)) {
+                continue;
+            }
+            const int is_drc = (door == 1);
+            int fd = accept(is_drc ? s->drc_listen_fd : s->listen_fd, NULL, NULL);
             if (fd >= 0) {
                 int one = 1;
                 setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
@@ -1039,6 +1141,13 @@ static int accept_thread(void *arg) {
                     s->clients[slot].fd = fd;
                     s->clients[slot].in_use = 1;
                     s->clients[slot].last_seen_ms = now_ms();
+                    if (is_drc) {
+                        /* The port is the choice: nothing else can be
+                         * served here, and nothing served here can be
+                         * decoded by anything else. */
+                        s->clients[slot].codec = C2S_CODEC_DRC_H264;
+                        s->clients[slot].on_drc_port = 1;
+                    }
                 }
                 SDL_UnlockMutex(s->mutex);
             }
@@ -1150,6 +1259,35 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         return NULL;
     }
 
+    /*
+     * The GamePad's door, which is allowed to fail.
+     *
+     * A machine that cannot bind it still serves the console, the phone
+     * and the browsers perfectly well -- so this reports and carries on
+     * rather than taking the whole transport down with it. Something
+     * else already holding that port is the usual reason, and a pad is
+     * the one client that can be told to use another.
+     */
+    s->drc_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (s->drc_listen_fd >= 0) {
+        setsockopt(s->drc_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in drc_addr;
+        memset(&drc_addr, 0, sizeof(drc_addr));
+        drc_addr.sin_family = AF_INET;
+        drc_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        drc_addr.sin_port = htons(C2S_DRC_PORT);
+        if (bind(s->drc_listen_fd, (struct sockaddr *)&drc_addr, sizeof(drc_addr)) != 0 ||
+            listen(s->drc_listen_fd, 2) != 0) {
+            fprintf(stderr, "switch_stream: no wii u port %u (%s); the other "
+                            "clients are unaffected\n",
+                    C2S_DRC_PORT, strerror(errno));
+            close(s->drc_listen_fd);
+            s->drc_listen_fd = -1;
+        } else {
+            fprintf(stderr, "switch_stream: wii u gamepads on port %u\n", C2S_DRC_PORT);
+        }
+    }
+
     s->running = 1;
     s->thread = SDL_CreateThread(accept_thread, "switch-stream", s);
     if (!s->thread) {
@@ -1176,6 +1314,9 @@ void switch_stream_stop(SwitchStream *s) {
         }
     }
     close(s->listen_fd);
+    if (s->drc_listen_fd >= 0) {
+        close(s->drc_listen_fd);
+    }
     SDL_DestroyMutex(s->mutex);
     free(s);
 }

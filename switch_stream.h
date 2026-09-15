@@ -58,13 +58,15 @@ void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), vo
  * a change, because the change takes effect some frames after the
  * request and a decoder re-initialised at the wrong moment sees the tail
  * of the old stream. */
-/* Which encode a client is on. Three, not two codecs: the browsers'
- * H.264 and the console's are the same codec at different sizes, so
- * they cannot share one. See switch_stream.c for why the routing key
- * had to stop being the codec. */
+/* Which encode a client is on. Four of them, and not one per codec: the
+ * browsers' H.264 and the console's are the same codec at different
+ * sizes, so they cannot share one, and the GamePad's is H.264 that no
+ * ordinary decoder can read. See switch_stream.c for why the routing
+ * key had to stop being the codec. */
 #define SS_STREAM_VP8  0
 #define SS_STREAM_H264 1
 #define SS_STREAM_WEB  2
+#define SS_STREAM_DRC  3
 
 void switch_stream_announce_stream(SwitchStream *s, int slot,
                                    uint16_t width, uint16_t height);
@@ -80,6 +82,17 @@ void switch_stream_announce_shared(SwitchStream *s, int slot, uint16_t width, ui
 /* How many native clients are connected. The encoder branch for this
  * stream is only fed while this is above zero -- there is no point
  * encoding a second resolution for nobody. */
+/* Whether the host can actually produce the GamePad's encode right now:
+ * drc-x264 present AND the setting on. A client asking for that codec
+ * is refused when it is not, and falls back to ordinary H.264 -- which
+ * is better than accepting and then sending nothing. */
+void switch_stream_set_drc_available(SwitchStream *s, int available);
+
+/* Which encode the clients on a stream want. The GamePad's can carry
+ * drc-x264 chunks or ordinary H.264; the pipeline asks this to know
+ * which of its two encoders to feed. */
+int switch_stream_stream_codec(SwitchStream *s, int slot);
+
 int switch_stream_client_count(SwitchStream *s);
 
 /* How many could connect at once. A constant, but one the rest of the

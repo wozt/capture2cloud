@@ -63,11 +63,14 @@ run_c_test() {
     shift
     local pkgs="$1"
     shift
+    # Anything pkg-config cannot describe: a vendored header's include
+    # path, a library opened rather than linked. Optional.
+    local extra="${1:-}"
 
     echo "═══ C: $name ═══"
     if needs_build "$BUILD_DIR/$name"; then
         if ! $LOW gcc -O1 -Wall -Wextra -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
-            $(pkg-config --cflags --libs $pkgs) 2>&1; then
+            $(pkg-config --cflags --libs $pkgs) $extra 2>&1; then
             echo "  COMPILE FAILED"
             failed=1
             return
@@ -87,6 +90,12 @@ timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 
 timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscale libavcodec libavutil"
 timed "C: websocket frame" run_c_test test_ws_frame "glib-2.0"
 timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
+
+# The fourth encode. Linked against libavcodec on purpose: that is what
+# brings the distribution's x264 into the process, and the whole point of
+# this test is that drc-x264 lives beside it without either answering for
+# the other. Skips itself where drc-x264 is not installed.
+timed "C: wii u encode"     run_c_test test_drc_encoder "libavcodec libavutil" "-I$PROJECT_DIR/wiiu/include -ldl"
 
 # Before the security suite, and that order is not cosmetic: the security
 # suite deliberately trips the failed-login lockout, which lasts thirty

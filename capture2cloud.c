@@ -17,6 +17,7 @@
 #include <execinfo.h>
 
 #include "gamepad_bridge.h"
+#include "wiiu_pad.h"
 #include "app_config.h"
 #include "audio_capture.h"
 #include "app_settings.h"
@@ -94,6 +95,17 @@ static volatile int g_show_window_requested = 0;
  * The settings window sends its whole set; on_settings() compares. */
 static AppSettings g_settings = APP_SETTINGS_DEFAULTS;
 static SwitchStream *g_switch = NULL;
+/*
+ * The Wii U GamePad client, when one is running. A separate program;
+ * see wiiu_pad.h for why it is not a thread in here.
+ */
+static WiiuPad *g_wiiu_pad = NULL;
+/*
+ * Where this program was started from, which is where its `wiiu`
+ * subdirectory is. Taken from argv[0] for the same reason the restart
+ * above uses it: the launcher always invokes this with a full path.
+ */
+static char g_project_dir[PATH_MAX] = ".";
 static int g_web_port = WEB_STREAM_DEFAULT_PORT; /* overridden from the .env at startup */
 
 
@@ -304,6 +316,50 @@ static void on_settings(void *userdata, const AppSettings *want) {
         /* Told either way: a NULL output is what makes the encoder stop
          * being fed rather than encoding for a server that is gone. */
         gst_webrtc_stream_set_switch_output(g_gst, g_switch);
+        /*
+         * The pad client connects to that port, so a port that just
+         * moved takes it with it. Stopped unconditionally and started
+         * again below if it is still wanted.
+         */
+        if (g_wiiu_pad) {
+            wiiu_pad_stop(g_wiiu_pad);
+            g_wiiu_pad = NULL;
+        }
+    }
+    if (want->wiiu_pad_enabled != have->wiiu_pad_enabled ||
+        (want->wiiu_pad_enabled && !g_wiiu_pad)) {
+        have->wiiu_pad_enabled = want->wiiu_pad_enabled;
+        /* The encode, as well as the client. The setting stopping the
+         * client is what normally leaves that chain with no audience,
+         * but the chain answers to the setting directly too -- so a pad
+         * client started by hand cannot bring drc-x264 up on a host
+         * where this is switched off. */
+        gst_webrtc_stream_set_drc_enabled(g_gst, want->wiiu_pad_enabled);
+        /*
+         * Remembered across restarts, like the .env keys it sits
+         * beside: this is a decision about the machine -- whether it
+         * serves a GamePad at all -- rather than a preference belonging
+         * to whoever last opened the settings window. Unticking it and
+         * relaunching should not quietly turn it back on.
+         */
+        config_set_int("WIIU_PAD_AUTOSTART", want->wiiu_pad_enabled ? 1 : 0);
+        if (g_wiiu_pad) {
+            wiiu_pad_stop(g_wiiu_pad);
+            g_wiiu_pad = NULL;
+        }
+        /*
+         * Only while the transport it connects to is actually
+         * listening. Starting it against a closed port would have it
+         * fail, report, and leave a toggle that looks broken for a
+         * reason written somewhere else entirely.
+         */
+        if (have->wiiu_pad_enabled && g_switch) {
+            g_wiiu_pad = wiiu_pad_start(g_project_dir, C2S_DRC_PORT);
+            fprintf(stderr, "wiiu_pad: %s\n", wiiu_pad_status(g_wiiu_pad));
+        } else if (have->wiiu_pad_enabled) {
+            fprintf(stderr, "wiiu_pad: not started -- "
+                            "the console transport is not listening\n");
+        }
     }
     if (want->browser_height != have->browser_height) {
         have->browser_height = want->browser_height;
@@ -378,6 +434,61 @@ static void on_action(void *userdata, GtkShellAction action) {
         case GTK_SHELL_ACTION_RESET_DONGLE:
             gamepad_bridge_reset();
             break;
+        case GTK_SHELL_ACTION_WIIU_START:
+            /*
+             * By hand, and without touching the setting.
+             *
+             * The setting says whether this host serves a pad at all;
+             * this says "try now". They are different questions, and
+             * tying the button to the checkbox would mean the only way
+             * to retry was to turn the feature off and on again.
+             */
+            if (g_wiiu_pad) {
+                wiiu_pad_stop(g_wiiu_pad);
+                g_wiiu_pad = NULL;
+            }
+            if (g_switch) {
+                gst_webrtc_stream_set_drc_enabled(g_gst, 1);
+                g_wiiu_pad = wiiu_pad_start(g_project_dir, C2S_DRC_PORT);
+            } else {
+                fprintf(stderr, "wiiu_pad: the native transport is off, so there "
+                                "is nothing for it to connect to\n");
+            }
+            break;
+        case GTK_SHELL_ACTION_WIIU_STOP:
+            if (g_wiiu_pad) {
+                wiiu_pad_stop(g_wiiu_pad);
+                g_wiiu_pad = NULL;
+            }
+            /* And the encoder with it, rather than leaving a chain
+             * waiting for a client that was just told to go. */
+            gst_webrtc_stream_set_drc_enabled(g_gst, 0);
+            break;
+        case GTK_SHELL_ACTION_WIIU_AP_START:
+        case GTK_SHELL_ACTION_WIIU_AP_STOP:
+        case GTK_SHELL_ACTION_WIIU_DEAUTH: {
+            /*
+             * The radio, from the window. Backgrounded with a trailing
+             * "&" like the wake script: bringing an access point up
+             * takes seconds and the interface must not wait for it.
+             *
+             * hostapd binds an interface and so needs root; the script
+             * asks through sudo and reports if it cannot. The deauth
+             * does not -- the control socket belongs to the sudo group.
+             */
+            /* PATH_MAX for the directory, plus room for the rest: the
+             * project path is whatever somebody cloned into. */
+            char cmd[PATH_MAX + 64];
+            const char *what = (action == GTK_SHELL_ACTION_WIIU_AP_START) ? "start"
+                             : (action == GTK_SHELL_ACTION_WIIU_AP_STOP)  ? "stop"
+                                                                          : "deauth";
+            snprintf(cmd, sizeof(cmd), "%s/wiiu/tools/ap.sh %s &", g_project_dir, what);
+            fprintf(stderr, "wiiu: ap.sh %s\n", what);
+            if (system(cmd) != 0) {
+                fprintf(stderr, "wiiu: %s did not run\n", what);
+            }
+            break;
+        }
         case GTK_SHELL_ACTION_RESTART:
             app_request_restart();
             break;
@@ -453,7 +564,27 @@ static void show_frame(SDL_Renderer *renderer, SDL_Texture **texture, int *textu
     SDL_RenderPresent(renderer);
 }
 
+static void remember_project_dir(const char *argv0) {
+    char buf[PATH_MAX];
+    if (argv0 && strchr(argv0, '/')) {
+        snprintf(buf, sizeof(buf), "%s", argv0);
+    } else {
+        /* Not the usual path, but better than looking in the working
+         * directory, which is wherever the shell happened to be. */
+        const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n <= 0)
+            return;
+        buf[n] = '\0';
+    }
+    char *slash = strrchr(buf, '/');
+    if (!slash)
+        return;
+    *slash = '\0';
+    snprintf(g_project_dir, sizeof(g_project_dir), "%s", buf);
+}
+
 int main(int argc, char **argv) {
+    remember_project_dir(argv[0]);
     /* Precedence: command line (handy for a one-off), then the .env,
      * then a last-resort default. Putting it in the .env is what lets a
      * different capture card be used without touching the code or the
@@ -558,12 +689,33 @@ int main(int argc, char **argv) {
     g_settings.switch_port =
         (int)config_get_int("SWITCH_PORT", C2S_DEFAULT_PORT, 1, 65535);
     g_settings.switch_enabled = (int)config_get_int("SWITCH_AUTOSTART", 1, 0, 1);
+    /* Off unless asked for: it needs radio hardware most machines do
+     * not have, and starting it without that only produces an error. */
+    g_settings.wiiu_pad_enabled = (int)config_get_int("WIIU_PAD_AUTOSTART", 0, 0, 1);
     web_stream_set_native_counter(g_web, count_native_clients, NULL);
     web_stream_set_native_adopt(g_web, adopt_web_socket, NULL);
     g_switch = g_settings.switch_enabled
                    ? switch_stream_start(g_web, (uint16_t)g_settings.switch_port)
                    : NULL;
     gst_webrtc_stream_set_switch_output(g_gst, g_switch);
+    /*
+     * Before the transport can be asked for that stream, and at startup
+     * rather than only when the setting is changed.
+     *
+     * Applying it only on change meant a host that had the setting
+     * saved came up with the encode switched off: the pad connected,
+     * was refused the codec it exists for, and fell back to being sent
+     * ordinary H.264 to decode and encode again -- the slow path, for a
+     * feature that was turned on.
+     *
+     * After set_switch_output, so the answer reaches the transport that
+     * has to offer or refuse it.
+     */
+    gst_webrtc_stream_set_drc_enabled(g_gst, g_settings.wiiu_pad_enabled);
+    if (g_settings.wiiu_pad_enabled && g_switch) {
+        g_wiiu_pad = wiiu_pad_start(g_project_dir, C2S_DRC_PORT);
+        fprintf(stderr, "wiiu_pad: %s\n", wiiu_pad_status(g_wiiu_pad));
+    }
 
     if (SDL_Init(sdl_flags) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -714,6 +866,30 @@ int main(int argc, char **argv) {
         if (g_show_window_requested) {
             g_show_window_requested = 0;
             open_capture_window();
+        }
+
+        /* Reaps it if it has gone, and takes in what it said. Cheap
+         * enough to do every pass, and it is how a client that stopped
+         * on its own stops claiming to be running. */
+        wiiu_pad_poll(g_wiiu_pad);
+        /*
+         * NOT torn down when the client exits.
+         *
+         * Exiting is how a session ends now: the bridge waits for a
+         * pad, serves it, and stops when the pad goes. Freeing the
+         * supervisor here -- and switching the setting off with it --
+         * meant that turning a pad off turned the whole feature off,
+         * and the only way back was to tick the box again. The
+         * supervisor starts the next session itself.
+         */
+        {
+            static Uint32 pad_status_at = 0;
+            const Uint32 now_pad = SDL_GetTicks();
+            if (g_shell && now_pad - pad_status_at >= 1000) {
+                pad_status_at = now_pad;
+                gtk_shell_set_wiiu_status(g_shell,
+                    g_wiiu_pad ? wiiu_pad_status(g_wiiu_pad) : "not running");
+            }
         }
 
         if (g_window) {
@@ -921,6 +1097,12 @@ int main(int argc, char **argv) {
      * whatever runs next. */
     local_pad_shutdown();
     gamepad_bridge_shutdown();
+
+    /* Before the transport it is connected to, so its last frames go
+     * somewhere rather than into a socket that has just closed -- and
+     * so the pad is given back rather than left associated to nothing. */
+    wiiu_pad_stop(g_wiiu_pad);
+    g_wiiu_pad = NULL;
 
     switch_stream_stop(g_switch);
     g_switch = NULL;
