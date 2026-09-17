@@ -92,30 +92,5 @@ wiiu_console/bringup/*/*.wuhb
 # USB Ethernet research. The Linux drivers are GPL-2.0 and are reference
 # only; the firmware is Nintendo's and console-specific. Neither belongs
 # in this repository.
-wiiu_ethernet/*
-wiiu_ethernet/reference/
-wiiu_ethernet/ios/
-wiiu_ethernet/ghidra/
-wiiu_ethernet/ghidra_ppc
-wiiu_ethernet/ghidra_scripts/
-wiiu_ethernet/uhsprobe/build/
-wiiu_ethernet/uhsprobe/*.rpx
-wiiu_ethernet/uhsprobe/*.elf
-wiiu_ethernet/uhsprobe/*.wuhb
-wiiu_ethernet/*/build/
-wiiu_ethernet/*/*.rpx
-wiiu_ethernet/*/*.elf
-wiiu_ethernet/*/*.wuhb
-wiiu_ethernet/ghidra/
-wiiu_ethernet/*.bin
-wiiu_ethernet/fw.*
-wiiu_ethernet/*.rpl
-# Prebuilt third-party toolchain libs, vendored locally for a reproducible
-# build but not committed (GPL binaries; fetch/build from wiiu-env instead).
-wiiu_ethernet/vendor/wums/
-wiiu_ethernet/vendor/libmocha/
-wiiu_ethernet/vendor/functionpatcher/
-wiiu_ethernet/wiiu_patch_ios/
-wiiu_ethernet/*/*.wms
-wiiu_ethernet/*/*.bak
+wiiu_ethernet/
 wiiu_ethernet_backup_20260917/
