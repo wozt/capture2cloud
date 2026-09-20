@@ -55,10 +55,10 @@ typedef struct {
     unsigned net_kbps;
 } StreamPerf;
 
-static const Rect R_HOST    = { 360, 200, 560, 76 };
-static const Rect R_PORT    = { 360, 300, 260, 76 };
-static const Rect R_CONNECT = { 360, 430, 260, 84 };
-static const Rect R_QUIT    = { 660, 430, 260, 84 };
+static const Rect R_HOST    = { 300, 125, 520, 54 };
+static const Rect R_PORT    = { 300, 195, 220, 54 };
+static const Rect R_CONNECT = { 300, 270, 220, 58 };
+static const Rect R_QUIT    = { 540, 270, 280, 58 };
 static const Rect R_MENU    = { 1248,   8, 24, 24 };
 
 static int hit(const Rect *r, int x, int y)
@@ -77,16 +77,15 @@ static void draw_settings(const Settings *s, const char *note, int decoder_ok, c
     char host[32];
     settings_host_string(s, host, sizeof(host));
 
-    ui_text(360, 90, UI_SIZE_TITLE, UI_TEXT, "capture2cloud");
-    ui_text(360, 150, UI_SIZE_BODY, UI_DIM, "tap a field to type on the console keyboard");
+    ui_text(300, 70, UI_SIZE_TITLE, UI_TEXT, "capture2cloud");
 
-    ui_text(180, 218, UI_SIZE_BODY, UI_DIM, "host");
+    ui_text(180, 140, UI_SIZE_BODY, UI_DIM, "host");
     ui_box(R_HOST.x, R_HOST.y, R_HOST.w, R_HOST.h, UI_FIELD, UI_DIM);
     const int unset = (strcmp(host, "0.0.0.0") == 0);
     ui_text_centred(R_HOST.x, R_HOST.y, R_HOST.w, R_HOST.h, UI_SIZE_BODY,
                     unset ? UI_DIM : UI_TEXT, unset ? "tap to set" : host);
 
-    ui_text(180, 318, UI_SIZE_BODY, UI_DIM, "port");
+    ui_text(180, 210, UI_SIZE_BODY, UI_DIM, "port");
     ui_box(R_PORT.x, R_PORT.y, R_PORT.w, R_PORT.h, UI_FIELD, UI_DIM);
     {
         char p[16];
@@ -98,9 +97,9 @@ static void draw_settings(const Settings *s, const char *note, int decoder_ok, c
     draw_button(&R_QUIT, "HOME -> EXIT", UI_PANEL);
 
     if (!decoder_ok) {
-        ui_text(360, 550, UI_SIZE_BODY, UI_DANGER, "decoder: %s", why);
+        ui_text(300, 340, UI_SIZE_BODY, UI_DANGER, "decoder: %s", why);
     } else if (note && note[0]) {
-        ui_text(360, 550, UI_SIZE_BODY, UI_DANGER, "%s", note);
+        ui_text(300, 340, UI_SIZE_BODY, UI_DANGER, "%s", note);
     }
 }
 
@@ -128,61 +127,64 @@ static void draw_streaming(const Settings *s,
                 &audio_failed,
                 &audio_dropped);
 
-    ui_present_stats(&present_avg_us,
-                     &present_max_us);
+    ui_present_stats(
+        &present_avg_us,
+        &present_max_us);
 
     /*
-     * These are intentionally performance diagnostics now, not generic
-     * bring-up counters.
+     * Compact diagnostics: one useful fact per line.
      */
-    ui_text(180, 530,
-            UI_SIZE_BODY,
-            UI_TEXT,
-            "renderer: %s | %ux%u H264",
-            ui_video_renderer_name(),
-            info->width,
-            info->height);
+    ui_text(
+        180, 385,
+        UI_SIZE_BODY,
+        UI_TEXT,
+        "%s | %ux%u H264 | %u.%u Mb/s",
+        ui_video_renderer_name(),
+        info->width,
+        info->height,
+        perf->net_kbps / 1000,
+        (perf->net_kbps % 1000) / 100);
 
-    ui_text(180, 565,
-            UI_SIZE_BODY,
-            UI_DIM,
-            "fps: RX %u  decode %u  display %u  loop %u",
-            perf->rx_fps,
-            perf->decode_fps,
-            perf->display_fps,
-            perf->loop_fps);
+    ui_text(
+        180, 425,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "FPS  RX %u | DEC %u | SHOW %u | LOOP %u",
+        perf->rx_fps,
+        perf->decode_fps,
+        perf->display_fps,
+        perf->loop_fps);
 
-    ui_text(180, 600,
-            UI_SIZE_BODY,
-            UI_DIM,
-            "cpu us: decode %u  H264 %u  inv %u  GX2copy %u",
-            vs.decode_avg_us,
-            vs.execute_avg_us,
-            vs.invalidate_avg_us,
-            gs.copy_avg_us);
+    ui_text(
+        180, 465,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "H264 %u.%u ms | bind %u.%u ms | present %u.%u ms",
+        vs.execute_avg_us / 1000,
+        (vs.execute_avg_us % 1000) / 100,
+        gs.copy_avg_us / 1000,
+        (gs.copy_avg_us % 1000) / 100,
+        present_avg_us / 1000,
+        (present_avg_us % 1000) / 100);
 
-    ui_text(180, 635,
-            UI_SIZE_BODY,
-            UI_DIM,
-            "gpu/present: %u us avg  %u us max",
-            present_avg_us,
-            present_max_us);
+    ui_text(
+        180, 505,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "audio queue %u ms | bad %lu | drop %lu",
+        audio_queue_ms(),
+        audio_failed,
+        audio_dropped);
 
-    ui_text(180, 670,
-            UI_SIZE_BODY,
-            UI_DIM,
-            "audio: queue %u ms  opus %lu  bad %lu  drop %lu",
-            audio_queue_ms(),
-            audio_decoded,
-            audio_failed,
-            audio_dropped);
-
-    ui_text(720, 670,
-            UI_SIZE_BODY,
-            UI_DIM,
-            "net %u.%u Mbps",
-            perf->net_kbps / 1000,
-            (perf->net_kbps % 1000) / 100);
+    ui_text(
+        180, 545,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "decoder err %u | empty %u | present max %u.%u ms",
+        vs.errors,
+        vs.empty,
+        present_max_us / 1000,
+        (present_max_us % 1000) / 100);
 }
 
 static void draw_menu_marker(int open)
@@ -601,7 +603,7 @@ int main(int argc, char **argv)
              * streaming picture.
              */
             if (menu_open) {
-                ui_box(120, 55, 1040, 650,
+                ui_box(120, 45, 1040, 560,
                        UI_BG, UI_DIM);
 
                 draw_settings(&settings,

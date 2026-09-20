@@ -22,6 +22,7 @@
  *    success. Low-byte status values such as 0xE4 are normal.
  */
 #define DEC_ALIGN 0x400
+#define FRAME_BUFFERS 2
 
 #define DEC_PROFILE 100
 #define DEC_LEVEL   40
@@ -29,8 +30,9 @@
 static void    *g_mem;
 static uint32_t g_mem_size;
 
-static void    *g_fb;
+static void    *g_fb[FRAME_BUFFERS];
 static uint32_t g_fb_size;
+static unsigned g_fb_index;
 
 static uint8_t *g_bitstream;
 static uint32_t g_bitstream_cap;
@@ -151,25 +153,35 @@ int video_init(int max_width, int max_height, char *why, unsigned why_size)
         pitch * coded_height * 3 / 2 + 4096,
         DEC_ALIGN);
 
-    g_fb = memalign(DEC_ALIGN, g_fb_size);
-    if (!g_fb) {
-        snprintf(why, why_size,
-                 "no room for framebuffer (%u bytes)",
-                 (unsigned)g_fb_size);
-        video_exit();
-        return -1;
+    for (unsigned i = 0; i < FRAME_BUFFERS; ++i) {
+        g_fb[i] = memalign(DEC_ALIGN, g_fb_size);
+
+        if (!g_fb[i]) {
+            snprintf(why, why_size,
+                     "no room for framebuffer %u (%u bytes)",
+                     i,
+                     (unsigned)g_fb_size);
+            video_exit();
+            return -1;
+        }
+
+        memset(g_fb[i], 0, g_fb_size);
+
+        err = H264DECCheckMemSegmentation(
+            g_fb[i],
+            g_fb_size);
+
+        if (err != H264_ERROR_OK) {
+            snprintf(why, why_size,
+                     "framebuffer %u segmentation error 0x%08x",
+                     i,
+                     (unsigned)err);
+            video_exit();
+            return -1;
+        }
     }
 
-    memset(g_fb, 0, g_fb_size);
-
-    err = H264DECCheckMemSegmentation(g_fb, g_fb_size);
-    if (err != H264_ERROR_OK) {
-        snprintf(why, why_size,
-                 "framebuffer segmentation error 0x%08x",
-                 (unsigned)err);
-        video_exit();
-        return -1;
-    }
+    g_fb_index = 0;
 
     err = H264DECInitParam(g_mem_size, g_mem);
     if (err != H264_ERROR_OK) {
@@ -269,8 +281,12 @@ void video_exit(void)
     g_bitstream = NULL;
     g_bitstream_cap = 0;
 
-    free(g_fb);
-    g_fb = NULL;
+    for (unsigned i = 0; i < FRAME_BUFFERS; ++i) {
+        free(g_fb[i]);
+        g_fb[i] = NULL;
+    }
+
+    g_fb_index = 0;
     g_fb_size = 0;
 
     free(g_mem);
@@ -337,9 +353,23 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
         return -1;
     }
 
-    const OSTime execute_start = OSGetSystemTime();
+    /*
+     * Decode directly into one of two buffers that GX2 can consume.
+     *
+     * No framebuffer -> CPU copy -> texture anymore.
+     */
+    void *decode_fb = g_fb[g_fb_index];
 
-    err = H264DECExecute(g_mem, g_fb);
+    g_fb_index =
+        (g_fb_index + 1) %
+        FRAME_BUFFERS;
+
+    const OSTime execute_start =
+        OSGetSystemTime();
+
+    err = H264DECExecute(
+        g_mem,
+        decode_fb);
 
     const uint32_t execute_us =
         elapsed_us(execute_start);
@@ -415,31 +445,11 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
         return -1;
     }
 
-    size_t written =
-        (size_t)g_last.nextLine *
-        (size_t)g_last.height *
-        3u / 2u;
-
-    if (written > g_fb_size) {
-        written = g_fb_size;
-    }
-
-    const OSTime invalidate_start =
-        OSGetSystemTime();
-
-    DCInvalidateRange(
-        g_last.framebuffer,
-        (uint32_t)written);
-
-    const uint32_t invalidate_us =
-        elapsed_us(invalidate_start);
-
-    g_invalidate_us_total += invalidate_us;
-
-    if (invalidate_us > g_invalidate_us_max) {
-        g_invalidate_us_max = invalidate_us;
-    }
-
+    /*
+     * Do not pull the whole NV12 picture back into the CPU cache.
+     *
+     * GX2 will consume this memory directly.
+     */
     out->luma =
         (const uint8_t *)g_last.framebuffer;
 
