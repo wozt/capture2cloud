@@ -192,10 +192,13 @@ int main(int argc, char **argv)
 
     VideoFrame frame;
     int have_frame = 0;
+    int new_frame = 0;
     unsigned frames = 0, fps = 0;
     uint32_t fps_at = 0;
 
     while (proc_running()) {
+        new_frame = 0;
+
         /*
          * ProcUI has asked us to release the foreground.
          *
@@ -336,6 +339,7 @@ int main(int argc, char **argv)
                 }
                 if (video_decode(payload, size, &frame) == 1) {
                     have_frame = 1;
+                    new_frame = 1;
                     frames++;
                 }
             }
@@ -355,16 +359,38 @@ int main(int argc, char **argv)
         }
 
         ui_begin();
+
         if (state == STATE_SETTINGS) {
             draw_settings(&settings, note, decoder_ok, decoder_why);
         } else {
-            /* The picture itself is the next step: it belongs in a GX2
-             * texture fed straight from the decoder's NV12, which is
-             * exactly what this rebuild was for. Until then the numbers
-             * say whether it is arriving. */
-            (void)have_frame;
+            /*
+             * Only convert/upload when H264DEC produced something new.
+             * If networking has a short gap, keep drawing the previous
+             * texture instead of converting the same NV12 frame again.
+             */
+            if (new_frame) {
+                if (ui_video_update_nv12(frame.luma,
+                                         frame.chroma,
+                                         frame.stride,
+                                         frame.width,
+                                         frame.height) != 0) {
+                    WHBLogPrintf("capture2cloud: video upload failed");
+                    have_frame = 0;
+                }
+            }
+
+            if (have_frame) {
+                ui_video_draw();
+            }
+
+            /*
+             * Keep the diagnostics over the picture for this bring-up.
+             * Once the video path is validated we can turn this into a
+             * small optional OSD instead of covering the top-left.
+             */
             draw_streaming(&settings, fps);
         }
+
         ui_present();
     }
 
