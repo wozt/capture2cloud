@@ -178,9 +178,12 @@ int main(int argc, char **argv)
     settings_load(&settings);
 
     char decoder_why[128] = { 0 };
-    const int decoder_ok =
+    int decoder_ok =
         video_init(MAX_WIDTH, MAX_HEIGHT, decoder_why, sizeof(decoder_why)) == 0;
     WHBLogPrintf("capture2cloud: decoder %s", decoder_ok ? "ready" : decoder_why);
+
+    int ui_alive = 1;
+    int video_alive = decoder_ok ? 1 : 0;
 
     State state = STATE_SETTINGS;
     char note[160] = { 0 };
@@ -193,6 +196,85 @@ int main(int argc, char **argv)
     uint32_t fps_at = 0;
 
     while (proc_running()) {
+        /*
+         * ProcUI has asked us to release the foreground.
+         *
+         * THIS ORDER IS REQUIRED:
+         *
+         *   stop/drain application work
+         *   -> H264DECEnd/H264DECClose
+         *   -> SDL/GX2 shutdown
+         *   -> ProcUIDrawDoneRelease
+         *
+         * Previously DrawDoneRelease happened first, and H264DECEnd
+         * then hung permanently while returning to the Wii U menu.
+         */
+        if (proc_release_pending()) {
+            WHBLogPrintf("suspend 1/3: disconnect network stream");
+
+            net_disconnect();
+            state = STATE_SETTINGS;
+            have_frame = 0;
+
+            WHBLogPrintf("suspend 2/3: H264DEC begin");
+
+            if (video_alive) {
+                video_exit();
+                video_alive = 0;
+            }
+
+            WHBLogPrintf("suspend 2/3: H264DEC done");
+            WHBLogPrintf("suspend 3/3: SDL/GX2 begin");
+
+            if (ui_alive) {
+                ui_shutdown();
+                ui_alive = 0;
+            }
+
+            WHBLogPrintf("suspend 3/3: SDL/GX2 done");
+
+            /*
+             * All foreground resources are now gone. This call performs
+             * ProcUIDrawDoneRelease and waits while HOME owns the screen.
+             */
+            if (!proc_release_and_wait()) {
+                break;  /* HOME -> Quitter */
+            }
+
+            /*
+             * User closed HOME instead of quitting: rebuild everything
+             * that had to be surrendered.
+             */
+            WHBLogPrintf("resume: rebuilding SDL/GX2");
+
+            why[0] = '\0';
+            if (ui_init(why, sizeof(why)) != 0) {
+                WHBLogPrintf("resume: UI failed -- %s", why);
+                break;
+            }
+
+            ui_alive = 1;
+
+            WHBLogPrintf("resume: rebuilding H264DEC");
+
+            decoder_why[0] = '\0';
+            decoder_ok =
+                video_init(MAX_WIDTH, MAX_HEIGHT,
+                           decoder_why, sizeof(decoder_why)) == 0;
+
+            video_alive = decoder_ok ? 1 : 0;
+
+            WHBLogPrintf("resume: decoder %s",
+                         decoder_ok ? "ready" : decoder_why);
+
+            memset(&in, 0, sizeof(in));
+            frames = 0;
+            fps = 0;
+            fps_at = SDL_GetTicks();
+
+            continue;
+        }
+
         ui_poll(&in);
         if (in.quit) {
             proc_stop();
@@ -286,12 +368,38 @@ int main(int argc, char **argv)
         ui_present();
     }
 
-    WHBLogPrintf("capture2cloud: closing");
+    /*
+     * Keep ProcUI alive while every resource owned by this application
+     * is released. The AX safe-exit probe has almost nothing to tear
+     * down; this client also owns TCP, H264DEC and SDL/GX2.
+     *
+     * Every boundary is logged so if the menu transition ever sticks
+     * again we know the exact subsystem that did not return.
+     */
+    WHBLogPrintf("shutdown: final network cleanup");
     net_disconnect();
     net_exit();
-    video_exit();
-    ui_shutdown();
-    proc_shutdown();
+
+    /*
+     * Normally these are already gone because RELEASE_FOREGROUND
+     * happened before EXITING. Keep the guards for other exit paths.
+     */
+    if (video_alive) {
+        WHBLogPrintf("shutdown: final H264DEC cleanup");
+        video_exit();
+        video_alive = 0;
+    }
+
+    if (ui_alive) {
+        WHBLogPrintf("shutdown: final SDL/GX2 cleanup");
+        ui_shutdown();
+        ui_alive = 0;
+    }
+
+    WHBLogPrintf("shutdown: all application resources released");
+
     WHBLogUdpDeinit();
+    proc_shutdown();
+
     return 0;
 }
