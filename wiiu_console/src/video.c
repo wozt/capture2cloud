@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <coreinit/cache.h>
+#include <coreinit/time.h>
 #include <h264/decode.h>
 #include <whb/log.h>
 
@@ -36,9 +37,18 @@ static uint32_t g_bitstream_cap;
 
 static int g_open;
 
+static unsigned g_submitted;
 static unsigned g_decoded;
 static unsigned g_empty;
 static unsigned g_errors;
+
+static uint64_t g_decode_us_total;
+static uint64_t g_execute_us_total;
+static uint64_t g_invalidate_us_total;
+
+static uint32_t g_decode_us_max;
+static uint32_t g_execute_us_max;
+static uint32_t g_invalidate_us_max;
 
 static H264DecodeResult g_last;
 static int g_have_last;
@@ -50,6 +60,24 @@ static int g_logged_execute_error;
 static uint32_t align_up(uint32_t value, uint32_t alignment)
 {
     return (value + alignment - 1) & ~(alignment - 1);
+}
+
+
+static uint32_t elapsed_us(OSTime start)
+{
+    return (uint32_t)OSTicksToMicroseconds(
+        OSGetSystemTime() - start);
+}
+
+static void record_decode_time(OSTime start)
+{
+    const uint32_t us = elapsed_us(start);
+
+    g_decode_us_total += us;
+
+    if (us > g_decode_us_max) {
+        g_decode_us_max = us;
+    }
 }
 
 static void on_frame_output(H264DecodeOutput *output)
@@ -185,9 +213,18 @@ int video_init(int max_width, int max_height, char *why, unsigned why_size)
         return -1;
     }
 
+    g_submitted = 0;
     g_decoded = 0;
     g_empty = 0;
     g_errors = 0;
+
+    g_decode_us_total = 0;
+    g_execute_us_total = 0;
+    g_invalidate_us_total = 0;
+
+    g_decode_us_max = 0;
+    g_execute_us_max = 0;
+    g_invalidate_us_max = 0;
     g_logged_execute = 0;
     g_logged_set_error = 0;
     g_logged_execute_error = 0;
@@ -249,6 +286,9 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
         return -1;
     }
 
+    const OSTime decode_start = OSGetSystemTime();
+    g_submitted++;
+
     /*
      * Do not hand malloc/realloc/network memory directly to H264DEC.
      * Copy every AU into a DMA-safe aligned buffer first.
@@ -261,6 +301,7 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
 
         if (!new_buffer) {
             g_errors++;
+            record_decode_time(decode_start);
             return -1;
         }
 
@@ -292,10 +333,22 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
             g_logged_set_error = 1;
         }
 
+        record_decode_time(decode_start);
         return -1;
     }
 
+    const OSTime execute_start = OSGetSystemTime();
+
     err = H264DECExecute(g_mem, g_fb);
+
+    const uint32_t execute_us =
+        elapsed_us(execute_start);
+
+    g_execute_us_total += execute_us;
+
+    if (execute_us > g_execute_us_max) {
+        g_execute_us_max = execute_us;
+    }
 
     /*
      * CRITICAL:
@@ -317,6 +370,7 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
             g_logged_execute_error = 1;
         }
 
+        record_decode_time(decode_start);
         return -1;
     }
 
@@ -333,6 +387,7 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
          * Valid situation before an IDR/recovery point.
          */
         g_empty++;
+        record_decode_time(decode_start);
         return 0;
     }
 
@@ -356,6 +411,7 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
             g_last.nextLine,
             (unsigned)g_last.status);
 
+        record_decode_time(decode_start);
         return -1;
     }
 
@@ -368,7 +424,21 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
         written = g_fb_size;
     }
 
-    DCInvalidateRange(g_last.framebuffer, (uint32_t)written);
+    const OSTime invalidate_start =
+        OSGetSystemTime();
+
+    DCInvalidateRange(
+        g_last.framebuffer,
+        (uint32_t)written);
+
+    const uint32_t invalidate_us =
+        elapsed_us(invalidate_start);
+
+    g_invalidate_us_total += invalidate_us;
+
+    if (invalidate_us > g_invalidate_us_max) {
+        g_invalidate_us_max = invalidate_us;
+    }
 
     out->luma =
         (const uint8_t *)g_last.framebuffer;
@@ -383,6 +453,8 @@ int video_decode(const uint8_t *annexb, uint32_t size, VideoFrame *out)
     out->height = g_last.height;
 
     g_decoded++;
+
+    record_decode_time(decode_start);
 
     return 1;
 }
@@ -402,4 +474,38 @@ void video_stats(unsigned *decoded, unsigned *empty, unsigned *errors)
     if (decoded) *decoded = g_decoded;
     if (empty)   *empty   = g_empty;
     if (errors)  *errors  = g_errors;
+}
+
+void video_stats_ex(VideoStats *out)
+{
+    if (!out) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+
+    out->submitted = g_submitted;
+    out->decoded = g_decoded;
+    out->empty = g_empty;
+    out->errors = g_errors;
+
+    if (g_submitted) {
+        out->decode_avg_us =
+            (uint32_t)(g_decode_us_total /
+                       g_submitted);
+
+        out->execute_avg_us =
+            (uint32_t)(g_execute_us_total /
+                       g_submitted);
+    }
+
+    if (g_decoded) {
+        out->invalidate_avg_us =
+            (uint32_t)(g_invalidate_us_total /
+                       g_decoded);
+    }
+
+    out->decode_max_us = g_decode_us_max;
+    out->execute_max_us = g_execute_us_max;
+    out->invalidate_max_us = g_invalidate_us_max;
 }

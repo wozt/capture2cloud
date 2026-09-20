@@ -20,6 +20,8 @@ void audio_stats(unsigned long *decoded,
                  unsigned long *failed,
                  unsigned long *dropped);
 
+unsigned audio_queue_ms(void);
+
 #ifdef __cplusplus
 }
 #endif

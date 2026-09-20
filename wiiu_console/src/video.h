@@ -55,4 +55,22 @@ void video_flush(void);
  * cannot be told apart from "nothing arriving". */
 void video_stats(unsigned *decoded, unsigned *empty, unsigned *errors);
 
+typedef struct {
+    unsigned submitted;
+    unsigned decoded;
+    unsigned empty;
+    unsigned errors;
+
+    uint32_t decode_avg_us;
+    uint32_t decode_max_us;
+
+    uint32_t execute_avg_us;
+    uint32_t execute_max_us;
+
+    uint32_t invalidate_avg_us;
+    uint32_t invalidate_max_us;
+} VideoStats;
+
+void video_stats_ex(VideoStats *out);
+
 #endif /* CAPTURE2WIIU_VIDEO_H */

@@ -25,6 +25,7 @@
 #include <whb/log_udp.h>
 
 #include "c2s_protocol.h"
+#include "gx2_video.h"
 #include "audio.h"
 #include "keyboard.h"
 #include "net.h"
@@ -44,6 +45,15 @@ typedef enum { STATE_SETTINGS, STATE_STREAMING } State;
 typedef struct {
     int x, y, w, h;
 } Rect;
+
+
+typedef struct {
+    unsigned rx_fps;
+    unsigned decode_fps;
+    unsigned display_fps;
+    unsigned loop_fps;
+    unsigned net_kbps;
+} StreamPerf;
 
 static const Rect R_HOST    = { 360, 200, 560, 76 };
 static const Rect R_PORT    = { 360, 300, 260, 76 };
@@ -94,35 +104,85 @@ static void draw_settings(const Settings *s, const char *note, int decoder_ok, c
     }
 }
 
-static void draw_streaming(const Settings *s, unsigned fps)
+static void draw_streaming(const Settings *s,
+                           const StreamPerf *perf)
 {
-    const NetInfo *info = net_info();
-    char host[32];
-    unsigned decoded, empty, errors;
+    (void)s;
 
-    settings_host_string(s, host, sizeof(host));
-    video_stats(&decoded, &empty, &errors);
+    const NetInfo *info = net_info();
+
+    VideoStats vs;
+    Gx2VideoStats gs;
+
+    unsigned long audio_decoded = 0;
+    unsigned long audio_failed = 0;
+    unsigned long audio_dropped = 0;
+
+    uint32_t present_avg_us = 0;
+    uint32_t present_max_us = 0;
+
+    video_stats_ex(&vs);
+    gx2_video_stats(&gs);
+
+    audio_stats(&audio_decoded,
+                &audio_failed,
+                &audio_dropped);
+
+    ui_present_stats(&present_avg_us,
+                     &present_max_us);
 
     /*
-     * These diagnostics are shown ONLY while the settings overlay
-     * is open. Normal gameplay has no HUD over the video.
+     * These are intentionally performance diagnostics now, not generic
+     * bring-up counters.
      */
-    ui_text(180, 535, UI_SIZE_BODY, UI_TEXT,
-            "diagnostics");
+    ui_text(180, 530,
+            UI_SIZE_BODY,
+            UI_TEXT,
+            "renderer: %s | %ux%u H264",
+            ui_video_renderer_name(),
+            info->width,
+            info->height);
 
-    ui_text(180, 575, UI_SIZE_BODY, UI_DIM,
-            "%s:%u -- %s",
-            host, s->port, info->status);
+    ui_text(180, 565,
+            UI_SIZE_BODY,
+            UI_DIM,
+            "fps: RX %u  decode %u  display %u  loop %u",
+            perf->rx_fps,
+            perf->decode_fps,
+            perf->display_fps,
+            perf->loop_fps);
 
-    ui_text(180, 615, UI_SIZE_BODY, UI_DIM,
-            "h264 %u decoded  %u waiting  %u errors  %u fps",
-            decoded, empty, errors, fps);
+    ui_text(180, 600,
+            UI_SIZE_BODY,
+            UI_DIM,
+            "cpu us: decode %u  H264 %u  inv %u  GX2copy %u",
+            vs.decode_avg_us,
+            vs.execute_avg_us,
+            vs.invalidate_avg_us,
+            gs.copy_avg_us);
 
-    ui_text(180, 655, UI_SIZE_BODY, UI_DIM,
-            "rx %llu KiB  step %s  errno %d",
-            (unsigned long long)(info->rx_bytes / 1024),
-            info->last_step,
-            info->last_errno);
+    ui_text(180, 635,
+            UI_SIZE_BODY,
+            UI_DIM,
+            "gpu/present: %u us avg  %u us max",
+            present_avg_us,
+            present_max_us);
+
+    ui_text(180, 670,
+            UI_SIZE_BODY,
+            UI_DIM,
+            "audio: queue %u ms  opus %lu  bad %lu  drop %lu",
+            audio_queue_ms(),
+            audio_decoded,
+            audio_failed,
+            audio_dropped);
+
+    ui_text(720, 670,
+            UI_SIZE_BODY,
+            UI_DIM,
+            "net %u.%u Mbps",
+            perf->net_kbps / 1000,
+            (perf->net_kbps % 1000) / 100);
 }
 
 static void draw_menu_marker(int open)
@@ -219,8 +279,16 @@ int main(int argc, char **argv)
     int have_frame = 0;
     int new_frame = 0;
     int menu_open = 0;
-    unsigned frames = 0, fps = 0;
-    uint32_t fps_at = 0;
+    StreamPerf perf;
+    memset(&perf, 0, sizeof(perf));
+
+    unsigned rx_count = 0;
+    unsigned decode_count = 0;
+    unsigned display_count = 0;
+    unsigned loop_count = 0;
+
+    uint32_t fps_at = SDL_GetTicks();
+    uint64_t rx_bytes_at = 0;
 
     while (proc_running()) {
         new_frame = 0;
@@ -320,9 +388,15 @@ int main(int argc, char **argv)
                          decoder_ok ? "ready" : decoder_why);
 
             memset(&in, 0, sizeof(in));
-            frames = 0;
-            fps = 0;
+            memset(&perf, 0, sizeof(perf));
+
+            rx_count = 0;
+            decode_count = 0;
+            display_count = 0;
+            loop_count = 0;
+
             fps_at = SDL_GetTicks();
+            rx_bytes_at = net_info()->rx_bytes;
 
             continue;
         }
@@ -366,6 +440,15 @@ int main(int argc, char **argv)
                         net_connect(host, settings.port, NULL);
                         state = STATE_STREAMING;
                         menu_open = 0;
+
+                        memset(&perf, 0, sizeof(perf));
+                        rx_count = 0;
+                        decode_count = 0;
+                        display_count = 0;
+                        loop_count = 0;
+                        fps_at = SDL_GetTicks();
+                        rx_bytes_at = net_info()->rx_bytes;
+
                         WHBLogPrintf("capture2cloud: connecting to %s:%u", host, settings.port);
                     }
                 }
@@ -395,10 +478,12 @@ int main(int argc, char **argv)
                     continue;
                 }
 
+                rx_count++;
+
                 if (video_decode(payload, size, &frame) == 1) {
                     have_frame = 1;
                     new_frame = 1;
-                    frames++;
+                    decode_count++;
                 }
             }
 
@@ -486,13 +571,6 @@ int main(int argc, char **argv)
             }
         }
 
-        const uint32_t now = SDL_GetTicks();
-        if (now - fps_at >= 1000) {
-            fps = frames;
-            frames = 0;
-            fps_at = now;
-        }
-
         ui_begin();
 
         if (state == STATE_SETTINGS) {
@@ -531,13 +609,73 @@ int main(int argc, char **argv)
                               decoder_ok,
                               decoder_why);
 
-                draw_streaming(&settings, fps);
+                draw_streaming(&settings, &perf);
             }
 
             draw_menu_marker(menu_open);
         }
 
         ui_present();
+
+        if (state == STATE_STREAMING) {
+            loop_count++;
+
+            if (new_frame && have_frame) {
+                display_count++;
+            }
+
+            const uint32_t now =
+                SDL_GetTicks();
+
+            const uint32_t elapsed =
+                now - fps_at;
+
+            if (elapsed >= 1000) {
+                const uint64_t rx_now =
+                    net_info()->rx_bytes;
+
+                const uint64_t rx_delta =
+                    rx_now >= rx_bytes_at
+                        ? rx_now - rx_bytes_at
+                        : 0;
+
+                perf.rx_fps =
+                    (unsigned)(
+                        ((uint64_t)rx_count * 1000ull) /
+                        elapsed);
+
+                perf.decode_fps =
+                    (unsigned)(
+                        ((uint64_t)decode_count * 1000ull) /
+                        elapsed);
+
+                perf.display_fps =
+                    (unsigned)(
+                        ((uint64_t)display_count * 1000ull) /
+                        elapsed);
+
+                perf.loop_fps =
+                    (unsigned)(
+                        ((uint64_t)loop_count * 1000ull) /
+                        elapsed);
+
+                /*
+                 * bytes * 8 / milliseconds numerically gives kbit/s.
+                 */
+                perf.net_kbps =
+                    (unsigned)(
+                        (rx_delta * 8ull) /
+                        elapsed);
+
+                rx_count = 0;
+                decode_count = 0;
+                display_count = 0;
+                loop_count = 0;
+
+                fps_at = now;
+                rx_bytes_at = rx_now;
+            }
+        }
     }
 
     /*

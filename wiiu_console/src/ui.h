@@ -60,6 +60,11 @@ void ui_poll(UiInput *in);
 void ui_begin(void);
 void ui_present(void);
 
+const char *ui_video_renderer_name(void);
+
+void ui_present_stats(uint32_t *avg_us,
+                      uint32_t *max_us);
+
 /*
  * Video path.
  *

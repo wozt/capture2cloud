@@ -1,6 +1,7 @@
 #include "gx2_video.h"
 
 #include <malloc.h>
+#include <coreinit/time.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,15 @@ typedef struct {
     int width;
     int height;
     int source_stride;
+
+    unsigned updates;
+    unsigned draws;
+
+    uint64_t copy_us_total;
+    uint64_t invalidate_us_total;
+
+    uint32_t copy_us_max;
+    uint32_t invalidate_us_max;
 } VideoGpu;
 
 static VideoGpu g;
@@ -378,6 +388,9 @@ int gx2_video_update(const uint8_t *luma,
      *
      * There is no per-pixel colour arithmetic here anymore.
      */
+    const OSTime copy_start =
+        OSGetSystemTime();
+
     for (int y = 0; y < height; ++y) {
         memcpy(
             dst_y +
@@ -396,9 +409,22 @@ int gx2_video_update(const uint8_t *luma,
             (size_t)width);
     }
 
+    const uint32_t copy_us =
+        (uint32_t)OSTicksToMicroseconds(
+            OSGetSystemTime() - copy_start);
+
+    g.copy_us_total += copy_us;
+
+    if (copy_us > g.copy_us_max) {
+        g.copy_us_max = copy_us;
+    }
+
     /*
      * Push the CPU writes out so GX2 sees the new planes.
      */
+    const OSTime invalidate_start =
+        OSGetSystemTime();
+
     GX2Invalidate(
         GX2_INVALIDATE_MODE_CPU_TEXTURE,
         dst_y,
@@ -412,6 +438,16 @@ int gx2_video_update(const uint8_t *luma,
     g.luma_texture.surface.image =
         dst_y;
 
+    const uint32_t invalidate_us =
+        (uint32_t)OSTicksToMicroseconds(
+            OSGetSystemTime() - invalidate_start);
+
+    g.invalidate_us_total += invalidate_us;
+
+    if (invalidate_us > g.invalidate_us_max) {
+        g.invalidate_us_max = invalidate_us;
+    }
+
     g.chroma_texture.surface.image =
         dst_uv;
 
@@ -422,6 +458,7 @@ int gx2_video_update(const uint8_t *luma,
         &g.chroma_texture);
 
     g.have_frame = 1;
+    g.updates++;
 
     return 0;
 }
@@ -614,5 +651,33 @@ int gx2_video_draw(int target_width,
         0,
         1);
 
+    g.draws++;
+
     return 0;
+}
+
+void gx2_video_stats(Gx2VideoStats *out)
+{
+    if (!out) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+
+    out->updates = g.updates;
+    out->draws = g.draws;
+
+    if (g.updates) {
+        out->copy_avg_us =
+            (uint32_t)(g.copy_us_total /
+                       g.updates);
+
+        out->invalidate_avg_us =
+            (uint32_t)(g.invalidate_us_total /
+                       g.updates);
+    }
+
+    out->copy_max_us = g.copy_us_max;
+    out->invalidate_max_us =
+        g.invalidate_us_max;
 }

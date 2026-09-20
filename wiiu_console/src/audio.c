@@ -242,3 +242,27 @@ void audio_stats(unsigned long *decoded,
     if (failed)  *failed = g_failed;
     if (dropped) *dropped = g_dropped;
 }
+
+
+unsigned audio_queue_ms(void)
+{
+    if (!g_device ||
+        g_rate <= 0 ||
+        g_channels <= 0) {
+        return 0;
+    }
+
+    const Uint32 bytes =
+        SDL_GetQueuedAudioSize(g_device);
+
+    const uint64_t bytes_per_second =
+        (uint64_t)g_rate *
+        (uint64_t)g_channels *
+        sizeof(int16_t);
+
+    return bytes_per_second
+        ? (unsigned)(
+            ((uint64_t)bytes * 1000ull) /
+            bytes_per_second)
+        : 0;
+}
