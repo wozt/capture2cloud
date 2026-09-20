@@ -16,8 +16,11 @@
  * needs ICE, DTLS-SRTP and SCTP, none of which exist as a devkitPro
  * portlib. See switch_homebrew/ARCHITECTURE.md.
  *
- * Everything is little-endian, which both ends are natively (x86-64 and
- * aarch64 as configured here), so nothing is byte-swapped.
+ * The wire format is little-endian.
+ *
+ * That is a no-op on the x86-64 host and the aarch64 Switch client, but
+ * it is NOT a no-op on the Wii U's big-endian PowerPC. Multi-byte fields
+ * therefore pass through the helpers below at the wire boundary.
  */
 
 #define C2S_MAGIC       0x57533243u /* "C2SW" little-endian */
@@ -64,6 +67,32 @@
 /* Session tokens are 32 random bytes hex-encoded; the field is a u8 so
  * nothing longer can even be announced. */
 #define C2S_MAX_TOKEN_LEN 64
+
+/*
+ * Explicit wire-endian helpers.
+ *
+ * Conversion is symmetric: CPU -> little endian and little endian -> CPU
+ * are the same operation on a given CPU. On the host and Switch these
+ * compile to a no-op; on the Wii U devkitPPC swaps the bytes.
+ */
+static inline uint16_t c2s_le16(uint16_t v)
+{
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return __builtin_bswap16(v);
+#else
+    return v;
+#endif
+}
+
+static inline uint32_t c2s_le32(uint32_t v)
+{
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return __builtin_bswap32(v);
+#else
+    return v;
+#endif
+}
+
 
 /* --- client -> server, once, immediately after connecting ---------- */
 
