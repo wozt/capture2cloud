@@ -8,6 +8,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <coreinit/memory.h>
+#include <coreinit/time.h>
 #include <whb/log.h>
 
 static SDL_Window   *g_window;
@@ -36,6 +37,10 @@ static int g_video_update_error_logged;
  */
 static int g_gx2_video_ready;
 static int g_gx2_video_failure_logged;
+
+static uint64_t g_present_us_total;
+static uint32_t g_present_us_max;
+static unsigned g_present_count;
 
 /*
  * Rendered strings, kept.
@@ -164,6 +169,10 @@ int ui_init(char *why, size_t why_size)
         gx2_video_init() == 0;
 
     g_gx2_video_failure_logged = 0;
+
+    g_present_us_total = 0;
+    g_present_us_max = 0;
+    g_present_count = 0;
 
     WHBLogPrintf(
         "ui video: %s",
@@ -499,7 +508,44 @@ void ui_video_draw(void)
 
 void ui_present(void)
 {
+    const OSTime start =
+        OSGetSystemTime();
+
     SDL_RenderPresent(g_renderer);
+
+    const uint32_t us =
+        (uint32_t)OSTicksToMicroseconds(
+            OSGetSystemTime() - start);
+
+    g_present_us_total += us;
+    g_present_count++;
+
+    if (us > g_present_us_max) {
+        g_present_us_max = us;
+    }
+}
+
+const char *ui_video_renderer_name(void)
+{
+    return g_gx2_video_ready
+        ? "GX2 direct NV12"
+        : "SDL NV12 fallback";
+}
+
+void ui_present_stats(uint32_t *avg_us,
+                      uint32_t *max_us)
+{
+    if (avg_us) {
+        *avg_us =
+            g_present_count
+                ? (uint32_t)(g_present_us_total /
+                             g_present_count)
+                : 0;
+    }
+
+    if (max_us) {
+        *max_us = g_present_us_max;
+    }
 }
 
 void ui_flush(void)

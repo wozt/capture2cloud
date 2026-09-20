@@ -28,6 +28,19 @@ int gx2_video_update(const uint8_t *luma,
  */
 int gx2_video_draw(int target_width, int target_height);
 
+typedef struct {
+    unsigned updates;
+    unsigned draws;
+
+    uint32_t copy_avg_us;
+    uint32_t copy_max_us;
+
+    uint32_t invalidate_avg_us;
+    uint32_t invalidate_max_us;
+} Gx2VideoStats;
+
+void gx2_video_stats(Gx2VideoStats *out);
+
 #ifdef __cplusplus
 }
 #endif
