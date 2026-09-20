@@ -528,7 +528,7 @@ void ui_present(void)
 const char *ui_video_renderer_name(void)
 {
     return g_gx2_video_ready
-        ? "GX2 direct NV12"
+        ? "GX2 zero-copy NV12"
         : "SDL NV12 fallback";
 }
 

@@ -116,21 +116,18 @@ static void describe_texture(GX2Texture *texture,
     GX2CalcSurfaceSizeAndAlignment(&texture->surface);
 }
 
-static int configure_planes(int width, int height, int source_stride)
+static int configure_planes(int width,
+                            int height,
+                            int source_stride)
 {
     if (width == g.width &&
         height == g.height &&
-        source_stride == g.source_stride &&
-        g.luma_buffer[0] &&
-        g.chroma_buffer[0]) {
+        source_stride == g.source_stride) {
         return 0;
     }
 
     free_planes();
 
-    /*
-     * Y = one 8-bit channel.
-     */
     describe_texture(
         &g.luma_texture,
         (uint32_t)width,
@@ -142,12 +139,6 @@ static int configure_planes(int width, int height, int source_stride)
             GX2_SQ_SEL_0,
             GX2_SQ_SEL_1));
 
-    /*
-     * NV12 chroma = interleaved Cb/Cr.
-     *
-     * One RG texel contains one Cb/Cr pair, hence half width and half
-     * height but two bytes per texel.
-     */
     describe_texture(
         &g.chroma_texture,
         (uint32_t)(width / 2),
@@ -159,51 +150,42 @@ static int configure_planes(int width, int height, int source_stride)
             GX2_SQ_SEL_0,
             GX2_SQ_SEL_1));
 
-    for (int i = 0; i < PLANE_BUFFERS; ++i) {
-        g.luma_buffer[i] =
-            memalign(g.luma_texture.surface.alignment,
-                     g.luma_texture.surface.imageSize);
+    /*
+     * Zero-copy is only valid if H264DEC's stride is exactly the stride
+     * GX2 expects for these linear textures.
+     */
+    if ((int)g.luma_texture.surface.pitch != source_stride ||
+        (int)(g.chroma_texture.surface.pitch * 2u) != source_stride) {
 
-        g.chroma_buffer[i] =
-            memalign(g.chroma_texture.surface.alignment,
-                     g.chroma_texture.surface.imageSize);
+        WHBLogPrintf(
+            "gx2 video: zero-copy pitch mismatch "
+            "decoder=%d y=%u uv_bytes=%u",
+            source_stride,
+            (unsigned)g.luma_texture.surface.pitch,
+            (unsigned)(g.chroma_texture.surface.pitch * 2u));
 
-        if (!g.luma_buffer[i] ||
-            !g.chroma_buffer[i]) {
-            WHBLogPrintf(
-                "gx2 video: plane allocation failed");
-
-            free_planes();
-            return -1;
-        }
-
-        /*
-         * Padding outside the visible image gets neutral YUV values.
-         */
-        memset(g.luma_buffer[i],
-               16,
-               g.luma_texture.surface.imageSize);
-
-        memset(g.chroma_buffer[i],
-               128,
-               g.chroma_texture.surface.imageSize);
+        return -1;
     }
+
+    GX2InitTextureRegs(
+        &g.luma_texture);
+
+    GX2InitTextureRegs(
+        &g.chroma_texture);
 
     g.width = width;
     g.height = height;
     g.source_stride = source_stride;
-    g.buffer_index = 0;
 
     WHBLogPrintf(
-        "gx2 video: %dx%d src_pitch=%d y_pitch=%u uv_pitch=%u",
+        "gx2 video: ZERO-COPY %dx%d pitch=%d",
         width,
         height,
-        source_stride,
-        (unsigned)g.luma_texture.surface.pitch,
-        (unsigned)g.chroma_texture.surface.pitch);
+        source_stride);
 
     return 0;
 }
+
 
 int gx2_video_init(void)
 {
@@ -357,111 +339,66 @@ int gx2_video_update(const uint8_t *luma,
     }
 
     /*
-     * Double buffering:
-     * don't overwrite the plane the GPU may still be sampling.
-     */
-    g.buffer_index =
-        (g.buffer_index + 1) %
-        PLANE_BUFFERS;
-
-    uint8_t *dst_y =
-        g.luma_buffer[g.buffer_index];
-
-    uint8_t *dst_uv =
-        g.chroma_buffer[g.buffer_index];
-
-    /*
-     * GX2 pitch is expressed in texels.
+     * H264DEC already wrote the NV12 pixels here.
      *
-     * R8:    one byte per texel.
-     * R8_G8: two bytes per texel.
+     * Just point GX2 at them.
      */
-    const size_t dst_y_stride =
-        (size_t)g.luma_texture.surface.pitch;
-
-    const size_t dst_uv_stride =
-        (size_t)g.chroma_texture.surface.pitch * 2u;
-
-    /*
-     * This is the ONLY CPU work left for video presentation:
-     * about 1.38 MB copied at 720p.
-     *
-     * There is no per-pixel colour arithmetic here anymore.
-     */
-    const OSTime copy_start =
+    const OSTime bind_start =
         OSGetSystemTime();
 
-    for (int y = 0; y < height; ++y) {
-        memcpy(
-            dst_y +
-                (size_t)y * dst_y_stride,
-            luma +
-                (size_t)y * (size_t)stride,
-            (size_t)width);
-    }
+    g.luma_texture.surface.image =
+        (void *)luma;
 
-    for (int y = 0; y < height / 2; ++y) {
-        memcpy(
-            dst_uv +
-                (size_t)y * dst_uv_stride,
-            chroma +
-                (size_t)y * (size_t)stride,
-            (size_t)width);
-    }
+    g.chroma_texture.surface.image =
+        (void *)chroma;
 
-    const uint32_t copy_us =
+    const uint32_t bind_us =
         (uint32_t)OSTicksToMicroseconds(
-            OSGetSystemTime() - copy_start);
+            OSGetSystemTime() - bind_start);
 
-    g.copy_us_total += copy_us;
+    /*
+     * Keep the old "copy" metric field for compatibility with the
+     * diagnostics struct, but it now measures the zero-copy bind.
+     */
+    g.copy_us_total += bind_us;
 
-    if (copy_us > g.copy_us_max) {
-        g.copy_us_max = copy_us;
+    if (bind_us > g.copy_us_max) {
+        g.copy_us_max = bind_us;
     }
 
     /*
-     * Push the CPU writes out so GX2 sees the new planes.
+     * Make sure GX2 sees the decoder-produced picture.
+     * This is tiny compared with the old ~1.35 MiB memcpy.
      */
     const OSTime invalidate_start =
         OSGetSystemTime();
 
     GX2Invalidate(
         GX2_INVALIDATE_MODE_CPU_TEXTURE,
-        dst_y,
-        g.luma_texture.surface.imageSize);
-
-    GX2Invalidate(
-        GX2_INVALIDATE_MODE_CPU_TEXTURE,
-        dst_uv,
-        g.chroma_texture.surface.imageSize);
-
-    g.luma_texture.surface.image =
-        dst_y;
+        (void *)luma,
+        (uint32_t)(
+            (size_t)stride *
+            (size_t)height *
+            3u / 2u));
 
     const uint32_t invalidate_us =
         (uint32_t)OSTicksToMicroseconds(
-            OSGetSystemTime() - invalidate_start);
+            OSGetSystemTime() -
+            invalidate_start);
 
     g.invalidate_us_total += invalidate_us;
 
     if (invalidate_us > g.invalidate_us_max) {
-        g.invalidate_us_max = invalidate_us;
+        g.invalidate_us_max =
+            invalidate_us;
     }
-
-    g.chroma_texture.surface.image =
-        dst_uv;
-
-    GX2InitTextureRegs(
-        &g.luma_texture);
-
-    GX2InitTextureRegs(
-        &g.chroma_texture);
 
     g.have_frame = 1;
     g.updates++;
 
     return 0;
 }
+
 
 static int update_vertices(int target_width,
                            int target_height)
