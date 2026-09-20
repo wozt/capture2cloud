@@ -167,6 +167,15 @@ typedef struct {
     int is_ws;
     int on_drc_port;   /* arrived on the GamePad's own port */
     int on_wiiu_port;  /* arrived on the Wii U console's own port */
+
+    /*
+     * Native peer IPv4 in network byte order.
+     *
+     * If the same Wii U reconnects after an RPX crash/relaunch, its
+     * new socket supersedes the old half-dead one immediately.
+     */
+    uint32_t peer_ipv4;
+
     uint32_t last_seen_ms;
     uint32_t last_probe_ms;   /* when we last asked a quiet client if it is there */
     uint8_t rx[SS_RX_CAPACITY];
@@ -787,7 +796,14 @@ static void handle_hello(SwitchStream *s, int index) {
         c->codec = C2S_CODEC_H264;
     }
     {
-        const int slot = codec_slot(c->codec);
+        /*
+         * The port decides the stream before the handshake.
+         *
+         * A Wii U console uses SS_STREAM_WIIU even though its codec is
+         * ordinary H.264; using codec_slot() here accidentally announced
+         * the phone/Switch H.264 profile in the initial ACK.
+         */
+        const int slot = client_slot(c);
         ack.width = s->group_stream_known[slot] ? s->group_width[slot] : s->width;
         ack.height = s->group_stream_known[slot] ? s->group_height[slot] : s->height;
     }
@@ -820,7 +836,8 @@ static void handle_hello(SwitchStream *s, int index) {
 
     fprintf(stderr, "switch_stream: client %d connected as %s, on %s\n", index,
             c->may_control ? "PLAYER" : "viewer",
-            c->codec == C2S_CODEC_DRC_H264 ? "wii u" :
+            c->on_wiiu_port ? "wii u console" :
+            c->on_drc_port ? "wii u gamepad" :
             c->codec == C2S_CODEC_H264 ? "h264" : "vp8");
 }
 
@@ -1154,9 +1171,15 @@ static int accept_thread(void *arg) {
             }
             const int is_drc = (door == 1);
             const int is_wiiu = (door == 2);
+
+            struct sockaddr_in peer;
+            socklen_t peer_len = sizeof(peer);
+            memset(&peer, 0, sizeof(peer));
+
             int fd = accept(is_drc ? s->drc_listen_fd
                                    : is_wiiu ? s->wiiu_listen_fd : s->listen_fd,
-                            NULL, NULL);
+                            (struct sockaddr *)&peer,
+                            &peer_len);
             if (fd >= 0) {
                 int one = 1;
                 setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
@@ -1165,6 +1188,35 @@ static int accept_thread(void *arg) {
                 fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 
                 SDL_LockMutex(s->mutex);
+
+                /*
+                 * Port 5083 belongs only to Wii U console clients.
+                 *
+                 * One physical console cannot legitimately have two
+                 * Capture2Cloud applications alive at once, so a fresh
+                 * connection from the same address makes an older one
+                 * stale by definition.
+                 */
+                if (is_wiiu &&
+                    peer.sin_family == AF_INET &&
+                    peer.sin_addr.s_addr != 0) {
+
+                    for (int i = 0; i < SS_MAX_CLIENTS; i++) {
+                        SsClient *old_client = &s->clients[i];
+
+                        if (old_client->in_use &&
+                            old_client->on_wiiu_port &&
+                            old_client->peer_ipv4 ==
+                                peer.sin_addr.s_addr) {
+
+                            drop_client(
+                                s,
+                                i,
+                                "replaced by a new Wii U session");
+                        }
+                    }
+                }
+
                 int slot = -1;
                 for (int i = 0; i < SS_MAX_CLIENTS; i++) {
                     if (!s->clients[i].in_use) { slot = i; break; }
@@ -1177,6 +1229,10 @@ static int accept_thread(void *arg) {
                     memset(&s->clients[slot], 0, sizeof(s->clients[slot]));
                     s->clients[slot].fd = fd;
                     s->clients[slot].in_use = 1;
+                    s->clients[slot].peer_ipv4 =
+                        peer.sin_family == AF_INET
+                            ? peer.sin_addr.s_addr
+                            : 0;
                     s->clients[slot].last_seen_ms = now_ms();
                     if (is_wiiu) {
                         /* The port is the choice, as it is for the pad:

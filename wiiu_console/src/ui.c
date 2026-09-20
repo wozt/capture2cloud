@@ -109,7 +109,10 @@ static TextEntry *entry_for(int size, UiColour colour, const char *text)
 
 int ui_init(char *why, size_t why_size)
 {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO |
+                 SDL_INIT_AUDIO |
+                 SDL_INIT_EVENTS |
+                 SDL_INIT_GAMECONTROLLER) != 0) {
         snprintf(why, why_size, "SDL_Init: %s", SDL_GetError());
         return -1;
     }
