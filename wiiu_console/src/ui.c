@@ -15,6 +15,19 @@ static TTF_Font     *g_body;
 static TTF_Font     *g_title;
 
 /*
+ * Video texture.
+ *
+ * WiiU GX2's SDL renderer does not advertise NV12 directly. SDL2 sees
+ * the FOURCC texture, creates its software YUV representation and a
+ * native RGB backing texture supported by GX2, then converts during
+ * SDL_UpdateNVTexture().
+ */
+static SDL_Texture *g_video_texture;
+static int g_video_width;
+static int g_video_height;
+static int g_video_update_error_logged;
+
+/*
  * Rendered strings, kept.
  *
  * TTF_RenderUTF8_Blended builds a surface and a texture every time it is
@@ -166,6 +179,14 @@ int ui_init(char *why, size_t why_size)
 
 void ui_shutdown(void)
 {
+    if (g_video_texture) {
+        SDL_DestroyTexture(g_video_texture);
+        g_video_texture = NULL;
+    }
+    g_video_width = 0;
+    g_video_height = 0;
+    g_video_update_error_logged = 0;
+
     for (int i = 0; i < CACHE_SIZE; i++) {
         if (g_cache[i].texture) {
             SDL_DestroyTexture(g_cache[i].texture);
@@ -241,6 +262,139 @@ void ui_begin(void)
 {
     SDL_SetRenderDrawColor(g_renderer, UI_BG.r, UI_BG.g, UI_BG.b, 255);
     SDL_RenderClear(g_renderer);
+}
+
+static int ensure_video_texture(int width, int height)
+{
+    if (!g_renderer || width <= 0 || height <= 0) {
+        return -1;
+    }
+
+    if (g_video_texture &&
+        g_video_width == width &&
+        g_video_height == height) {
+        return 0;
+    }
+
+    if (g_video_texture) {
+        SDL_DestroyTexture(g_video_texture);
+        g_video_texture = NULL;
+    }
+
+    g_video_width = 0;
+    g_video_height = 0;
+    g_video_update_error_logged = 0;
+
+    /*
+     * NV12 isn't native to the Wii U SDL renderer, deliberately.
+     *
+     * SDL_CreateTexture() notices that and creates:
+     *
+     *   software NV12 texture
+     *        +
+     *   native renderer RGB texture
+     *
+     * SDL_UpdateNVTexture() then converts into the native texture.
+     */
+    g_video_texture =
+        SDL_CreateTexture(g_renderer,
+                          SDL_PIXELFORMAT_NV12,
+                          SDL_TEXTUREACCESS_STREAMING,
+                          width,
+                          height);
+
+    if (!g_video_texture) {
+        WHBLogPrintf("ui video: cannot create NV12 %dx%d: %s",
+                     width, height, SDL_GetError());
+        return -1;
+    }
+
+    SDL_SetTextureScaleMode(g_video_texture, SDL_ScaleModeLinear);
+
+    g_video_width = width;
+    g_video_height = height;
+
+    WHBLogPrintf(
+        "ui video: NV12 texture ready %dx%d "
+        "(SDL YUV fallback -> GX2 RGB)",
+        width, height);
+
+    return 0;
+}
+
+int ui_video_update_nv12(const uint8_t *luma,
+                         const uint8_t *chroma,
+                         int stride,
+                         int width,
+                         int height)
+{
+    if (!luma || !chroma ||
+        width <= 0 || height <= 0 ||
+        stride < width) {
+        return -1;
+    }
+
+    if (ensure_video_texture(width, height) != 0) {
+        return -1;
+    }
+
+    /*
+     * H264DEC's NV12 has the same pitch for Y and interleaved UV.
+     *
+     * SDL deals with the decoder pitch, so there is no row-by-row copy
+     * into a tightly packed temporary buffer here.
+     */
+    if (SDL_UpdateNVTexture(g_video_texture,
+                            NULL,
+                            luma, stride,
+                            chroma, stride) != 0) {
+        if (!g_video_update_error_logged) {
+            WHBLogPrintf(
+                "ui video: SDL_UpdateNVTexture failed: %s",
+                SDL_GetError());
+            g_video_update_error_logged = 1;
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
+void ui_video_draw(void)
+{
+    if (!g_video_texture ||
+        g_video_width <= 0 ||
+        g_video_height <= 0) {
+        return;
+    }
+
+    /*
+     * Fit rather than stretch.
+     *
+     * 1280x720 naturally fills the screen. Other profiles remain at
+     * their original aspect ratio with black bars where necessary.
+     */
+    SDL_Rect dst;
+
+    if ((long long)g_video_width * UI_HEIGHT >
+        (long long)g_video_height * UI_WIDTH) {
+        dst.w = UI_WIDTH;
+        dst.h = (int)((long long)UI_WIDTH *
+                      g_video_height / g_video_width);
+        dst.x = 0;
+        dst.y = (UI_HEIGHT - dst.h) / 2;
+    } else {
+        dst.h = UI_HEIGHT;
+        dst.w = (int)((long long)UI_HEIGHT *
+                      g_video_width / g_video_height);
+        dst.x = (UI_WIDTH - dst.w) / 2;
+        dst.y = 0;
+    }
+
+    SDL_RenderCopy(g_renderer,
+                   g_video_texture,
+                   NULL,
+                   &dst);
 }
 
 void ui_present(void)
