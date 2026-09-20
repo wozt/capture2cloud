@@ -158,6 +158,15 @@ uint32_t net_local_ip(void) {
 
 static void close_socket(void) {
     if (g_sock >= 0) {
+        /*
+         * Tell the peer explicitly that both halves are gone before
+         * releasing the descriptor.
+         *
+         * With the AX shim this becomes lwip_shutdown(), so the host
+         * does not have to wait for an idle timeout to notice that the
+         * Wii U application disappeared.
+         */
+        shutdown(g_sock, SHUT_RDWR);
         close(g_sock);
         g_sock = -1;
     }

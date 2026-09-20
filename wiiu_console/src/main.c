@@ -25,6 +25,7 @@
 #include <whb/log_udp.h>
 
 #include "c2s_protocol.h"
+#include "audio.h"
 #include "keyboard.h"
 #include "net.h"
 #include "proc.h"
@@ -48,7 +49,7 @@ static const Rect R_HOST    = { 360, 200, 560, 76 };
 static const Rect R_PORT    = { 360, 300, 260, 76 };
 static const Rect R_CONNECT = { 360, 430, 260, 84 };
 static const Rect R_QUIT    = { 660, 430, 260, 84 };
-static const Rect R_BACK    = {  40, 620, 220, 64 };
+static const Rect R_MENU    = { 1248,   8, 24, 24 };
 
 static int hit(const Rect *r, int x, int y)
 {
@@ -98,29 +99,44 @@ static void draw_streaming(const Settings *s, unsigned fps)
     const NetInfo *info = net_info();
     char host[32];
     unsigned decoded, empty, errors;
+
     settings_host_string(s, host, sizeof(host));
     video_stats(&decoded, &empty, &errors);
 
     /*
-     * The status lines are the whole diagnostic surface of this
-     * console: there is no shell and no log file, and "the host is
-     * unreachable" and "the host is there and sending something the
-     * decoder will not take" look identical without them.
+     * These diagnostics are shown ONLY while the settings overlay
+     * is open. Normal gameplay has no HUD over the video.
      */
-    ui_text(40, 30, UI_SIZE_BODY, UI_TEXT, "%s:%u -- %s", host, s->port, info->status);
-    ui_text(40, 70, UI_SIZE_BODY, UI_DIM, "stream %ux%u codec %u  %s", info->width, info->height,
-            info->video_codec, info->may_control ? "player" : "viewer");
-    ui_text(40, 110, UI_SIZE_BODY, UI_DIM, "h264 decoded %u  waiting %u  errors %u  %u fps", decoded,
-            empty, errors, fps);
-    ui_text(40, 150, UI_SIZE_BODY, UI_DIM, "network rx %llu KiB  step: %s (errno %d)",
-            (unsigned long long)(info->rx_bytes / 1024), info->last_step, info->last_errno);
-    {
-        const uint32_t ip = net_local_ip();
-        ui_text(40, 190, UI_SIZE_BODY, UI_DIM, "this console: %u.%u.%u.%u", (ip >> 24) & 0xFF,
-                (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
-    }
+    ui_text(180, 535, UI_SIZE_BODY, UI_TEXT,
+            "diagnostics");
 
-    draw_button(&R_BACK, "settings", UI_PANEL);
+    ui_text(180, 575, UI_SIZE_BODY, UI_DIM,
+            "%s:%u -- %s",
+            host, s->port, info->status);
+
+    ui_text(180, 615, UI_SIZE_BODY, UI_DIM,
+            "h264 %u decoded  %u waiting  %u errors  %u fps",
+            decoded, empty, errors, fps);
+
+    ui_text(180, 655, UI_SIZE_BODY, UI_DIM,
+            "rx %llu KiB  step %s  errno %d",
+            (unsigned long long)(info->rx_bytes / 1024),
+            info->last_step,
+            info->last_errno);
+}
+
+static void draw_menu_marker(int open)
+{
+    /*
+     * Tiny persistent marker requested by the UI spec.
+     *
+     * It is deliberately not labelled: it must take almost no space
+     * over the game picture.
+     */
+    ui_box(R_MENU.x, R_MENU.y,
+           R_MENU.w, R_MENU.h,
+           open ? UI_ACCENT : UI_PANEL,
+           UI_DIM);
 }
 
 static int parse_host(const char *text, void *target)
@@ -182,8 +198,17 @@ int main(int argc, char **argv)
         video_init(MAX_WIDTH, MAX_HEIGHT, decoder_why, sizeof(decoder_why)) == 0;
     WHBLogPrintf("capture2cloud: decoder %s", decoder_ok ? "ready" : decoder_why);
 
+    char audio_why[128] = { 0 };
+    int audio_ok =
+        audio_init(48000, 2,
+                   audio_why, sizeof(audio_why)) == 0;
+
+    WHBLogPrintf("capture2cloud: audio %s",
+                 audio_ok ? "ready" : audio_why);
+
     int ui_alive = 1;
     int video_alive = decoder_ok ? 1 : 0;
+    int audio_alive = audio_ok ? 1 : 0;
 
     State state = STATE_SETTINGS;
     char note[160] = { 0 };
@@ -193,6 +218,7 @@ int main(int argc, char **argv)
     VideoFrame frame;
     int have_frame = 0;
     int new_frame = 0;
+    int menu_open = 0;
     unsigned frames = 0, fps = 0;
     uint32_t fps_at = 0;
 
@@ -219,22 +245,31 @@ int main(int argc, char **argv)
             state = STATE_SETTINGS;
             have_frame = 0;
 
-            WHBLogPrintf("suspend 2/3: H264DEC begin");
+            WHBLogPrintf("suspend 2/4: audio begin");
+
+            if (audio_alive) {
+                audio_exit();
+                audio_alive = 0;
+            }
+
+            WHBLogPrintf("suspend 2/4: audio done");
+
+            WHBLogPrintf("suspend 3/4: H264DEC begin");
 
             if (video_alive) {
                 video_exit();
                 video_alive = 0;
             }
 
-            WHBLogPrintf("suspend 2/3: H264DEC done");
-            WHBLogPrintf("suspend 3/3: SDL/GX2 begin");
+            WHBLogPrintf("suspend 3/4: H264DEC done");
+            WHBLogPrintf("suspend 4/4: SDL/GX2 begin");
 
             if (ui_alive) {
                 ui_shutdown();
                 ui_alive = 0;
             }
 
-            WHBLogPrintf("suspend 3/3: SDL/GX2 done");
+            WHBLogPrintf("suspend 4/4: SDL/GX2 done");
 
             /*
              * All foreground resources are now gone. This call performs
@@ -257,6 +292,20 @@ int main(int argc, char **argv)
             }
 
             ui_alive = 1;
+
+            WHBLogPrintf("resume: rebuilding audio");
+
+            audio_why[0] = '\0';
+
+            audio_ok =
+                audio_init(48000, 2,
+                           audio_why,
+                           sizeof(audio_why)) == 0;
+
+            audio_alive = audio_ok ? 1 : 0;
+
+            WHBLogPrintf("resume: audio %s",
+                         audio_ok ? "ready" : audio_why);
 
             WHBLogPrintf("resume: rebuilding H264DEC");
 
@@ -316,6 +365,7 @@ int main(int argc, char **argv)
                          * cannot yet ask for a password. */
                         net_connect(host, settings.port, NULL);
                         state = STATE_STREAMING;
+                        menu_open = 0;
                         WHBLogPrintf("capture2cloud: connecting to %s:%u", host, settings.port);
                     }
                 }
@@ -334,9 +384,17 @@ int main(int argc, char **argv)
             uint8_t flags;
             int kind;
             while ((kind = net_take_frame(&payload, &size, &flags)) != 0) {
-                if (kind != C2S_MSG_VIDEO) {
-                    continue;   /* audio arrives in step three */
+                if (kind == C2S_MSG_AUDIO) {
+                    if (audio_alive) {
+                        audio_decode(payload, size);
+                    }
+                    continue;
                 }
+
+                if (kind != C2S_MSG_VIDEO) {
+                    continue;
+                }
+
                 if (video_decode(payload, size, &frame) == 1) {
                     have_frame = 1;
                     new_frame = 1;
@@ -344,10 +402,87 @@ int main(int argc, char **argv)
                 }
             }
 
-            if (in.tapped && hit(&R_BACK, in.touch_x, in.touch_y)) {
-                net_disconnect();
-                state = STATE_SETTINGS;
-                have_frame = 0;
+            if (in.tapped) {
+                if (hit(&R_MENU, in.touch_x, in.touch_y)) {
+                    menu_open = !menu_open;
+                } else if (menu_open) {
+                    if (hit(&R_HOST, in.touch_x, in.touch_y)) {
+                        char current[32];
+
+                        settings_host_string(
+                            &settings,
+                            current,
+                            sizeof(current));
+
+                        edit_field(
+                            "host",
+                            current,
+                            note,
+                            sizeof(note),
+                            parse_host,
+                            &settings);
+
+                    } else if (hit(&R_PORT,
+                                   in.touch_x,
+                                   in.touch_y)) {
+                        char current[16];
+
+                        snprintf(current,
+                                 sizeof(current),
+                                 "%u",
+                                 settings.port);
+
+                        edit_field(
+                            "port",
+                            current,
+                            note,
+                            sizeof(note),
+                            parse_port,
+                            &settings.port);
+
+                    } else if (hit(&R_CONNECT,
+                                   in.touch_x,
+                                   in.touch_y)) {
+                        char host[32];
+                        char save_why[64];
+
+                        settings_host_string(
+                            &settings,
+                            host,
+                            sizeof(host));
+
+                        if (settings_save(
+                                &settings,
+                                save_why,
+                                sizeof(save_why)) != 0) {
+                            snprintf(note,
+                                     sizeof(note),
+                                     "not saved: %s",
+                                     save_why);
+                        }
+
+                        net_disconnect();
+                        net_connect(
+                            host,
+                            settings.port,
+                            NULL);
+
+                        have_frame = 0;
+                        menu_open = 0;
+
+                        WHBLogPrintf(
+                            "capture2cloud: reconnecting to %s:%u",
+                            host,
+                            settings.port);
+
+                    } else if (hit(&R_QUIT,
+                                   in.touch_x,
+                                   in.touch_y)) {
+                        snprintf(note,
+                                 sizeof(note),
+                                 "Press HOME, then choose Quitter");
+                    }
+                }
             }
         }
 
@@ -364,9 +499,9 @@ int main(int argc, char **argv)
             draw_settings(&settings, note, decoder_ok, decoder_why);
         } else {
             /*
-             * Only convert/upload when H264DEC produced something new.
-             * If networking has a short gap, keep drawing the previous
-             * texture instead of converting the same NV12 frame again.
+             * Still temporary:
+             * SDL currently converts NV12 -> RGB on the CPU.
+             * The GX2-native path comes next.
              */
             if (new_frame) {
                 if (ui_video_update_nv12(frame.luma,
@@ -384,11 +519,22 @@ int main(int argc, char **argv)
             }
 
             /*
-             * Keep the diagnostics over the picture for this bring-up.
-             * Once the video path is validated we can turn this into a
-             * small optional OSD instead of covering the top-left.
+             * Settings are an overlay, not part of the permanent
+             * streaming picture.
              */
-            draw_streaming(&settings, fps);
+            if (menu_open) {
+                ui_box(120, 55, 1040, 650,
+                       UI_BG, UI_DIM);
+
+                draw_settings(&settings,
+                              note,
+                              decoder_ok,
+                              decoder_why);
+
+                draw_streaming(&settings, fps);
+            }
+
+            draw_menu_marker(menu_open);
         }
 
         ui_present();
@@ -410,6 +556,12 @@ int main(int argc, char **argv)
      * Normally these are already gone because RELEASE_FOREGROUND
      * happened before EXITING. Keep the guards for other exit paths.
      */
+    if (audio_alive) {
+        WHBLogPrintf("shutdown: final audio cleanup");
+        audio_exit();
+        audio_alive = 0;
+    }
+
     if (video_alive) {
         WHBLogPrintf("shutdown: final H264DEC cleanup");
         video_exit();
