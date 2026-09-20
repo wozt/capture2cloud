@@ -70,14 +70,22 @@ static uint64_t g_last_ping_ms = 0;
 static uint64_t g_connect_started_ms = 0;
 
 static uint8_t *g_rx = NULL;
+
+/*
+ * Valid bytes live in:
+ *
+ *   g_rx[g_rx_off .. g_rx_off + g_rx_len)
+ *
+ * Old code memmove()'d the entire remainder of this buffer after EVERY
+ * C2S packet. With hundreds of Opus packets per second that could move
+ * megabytes repeatedly for no useful reason.
+ *
+ * Now consuming a packet only advances g_rx_off. The buffer is compacted
+ * only when the free tail is actually exhausted.
+ */
+static uint32_t g_rx_off = 0;
 static uint32_t g_rx_len = 0;
 static uint32_t g_rx_cap = 0;
-
-/* The reassembly buffer shifts on every consume, so a payload cannot be
- * handed out as a pointer into it: it is copied here, valid until the
- * next call, which is what net.h promises. */
-static uint8_t *g_scratch = NULL;
-static uint32_t g_scratch_cap = 0;
 
 static uint64_t now_ms(void) {
     return (uint64_t)OSTicksToMilliseconds(OSGetSystemTime());
@@ -130,6 +138,7 @@ int net_init(void) {
      * socket connects.
      */
     g_local_ip = 0;
+    g_rx_off = 0;
     g_rx_len = 0;
 
     if (!g_rx) {
@@ -170,6 +179,7 @@ static void close_socket(void) {
         close(g_sock);
         g_sock = -1;
     }
+    g_rx_off = 0;
     g_rx_len = 0;
     g_stage = LINK_NONE;
 }
@@ -179,12 +189,9 @@ void net_exit(void) {
 
     free(g_rx);
     g_rx = NULL;
+    g_rx_off = 0;
     g_rx_len = 0;
     g_rx_cap = 0;
-
-    free(g_scratch);
-    g_scratch = NULL;
-    g_scratch_cap = 0;
 
     g_tx_lock_ready = 0;
     g_local_ip = 0;
@@ -403,50 +410,109 @@ static void finish_connect(void) {
 }
 
 /* Grows the reassembly buffer, within what the protocol allows. */
-static int rx_reserve(uint32_t needed) {
-    if (needed <= g_rx_cap) {
-        return 1;
-    }
-    if (needed > C2S_MAX_PAYLOAD + sizeof(C2sFrameHeader)) {
-        return 0;
-    }
-    uint32_t cap = g_rx_cap ? g_rx_cap : RX_INITIAL;
-    while (cap < needed) cap *= 2;
-    uint8_t *bigger = realloc(g_rx, cap);
-    if (!bigger) {
-        return 0;
-    }
-    g_rx = bigger;
-    g_rx_cap = cap;
-    return 1;
-}
-
-static int fill_rx(void) {
+static int fill_rx(void)
+{
     for (;;) {
-        if (g_rx_len >= g_rx_cap && !rx_reserve(g_rx_cap * 2)) {
-            return 0; /* full; the caller consumes before more fits */
+        uint32_t end =
+            g_rx_off + g_rx_len;
+
+        /*
+         * No free tail left.
+         *
+         * First reclaim bytes already consumed. This is the ONLY normal
+         * memmove in the receive path now.
+         */
+        if (end >= g_rx_cap) {
+            if (g_rx_off > 0) {
+                if (g_rx_len) {
+                    memmove(
+                        g_rx,
+                        g_rx + g_rx_off,
+                        g_rx_len);
+                }
+
+                g_rx_off = 0;
+                end = g_rx_len;
+            }
+
+            /*
+             * Still full: the current incomplete frame genuinely needs a
+             * larger reassembly buffer.
+             */
+            if (end >= g_rx_cap) {
+                uint32_t new_cap =
+                    g_rx_cap
+                        ? g_rx_cap * 2
+                        : RX_INITIAL;
+
+                if (new_cap >
+                    C2S_MAX_PAYLOAD +
+                    sizeof(C2sFrameHeader)) {
+
+                    new_cap =
+                        C2S_MAX_PAYLOAD +
+                        sizeof(C2sFrameHeader);
+                }
+
+                if (new_cap <= g_rx_cap) {
+                    return 0;
+                }
+
+                uint8_t *bigger =
+                    realloc(g_rx, new_cap);
+
+                if (!bigger) {
+                    return 0;
+                }
+
+                g_rx = bigger;
+                g_rx_cap = new_cap;
+                end = g_rx_len;
+            }
         }
-        ssize_t n = recv(g_sock, g_rx + g_rx_len,
-                         g_rx_cap - g_rx_len, MSG_DONTWAIT);
+
+        ssize_t n =
+            recv(
+                g_sock,
+                g_rx + end,
+                g_rx_cap - end,
+                MSG_DONTWAIT);
+
         if (n > 0) {
             g_rx_len += (uint32_t)n;
             g_info.rx_bytes += (uint64_t)n;
             continue;
         }
+
         if (n == 0) {
             errno = 0;
-            return -1; /* clean TCP EOF: the host closed */
+            return -1;
         }
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+
+        if (errno == EAGAIN ||
+            errno == EWOULDBLOCK) {
             return 0;
         }
+
         return -1;
     }
 }
 
-static void consume(uint32_t bytes) {
-    memmove(g_rx, g_rx + bytes, g_rx_len - bytes);
+static void consume(uint32_t bytes)
+{
+    if (bytes > g_rx_len) {
+        bytes = g_rx_len;
+    }
+
+    g_rx_off += bytes;
     g_rx_len -= bytes;
+
+    /*
+     * Canonical empty state.
+     */
+    if (g_rx_len == 0) {
+        g_rx_off = 0;
+    }
 }
 
 static void handle_handshake_reply(void) {
@@ -454,7 +520,11 @@ static void handle_handshake_reply(void) {
         return;
     }
     C2sHelloAck ack;
-    memcpy(&ack, g_rx, sizeof(ack));
+    memcpy(
+        &ack,
+        g_rx + g_rx_off,
+        sizeof(ack));
+
     consume(sizeof(ack));
 
     ack.magic = c2s_le32(ack.magic);
@@ -532,42 +602,59 @@ void net_poll(void) {
     }
 }
 
-int net_take_frame(const uint8_t **payload, uint32_t *size, uint8_t *flags) {
-    if (g_stage != LINK_UP || g_rx_len < sizeof(C2sFrameHeader)) {
+int net_take_frame(const uint8_t **payload,
+                   uint32_t *size,
+                   uint8_t *flags)
+{
+    if (g_stage != LINK_UP ||
+        g_rx_len < sizeof(C2sFrameHeader)) {
         return 0;
     }
+
+    uint8_t *base =
+        g_rx + g_rx_off;
+
     C2sFrameHeader h;
-    memcpy(&h, g_rx, sizeof(h));
-    h.size = c2s_le32(h.size);
+
+    memcpy(
+        &h,
+        base,
+        sizeof(h));
+
+    h.size =
+        c2s_le32(h.size);
 
     if (h.size > C2S_MAX_PAYLOAD) {
-        fail("bad frame size", 0, "stream out of step, reconnecting");
+        fail(
+            "bad frame size",
+            0,
+            "stream out of step, reconnecting");
+
         return 0;
     }
-    if (!rx_reserve((uint32_t)sizeof(h) + h.size)) {
-        fail("frame too large", 0, "a %u-byte frame does not fit", h.size);
+
+    const uint32_t total =
+        (uint32_t)sizeof(h) +
+        h.size;
+
+    if (g_rx_len < total) {
         return 0;
     }
-    if (g_rx_len < sizeof(h) + h.size) {
-        return 0; /* still arriving */
-    }
 
-    if (h.size > g_scratch_cap) {
-        uint8_t *bigger = realloc(g_scratch, h.size);
-        if (!bigger) {
-            return 0;
-        }
-        g_scratch = bigger;
-        g_scratch_cap = h.size;
-    }
-    if (h.size) {
-        memcpy(g_scratch, g_rx + sizeof(h), h.size);
-    }
-    consume((uint32_t)sizeof(h) + h.size);
+    /*
+     * Zero-copy parser.
+     *
+     * The caller consumes payload before asking for the next message,
+     * exactly matching net.h's "valid until the next call" contract.
+     */
+    *payload =
+        base + sizeof(h);
 
-    *payload = g_scratch;
     *size = h.size;
     *flags = h.flags;
+
+    consume(total);
+
     return h.type;
 }
 
