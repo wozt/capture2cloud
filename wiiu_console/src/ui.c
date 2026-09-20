@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "gx2_video.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,6 +27,15 @@ static SDL_Texture *g_video_texture;
 static int g_video_width;
 static int g_video_height;
 static int g_video_update_error_logged;
+
+/*
+ * Preferred path.
+ *
+ * SDL remains responsible for the window, text, touch and presentation,
+ * but raw GX2 draws the NV12 picture between two SDL batches.
+ */
+static int g_gx2_video_ready;
+static int g_gx2_video_failure_logged;
 
 /*
  * Rendered strings, kept.
@@ -147,6 +157,21 @@ int ui_init(char *why, size_t why_size)
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
 
     /*
+     * SDL has initialized GX2 by this point, which is exactly when the
+     * raw NV12 renderer can safely allocate its shaders and buffers.
+     */
+    g_gx2_video_ready =
+        gx2_video_init() == 0;
+
+    g_gx2_video_failure_logged = 0;
+
+    WHBLogPrintf(
+        "ui video: %s",
+        g_gx2_video_ready
+            ? "direct GX2 NV12 enabled"
+            : "GX2 unavailable; SDL YUV fallback");
+
+    /*
      * The console's own font, out of shared memory.
      *
      * Every Wii U has it, so nothing has to be shipped beside the .rpx
@@ -182,6 +207,13 @@ int ui_init(char *why, size_t why_size)
 
 void ui_shutdown(void)
 {
+    /*
+     * Raw GX2 resources must disappear while SDL/GX2 still exists.
+     */
+    gx2_video_shutdown();
+    g_gx2_video_ready = 0;
+    g_gx2_video_failure_logged = 0;
+
     if (g_video_texture) {
         SDL_DestroyTexture(g_video_texture);
         g_video_texture = NULL;
@@ -337,26 +369,62 @@ int ui_video_update_nv12(const uint8_t *luma,
         return -1;
     }
 
+    g_video_width = width;
+    g_video_height = height;
+
+    /*
+     * Preferred path:
+     *
+     * NV12 -> two GX2 textures -> shader -> RGB on GPU.
+     */
+    if (g_gx2_video_ready) {
+        if (gx2_video_update(
+                luma,
+                chroma,
+                stride,
+                width,
+                height) == 0) {
+            return 0;
+        }
+
+        /*
+         * Don't turn one GX2 problem into a black screen. The old path
+         * remains available while we bring this up on real hardware.
+         */
+        if (!g_gx2_video_failure_logged) {
+            WHBLogPrintf(
+                "ui video: GX2 update failed; switching to SDL fallback");
+
+            g_gx2_video_failure_logged = 1;
+        }
+
+        gx2_video_shutdown();
+        g_gx2_video_ready = 0;
+    }
+
+    /*
+     * Bring-up / emergency fallback only.
+     */
     if (ensure_video_texture(width, height) != 0) {
         return -1;
     }
 
-    /*
-     * H264DEC's NV12 has the same pitch for Y and interleaved UV.
-     *
-     * SDL deals with the decoder pitch, so there is no row-by-row copy
-     * into a tightly packed temporary buffer here.
-     */
-    if (SDL_UpdateNVTexture(g_video_texture,
-                            NULL,
-                            luma, stride,
-                            chroma, stride) != 0) {
+    if (SDL_UpdateNVTexture(
+            g_video_texture,
+            NULL,
+            luma,
+            stride,
+            chroma,
+            stride) != 0) {
+
         if (!g_video_update_error_logged) {
             WHBLogPrintf(
                 "ui video: SDL_UpdateNVTexture failed: %s",
                 SDL_GetError());
+
             g_video_update_error_logged = 1;
         }
+
         return -1;
     }
 
@@ -365,39 +433,68 @@ int ui_video_update_nv12(const uint8_t *luma,
 
 void ui_video_draw(void)
 {
-    if (!g_video_texture ||
-        g_video_width <= 0 ||
+    if (g_video_width <= 0 ||
         g_video_height <= 0) {
         return;
     }
 
+    if (g_gx2_video_ready) {
+        /*
+         * SDL batches its GX2 commands. Flush the background clear
+         * BEFORE inserting our raw GX2 video draw.
+         *
+         * Any SDL menu/text queued afterwards is then naturally drawn
+         * over the video.
+         */
+        SDL_RenderFlush(g_renderer);
+
+        if (gx2_video_draw(
+                UI_WIDTH,
+                UI_HEIGHT) == 0) {
+            return;
+        }
+    }
+
     /*
-     * Fit rather than stretch.
-     *
-     * 1280x720 naturally fills the screen. Other profiles remain at
-     * their original aspect ratio with black bars where necessary.
+     * Software YUV conversion fallback.
      */
+    if (!g_video_texture) {
+        return;
+    }
+
     SDL_Rect dst;
 
     if ((long long)g_video_width * UI_HEIGHT >
         (long long)g_video_height * UI_WIDTH) {
+
         dst.w = UI_WIDTH;
-        dst.h = (int)((long long)UI_WIDTH *
-                      g_video_height / g_video_width);
+        dst.h =
+            (int)((long long)UI_WIDTH *
+                  g_video_height /
+                  g_video_width);
+
         dst.x = 0;
-        dst.y = (UI_HEIGHT - dst.h) / 2;
+        dst.y =
+            (UI_HEIGHT - dst.h) / 2;
+
     } else {
         dst.h = UI_HEIGHT;
-        dst.w = (int)((long long)UI_HEIGHT *
-                      g_video_width / g_video_height);
-        dst.x = (UI_WIDTH - dst.w) / 2;
+        dst.w =
+            (int)((long long)UI_HEIGHT *
+                  g_video_width /
+                  g_video_height);
+
+        dst.x =
+            (UI_WIDTH - dst.w) / 2;
+
         dst.y = 0;
     }
 
-    SDL_RenderCopy(g_renderer,
-                   g_video_texture,
-                   NULL,
-                   &dst);
+    SDL_RenderCopy(
+        g_renderer,
+        g_video_texture,
+        NULL,
+        &dst);
 }
 
 void ui_present(void)

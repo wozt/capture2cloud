@@ -63,14 +63,14 @@ void ui_present(void);
 /*
  * Video path.
  *
- * H264DEC outputs NV12. The Wii U SDL renderer itself only advertises
- * RGB(A) texture formats, but SDL2 provides a software YUV fallback:
+ * H264DEC outputs NV12.
  *
- *      NV12 -> SDL YUV conversion -> RGB texture -> GX2
+ * Preferred:
  *
- * This gets the real picture on screen first. Once measured, this can
- * be replaced by a direct GX2 Y/UV shader without changing the decoder
- * or network path.
+ *      NV12 -> GX2 R8 + RG8 textures -> GPU YUV shader
+ *
+ * The former SDL software YUV conversion is retained only as a fallback
+ * while the direct path is validated on real hardware.
  *
  * update: upload/convert a newly decoded frame
  * draw:   draw the last uploaded frame, preserving aspect ratio
