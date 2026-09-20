@@ -84,7 +84,7 @@ static void draw_settings(const Settings *s, const char *note, int decoder_ok, c
     }
 
     draw_button(&R_CONNECT, "CONNECT", UI_ACCENT);
-    draw_button(&R_QUIT, "QUIT", UI_DANGER);
+    draw_button(&R_QUIT, "HOME -> EXIT", UI_PANEL);
 
     if (!decoder_ok) {
         ui_text(360, 550, UI_SIZE_BODY, UI_DANGER, "decoder: %s", why);
@@ -110,9 +110,9 @@ static void draw_streaming(const Settings *s, unsigned fps)
     ui_text(40, 30, UI_SIZE_BODY, UI_TEXT, "%s:%u -- %s", host, s->port, info->status);
     ui_text(40, 70, UI_SIZE_BODY, UI_DIM, "stream %ux%u codec %u  %s", info->width, info->height,
             info->video_codec, info->may_control ? "player" : "viewer");
-    ui_text(40, 110, UI_SIZE_BODY, UI_DIM, "decoded %u  waiting %u  errors %u  %u fps", decoded,
+    ui_text(40, 110, UI_SIZE_BODY, UI_DIM, "h264 decoded %u  waiting %u  errors %u  %u fps", decoded,
             empty, errors, fps);
-    ui_text(40, 150, UI_SIZE_BODY, UI_DIM, "rx %llu KiB  step: %s (errno %d)",
+    ui_text(40, 150, UI_SIZE_BODY, UI_DIM, "network rx %llu KiB  step: %s (errno %d)",
             (unsigned long long)(info->rx_bytes / 1024), info->last_step, info->last_errno);
     {
         const uint32_t ip = net_local_ip();
@@ -209,7 +209,8 @@ int main(int argc, char **argv)
                     snprintf(current, sizeof(current), "%u", settings.port);
                     edit_field("port", current, note, sizeof(note), parse_port, &settings.port);
                 } else if (hit(&R_QUIT, in.touch_x, in.touch_y)) {
-                    proc_stop();
+                    snprintf(note, sizeof(note),
+                             "Press HOME, then choose Quitter");
                 } else if (hit(&R_CONNECT, in.touch_x, in.touch_y)) {
                     if (!decoder_ok) {
                         snprintf(note, sizeof(note), "no decoder: %s", decoder_why);

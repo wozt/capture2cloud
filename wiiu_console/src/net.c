@@ -14,8 +14,6 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 
-#include <nn/ac.h>
-
 #include <coreinit/mutex.h>
 #include <coreinit/time.h>
 
@@ -116,56 +114,38 @@ int net_init(void) {
     memset(&g_info, 0, sizeof(g_info));
     g_info.state = NET_IDLE;
     set_status("not connected");
-    note_step("idle", 0);
-
-    g_rx = malloc(RX_INITIAL);
-    if (!g_rx) {
-        set_status("out of memory");
-        return -1;
-    }
-    g_rx_cap = RX_INITIAL;
-
-    OSInitMutex(&g_tx_lock);
-    g_tx_lock_ready = 1;
+    note_step("socket layer ready", 0);
 
     /*
-     * This console may or may not already have a network.
+     * WUT has already initialised the Wii U socket layer before main().
+     * It also starts the normal system network asynchronously.
      *
-     * On the Switch the socket layer is up before main() runs. Here it
-     * depends on how the program was started: launched from the Wii U
-     * Menu, the console is ALREADY connected and asking it to connect
-     * again fails. The first version of this treated that failure as
-     * "no network connection configured" and refused to go on -- on a
-     * console that was online the whole time. Reported from the sofa,
-     * and quite right.
+     * Capture2Cloud therefore does not query nn::ac and does not select
+     * an interface. It simply opens an ordinary socket:
      *
-     * So the return codes are not the test. Having an IP address is.
+     *   native stack                     -> Wi-Fi
+     *   transparent socket shim present -> whatever that shim routes
+     *
+     * The actual local address is obtained with getsockname() once the
+     * socket connects.
      */
-    if (!NNResult_IsSuccess(ACInitialize())) {
-        set_status("cannot start the network layer");
-        note_step("ACInitialize failed", 0);
-        return -1;
-    }
-
-    BOOL connected = FALSE;
-    if (!NNResult_IsSuccess(ACIsApplicationConnected(&connected)) || !connected) {
-        /* Not connected yet: bring the default configuration up. Its
-         * result is not checked either, for the same reason. */
-        ACConfigId config = 0;
-        if (NNResult_IsSuccess(ACGetStartupId(&config))) {
-            ACConnectWithConfigId(config);
-        } else {
-            ACConnect();
-        }
-    }
-
     g_local_ip = 0;
-    if (!NNResult_IsSuccess(ACGetAssignedAddress(&g_local_ip)) || g_local_ip == 0) {
-        set_status("this console is not on a network");
-        note_step("no address assigned", 0);
-        return -1;
+    g_rx_len = 0;
+
+    if (!g_rx) {
+        g_rx = malloc(RX_INITIAL);
+        if (!g_rx) {
+            set_status("out of memory");
+            return -1;
+        }
+        g_rx_cap = RX_INITIAL;
     }
-    note_step("network up", 0);
+
+    if (!g_tx_lock_ready) {
+        OSInitMutex(&g_tx_lock);
+        g_tx_lock_ready = 1;
+    }
+
     return 0;
 }
 
@@ -187,14 +167,18 @@ static void close_socket(void) {
 
 void net_exit(void) {
     close_socket();
+
     free(g_rx);
     g_rx = NULL;
+    g_rx_len = 0;
     g_rx_cap = 0;
+
     free(g_scratch);
     g_scratch = NULL;
     g_scratch_cap = 0;
+
     g_tx_lock_ready = 0;
-    ACFinalize();
+    g_local_ip = 0;
 }
 
 void net_disconnect(void) {
@@ -264,8 +248,8 @@ static int send_message(uint8_t type, uint8_t flags, const void *payload, uint32
     C2sFrameHeader h;
     h.type = type;
     h.flags = flags;
-    h.reserved = 0;
-    h.size = size;
+    h.reserved = c2s_le16(0);
+    h.size = c2s_le32(size);
 
     if (g_tx_lock_ready) OSLockMutex(&g_tx_lock);
     int rc = 0;
@@ -318,8 +302,11 @@ static void begin_connect(void) {
      * live with. Refusing to take more than about a third of a second's
      * worth is what turns a slow link into dropped frames instead of
      * growing lag. */
-    int rcvbuf = 192 * 1024;
-    setsockopt(g_sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    int rcvbuf = 60 * 1024;
+    if (setsockopt(g_sock, SOL_SOCKET, SO_RCVBUF,
+                   &rcvbuf, sizeof(rcvbuf)) != 0) {
+        printf("net: SO_RCVBUF %d refused, errno=%d\n", rcvbuf, errno);
+    }
 
     if (fcntl(g_sock, F_SETFL, fcntl(g_sock, F_GETFL, 0) | O_NONBLOCK) != 0) {
         fail("fcntl O_NONBLOCK", errno, "could not set the socket non-blocking");
@@ -370,12 +357,30 @@ static void finish_connect(void) {
         return;
     }
 
+    /*
+     * Ask the socket itself which local address it is using.
+     *
+     * This deliberately contains no knowledge of Wi-Fi, USB Ethernet or
+     * any shim. A native socket reports the native address; an
+     * intercepted socket reports whatever address its socket
+     * implementation exposes.
+     */
+    {
+        struct sockaddr_in local;
+        socklen_t local_len = sizeof(local);
+        memset(&local, 0, sizeof(local));
+        if (getsockname(g_sock, (struct sockaddr *)&local, &local_len) == 0 &&
+            local.sin_family == AF_INET) {
+            g_local_ip = ntohl(local.sin_addr.s_addr);
+        }
+    }
+
     uint8_t token_len = (uint8_t)strlen(g_token);
     C2sHello hello;
-    hello.magic = C2S_MAGIC;
+    hello.magic = c2s_le32(C2S_MAGIC);
     hello.version = C2S_VERSION;
     hello.token_len = token_len;
-    hello.reserved = 0;
+    hello.reserved = c2s_le16(0);
     if (send_all(&hello, sizeof(hello)) != 0 ||
         (token_len && send_all(g_token, token_len) != 0)) {
         fail("sending hello", errno, "the host closed during the handshake");
@@ -412,14 +417,16 @@ static int fill_rx(void) {
         if (g_rx_len >= g_rx_cap && !rx_reserve(g_rx_cap * 2)) {
             return 0; /* full; the caller consumes before more fits */
         }
-        ssize_t n = recv(g_sock, g_rx + g_rx_len, g_rx_cap - g_rx_len, 0);
+        ssize_t n = recv(g_sock, g_rx + g_rx_len,
+                         g_rx_cap - g_rx_len, MSG_DONTWAIT);
         if (n > 0) {
             g_rx_len += (uint32_t)n;
             g_info.rx_bytes += (uint64_t)n;
             continue;
         }
         if (n == 0) {
-            return -1; /* the host closed */
+            errno = 0;
+            return -1; /* clean TCP EOF: the host closed */
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0;
@@ -440,6 +447,11 @@ static void handle_handshake_reply(void) {
     C2sHelloAck ack;
     memcpy(&ack, g_rx, sizeof(ack));
     consume(sizeof(ack));
+
+    ack.magic = c2s_le32(ack.magic);
+    ack.width = c2s_le16(ack.width);
+    ack.height = c2s_le16(ack.height);
+    ack.audio_rate = c2s_le16(ack.audio_rate);
 
     if (ack.magic != C2S_MAGIC) {
         fail("bad reply", 0, "whatever is on port %u is not capture2cloud", g_port);
@@ -487,7 +499,12 @@ void net_poll(void) {
     }
 
     if (fill_rx() != 0) {
-        fail("connection lost", errno, "the host closed the connection");
+        const int e = errno;
+        if (e) {
+            fail("recv", e, "receive failed");
+        } else {
+            fail("peer closed", 0, "the host closed the connection");
+        }
         return;
     }
 
@@ -512,6 +529,7 @@ int net_take_frame(const uint8_t **payload, uint32_t *size, uint8_t *flags) {
     }
     C2sFrameHeader h;
     memcpy(&h, g_rx, sizeof(h));
+    h.size = c2s_le32(h.size);
 
     if (h.size > C2S_MAX_PAYLOAD) {
         fail("bad frame size", 0, "stream out of step, reconnecting");
@@ -583,7 +601,12 @@ void net_send_profile(int width, int height, int fps, int bitrate_kbps) {
     if (g_stage != LINK_UP) {
         return;
     }
-    C2sProfile p = {(uint16_t)width, (uint16_t)height, (uint16_t)fps, (uint16_t)bitrate_kbps};
+    C2sProfile p = {
+        c2s_le16((uint16_t)width),
+        c2s_le16((uint16_t)height),
+        c2s_le16((uint16_t)fps),
+        c2s_le16((uint16_t)bitrate_kbps)
+    };
     send_message(C2S_MSG_PROFILE, 0, &p, sizeof(p));
 }
 

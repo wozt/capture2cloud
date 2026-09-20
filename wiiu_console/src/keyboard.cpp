@@ -163,6 +163,16 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
          * key pressed intermittently, or not at all.
          */
         if (verr == VPAD_READ_SUCCESS) {
+            /*
+             * swkbd expects calibrated GamePad touch coordinates.
+             * Physical buttons work without this, which is why the bug
+             * looked like "keyboard works except for touch".
+             */
+            VPADGetTPCalibratedPoint(
+                VPAD_CHAN_0,
+                &vpad.tpNormal,
+                &vpad.tpNormal);
+
             last = vpad;
             have_sample = true;
         }

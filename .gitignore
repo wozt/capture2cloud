@@ -93,4 +93,4 @@ wiiu_console/bringup/*/*.wuhb
 # only; the firmware is Nintendo's and console-specific. Neither belongs
 # in this repository.
 wiiu_ethernet/
-wiiu_ethernet_backup_20260917/
+patch.sh
