@@ -120,6 +120,12 @@ static void draw_streaming(const Settings *s,
     unsigned long audio_failed = 0;
     unsigned long audio_dropped = 0;
 
+    AudioDiag audio_diag_now;
+    memset(
+        &audio_diag_now,
+        0,
+        sizeof(audio_diag_now));
+
     uint32_t present_avg_us = 0;
     uint32_t present_max_us = 0;
 
@@ -129,6 +135,9 @@ static void draw_streaming(const Settings *s,
     audio_stats(NULL,
                 &audio_failed,
                 &audio_dropped);
+
+    audio_diag(
+        &audio_diag_now);
 
     ui_present_stats(
         &present_avg_us,
@@ -183,6 +192,18 @@ static void draw_streaming(const Settings *s,
 
     ui_text(
         180, 545,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "AIN %u | AX %u | USE %u | CB %u | under %u | %s",
+        audio_diag_now.input_fps,
+        audio_diag_now.device_fps,
+        audio_diag_now.used_fps,
+        audio_diag_now.callback_frames,
+        audio_diag_now.underruns,
+        info->audio_udp ? "UDP" : "TCP");
+
+    ui_text(
+        180, 585,
         UI_SIZE_BODY,
         UI_DIM,
         "decoder err %u empty %u | present max %u.%u ms",
