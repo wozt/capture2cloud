@@ -34,6 +34,19 @@ static TTF_Font     *g_title;
  * SDL_UpdateNVTexture().
  */
 static SDL_Texture *g_video_texture;
+
+/*
+ * GX2 state handoff target.
+ *
+ * Our zero-copy video renderer uses GX2 directly, outside SDL.
+ * SDL's Wii U renderer caches shaders/textures/state and otherwise does
+ * not know that gx2_video_draw() changed them.
+ *
+ * Switching briefly to this tiny render target and back makes SDL call
+ * its SetRenderTarget backend, which restores SDL's GX2ContextState.
+ */
+static SDL_Texture *g_state_reset_target;
+
 static int g_video_width;
 static int g_video_height;
 static int g_video_update_error_logged;
@@ -169,6 +182,23 @@ int ui_init(char *why, size_t why_size)
     }
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
 
+    g_state_reset_target =
+        SDL_CreateTexture(
+            g_renderer,
+            SDL_PIXELFORMAT_RGBA8888,
+            SDL_TEXTUREACCESS_TARGET,
+            1,
+            1);
+
+    if (!g_state_reset_target) {
+        WHBLogPrintf(
+            "ui: GX2 state reset target unavailable: %s",
+            SDL_GetError());
+    } else {
+        WHBLogPrintf(
+            "ui: GX2/SDL state handoff enabled");
+    }
+
     /*
      * SDL has initialized GX2 by this point, which is exactly when the
      * raw NV12 renderer can safely allocate its shaders and buffers.
@@ -244,6 +274,12 @@ void ui_shutdown(void)
         SDL_DestroyTexture(g_video_texture);
         g_video_texture = NULL;
     }
+
+    if (g_state_reset_target) {
+        SDL_DestroyTexture(g_state_reset_target);
+        g_state_reset_target = NULL;
+    }
+
     g_video_width = 0;
     g_video_height = 0;
     g_video_update_error_logged = 0;
@@ -477,6 +513,42 @@ void ui_video_draw(void)
         if (gx2_video_draw(
                 UI_WIDTH,
                 UI_HEIGHT) == 0) {
+
+            /*
+             * IMPORTANT:
+             *
+             * gx2_video_draw() changed shaders, textures, samplers and
+             * several GX2 states behind SDL's back.
+             *
+             * SDL's Wii U backend caches those states and can otherwise
+             * believe its text texture is still bound. The visible
+             * symptom is a text-sized rectangle sampling the edge of the
+             * video -- notably the bottom-right video pixel.
+             *
+             * SDL_SetRenderTarget() calls the Wii U backend's
+             * WIIU_SDL_SetRenderTarget(), which restores SDL's saved
+             * GX2ContextState. Switching back also restores the window
+             * viewport/clip state through SDL itself.
+             */
+            if (g_state_reset_target) {
+                if (SDL_SetRenderTarget(
+                        g_renderer,
+                        g_state_reset_target) != 0) {
+
+                    WHBLogPrintf(
+                        "ui: SDL state handoff begin failed: %s",
+                        SDL_GetError());
+
+                } else if (SDL_SetRenderTarget(
+                               g_renderer,
+                               NULL) != 0) {
+
+                    WHBLogPrintf(
+                        "ui: SDL state handoff end failed: %s",
+                        SDL_GetError());
+                }
+            }
+
             return;
         }
     }
