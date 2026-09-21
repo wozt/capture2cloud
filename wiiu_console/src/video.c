@@ -22,7 +22,7 @@
  *    success. Low-byte status values such as 0xE4 are normal.
  */
 #define DEC_ALIGN 0x400
-#define FRAME_BUFFERS 2
+#define FRAME_BUFFERS 3
 
 #define DEC_PROFILE 100
 #define DEC_LEVEL   40
