@@ -226,7 +226,18 @@ static int open_capture_window(void) {
         fprintf(stderr, "show capture: no video (%s)\n", SDL_GetError());
         return -1;
     }
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "1");
+    /*
+     * IMPORTANT:
+     *
+     * The local preview lives in the SAME loop as V4L2 capture.
+     * A vsynced SDL_RenderPresent() therefore does not merely delay the
+     * preview: it prevents us from returning to VIDIOC_DQBUF for the
+     * next capture frame.
+     *
+     * The capture card already paces us at 60 Hz. The preview must be a
+     * consumer of that cadence, never its clock.
+     */
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
     g_window = SDL_CreateWindow(APP_NAME, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                 (int)g_app.width, (int)g_app.height,
                                 /* Decorated, like any other window: close, minimise
@@ -255,16 +266,16 @@ static int open_capture_window(void) {
         }
     }
 
-    g_renderer = SDL_CreateRenderer(g_window, -1,
-                                    SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!g_renderer) {
-        /* Falling back without vsync means the local window WILL tear --
-         * worth saying out loud rather than leaving it to be discovered
-         * by looking at the picture. */
-        fprintf(stderr, "SDL: vsync unavailable (%s), falling back -- the local window may tear\n",
-                SDL_GetError());
-        g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
-    }
+    /*
+     * No PRESENTVSYNC here.
+     *
+     * Remote streaming is the timing-critical output. If the desktop
+     * compositor needs to delay the preview, it must not stall capture.
+     */
+    g_renderer = SDL_CreateRenderer(
+        g_window,
+        -1,
+        SDL_RENDERER_ACCELERATED);
     if (!g_renderer) {
         fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
         SDL_DestroyWindow(g_window);
@@ -273,7 +284,9 @@ static int open_capture_window(void) {
     }
     SDL_RendererInfo info;
     if (SDL_GetRendererInfo(g_renderer, &info) == 0) {
-        fprintf(stderr, "SDL: renderer '%s', vsync %s\n", info.name,
+        fprintf(stderr,
+                "SDL: renderer '%s', preview vsync %s (capture is never paced by preview)\n",
+                info.name,
                 (info.flags & SDL_RENDERER_PRESENTVSYNC) ? "ON" : "OFF");
     }
     return 0;
