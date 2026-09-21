@@ -6,8 +6,10 @@
 
 #include <coreinit/condition.h>
 #include <coreinit/core.h>
+#include <coreinit/event.h>
 #include <coreinit/mutex.h>
 #include <coreinit/thread.h>
+#include <coreinit/time.h>
 #include <whb/log.h>
 
 /*
@@ -32,6 +34,7 @@ static uint8_t g_stack[VIDEO_WORKER_STACK_SIZE]
 
 static OSMutex g_mutex;
 static OSCondition g_cond;
+static OSEvent g_frame_event;
 
 static VideoPacket g_packets[VIDEO_PACKET_SLOTS];
 
@@ -100,15 +103,23 @@ static int worker_entry(int argc, const char **argv)
             g_count--;
         }
 
+        int signal_frame = 0;
+
         if (rc == 1) {
             g_latest = frame;
             g_latest_sequence++;
             g_decoded++;
+            signal_frame = 1;
         } else if (rc < 0) {
             g_errors++;
         }
 
         OSUnlockMutex(&g_mutex);
+
+        if (signal_frame) {
+            OSSignalEvent(
+                &g_frame_event);
+        }
     }
 
     WHBLogPrintf("video worker: stopped");
@@ -145,6 +156,16 @@ int video_worker_start(char *why, size_t why_size)
 
     OSInitMutex(&g_mutex);
     OSInitCond(&g_cond);
+
+    /*
+     * Manual-reset so video_worker_take() can clear it while holding
+     * g_mutex. That avoids losing a signal between taking one frame and
+     * the decoder publishing the next.
+     */
+    OSInitEvent(
+        &g_frame_event,
+        FALSE,
+        OS_EVENT_MODE_MANUAL);
 
     /*
      * Keep the H264 worker off:
@@ -312,9 +333,50 @@ int video_worker_take(VideoFrame *out)
     g_taken_sequence =
         g_latest_sequence;
 
+    OSResetEvent(
+        &g_frame_event);
+
     OSUnlockMutex(&g_mutex);
 
     return 1;
+}
+
+
+int video_worker_take_wait(VideoFrame *out,
+                           uint32_t timeout_us)
+{
+    if (video_worker_take(out)) {
+        return 1;
+    }
+
+    if (!g_started ||
+        !timeout_us) {
+        return 0;
+    }
+
+    /*
+     * g_count includes the packet currently being decoded, because its
+     * queue slot is released only after H264DEC returns.
+     */
+    OSLockMutex(&g_mutex);
+
+    const int decoder_busy =
+        g_count != 0;
+
+    OSUnlockMutex(&g_mutex);
+
+    if (!decoder_busy) {
+        return 0;
+    }
+
+    if (!OSWaitEventWithTimeout(
+            &g_frame_event,
+            OSMicrosecondsToTicks(
+                timeout_us))) {
+        return 0;
+    }
+
+    return video_worker_take(out);
 }
 
 
