@@ -23,6 +23,16 @@ void audio_stats(unsigned long *packets,
                  unsigned long *failed,
                  unsigned long *dropped);
 
+typedef struct {
+    unsigned input_fps;
+    unsigned device_fps;
+    unsigned used_fps;
+    unsigned callback_frames;
+    unsigned underruns;
+} AudioDiag;
+
+void audio_diag(AudioDiag *diag);
+
 unsigned audio_queue_ms(void);
 
 #ifdef __cplusplus
