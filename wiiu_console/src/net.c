@@ -58,6 +58,17 @@ typedef enum {
 } LinkStage;
 
 static int g_sock = -1;
+
+/* Dedicated raw PCM UDP socket. */
+static int g_audio_sock = -1;
+
+static uint8_t g_audio_packet[
+    sizeof(C2sPcmUdpHeader) +
+    C2S_PCM_UDP_MAX_FRAMES * 4u];
+
+static uint32_t g_audio_expected_sequence;
+static int g_audio_have_sequence;
+
 static LinkStage g_stage = LINK_NONE;
 static NetInfo g_info;
 
@@ -118,6 +129,79 @@ static OSMutex g_tx_lock;
 static uint32_t g_local_ip;
 static int g_tx_lock_ready = 0;
 
+
+static void close_audio_socket(void)
+{
+    if (g_audio_sock >= 0) {
+        close(g_audio_sock);
+        g_audio_sock = -1;
+    }
+
+    g_audio_expected_sequence = 0;
+    g_audio_have_sequence = 0;
+}
+
+
+static int open_audio_socket(void)
+{
+    if (g_audio_sock >= 0) {
+        return 0;
+    }
+
+    g_audio_sock =
+        socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (g_audio_sock < 0) {
+        return -1;
+    }
+
+    int rcvbuf = 64 * 1024;
+
+    (void)setsockopt(
+        g_audio_sock,
+        SOL_SOCKET,
+        SO_RCVBUF,
+        &rcvbuf,
+        sizeof(rcvbuf));
+
+    const int flags =
+        fcntl(g_audio_sock, F_GETFL, 0);
+
+    if (flags < 0 ||
+        fcntl(
+            g_audio_sock,
+            F_SETFL,
+            flags | O_NONBLOCK) != 0) {
+
+        close_audio_socket();
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+
+    addr.sin_family =
+        AF_INET;
+
+    addr.sin_addr.s_addr =
+        htonl(INADDR_ANY);
+
+    addr.sin_port =
+        htons(C2S_WIIU_AUDIO_PORT);
+
+    if (bind(
+            g_audio_sock,
+            (struct sockaddr *)&addr,
+            sizeof(addr)) != 0) {
+
+        close_audio_socket();
+        return -1;
+    }
+
+    return 0;
+}
+
+
 int net_init(void) {
     memset(&g_info, 0, sizeof(g_info));
     g_info.state = NET_IDLE;
@@ -155,6 +239,11 @@ int net_init(void) {
         g_tx_lock_ready = 1;
     }
 
+    /*
+     * Failure is non-fatal: server can keep TCP PCM fallback.
+     */
+    (void)open_audio_socket();
+
     return 0;
 }
 
@@ -186,6 +275,7 @@ static void close_socket(void) {
 
 void net_exit(void) {
     close_socket();
+    close_audio_socket();
 
     free(g_rx);
     g_rx = NULL;
@@ -200,6 +290,7 @@ void net_exit(void) {
 void net_disconnect(void) {
     g_want_connection = 0;
     close_socket();
+    close_audio_socket();
     g_info.state = NET_IDLE;
     set_status("not connected");
     note_step("disconnected by the user", 0);
@@ -211,7 +302,16 @@ void net_connect(const char *host, uint16_t port, const char *token) {
     snprintf(g_token, sizeof(g_token), "%s", token ? token : "");
     g_want_connection = 1;
     g_next_retry_ms = 0;
+
     close_socket();
+
+    /*
+     * Menu reconnects do not call net_init() again.
+     */
+    if (g_audio_sock < 0) {
+        (void)open_audio_socket();
+    }
+
     g_info.state = NET_IDLE;
     /* Cleared, not carried over: until the new handshake answers, what
      * this connection is allowed to do is unknown, and the menu was
@@ -403,9 +503,16 @@ static void finish_connect(void) {
      * Older hosts simply see a non-zero reserved field and continue to
      * answer Opus; the reply's audio_codec tells us what was negotiated.
      */
+    uint16_t audio_caps =
+        C2S_HELLO_CAP_PCM_S16LE;
+
+    if (g_audio_sock >= 0) {
+        audio_caps |=
+            C2S_HELLO_CAP_PCM_UDP;
+    }
+
     hello.reserved =
-        c2s_le16(
-            C2S_HELLO_CAP_PCM_S16LE);
+        c2s_le16(audio_caps);
     if (send_all(&hello, sizeof(hello)) != 0 ||
         (token_len && send_all(g_token, token_len) != 0)) {
         fail("sending hello", errno, "the host closed during the handshake");
@@ -560,10 +667,21 @@ static void handle_handshake_reply(void) {
     g_info.height = ack.height;
     g_info.video_codec = ack.video_codec;
     g_info.audio_codec = ack.audio_codec;
+
+    g_info.audio_udp =
+        ack.audio_codec ==
+            C2S_CODEC_PCM_S16LE &&
+        (ack.reserved &
+         C2S_ACK_FLAG_PCM_UDP) != 0;
+
     g_info.audio_rate = ack.audio_rate;
     g_info.audio_channels = ack.audio_channels;
     g_info.state = NET_CONNECTED;
     g_stage = LINK_UP;
+
+    g_audio_expected_sequence = 0;
+    g_audio_have_sequence = 0;
+
     g_last_ping_ms = now_ms();
     set_status("%ux%u, %s", ack.width, ack.height,
                ack.may_control ? "player" : "viewer (input ignored)");
@@ -667,6 +785,109 @@ int net_take_frame(const uint8_t **payload,
 
     return h.type;
 }
+
+int net_take_audio(const uint8_t **payload,
+                   uint32_t *size)
+{
+    if (!payload ||
+        !size ||
+        g_audio_sock < 0 ||
+        g_stage != LINK_UP ||
+        !g_info.audio_udp) {
+
+        return 0;
+    }
+
+    for (;;) {
+        struct sockaddr_in from;
+        socklen_t from_len =
+            sizeof(from);
+
+        const ssize_t n =
+            recvfrom(
+                g_audio_sock,
+                g_audio_packet,
+                sizeof(g_audio_packet),
+                MSG_DONTWAIT,
+                (struct sockaddr *)&from,
+                &from_len);
+
+        if (n < 0) {
+            if (errno == EAGAIN ||
+                errno == EWOULDBLOCK) {
+                return 0;
+            }
+
+            return 0;
+        }
+
+        if ((size_t)n <
+            sizeof(C2sPcmUdpHeader)) {
+            continue;
+        }
+
+        C2sPcmUdpHeader h;
+
+        memcpy(&h, g_audio_packet, sizeof(h));
+
+        h.magic =
+            c2s_le32(h.magic);
+
+        h.sequence =
+            c2s_le32(h.sequence);
+
+        h.frames =
+            c2s_le16(h.frames);
+
+        if (h.magic != C2S_PCM_UDP_MAGIC ||
+            h.frames == 0 ||
+            h.frames >
+                C2S_PCM_UDP_MAX_FRAMES) {
+            continue;
+        }
+
+        const uint32_t pcm_bytes =
+            (uint32_t)h.frames * 4u;
+
+        if ((size_t)n !=
+            sizeof(C2sPcmUdpHeader) +
+            pcm_bytes) {
+            continue;
+        }
+
+        if (g_audio_have_sequence) {
+            const int32_t delta =
+                (int32_t)(
+                    h.sequence -
+                    g_audio_expected_sequence);
+
+            /*
+             * Duplicate or late packet.
+             */
+            if (delta < 0) {
+                continue;
+            }
+        }
+
+        g_audio_expected_sequence =
+            h.sequence + 1u;
+
+        g_audio_have_sequence = 1;
+
+        g_info.rx_bytes +=
+            (uint64_t)n;
+
+        *payload =
+            g_audio_packet +
+            sizeof(C2sPcmUdpHeader);
+
+        *size =
+            pcm_bytes;
+
+        return 1;
+    }
+}
+
 
 void net_send_input(const PadState21 pad) {
     if (g_stage != LINK_UP || !g_info.may_control) {

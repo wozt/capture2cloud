@@ -1,34 +1,27 @@
 #include "audio.h"
 #include "c2s_protocol.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <SDL2/SDL.h>
 #include <whb/log.h>
 
-/*
- * Wii U console audio path:
- *
- *   host capture PCM S16LE
- *       -> TCP
- *       -> this ring
- *       -> SDL / AX
- *
- * No Opus encoder or decoder exists in this path.
- */
-
 #define AUDIO_RING_FRAMES 8192
 
-#define AUDIO_START_MS  25
-#define AUDIO_TARGET_MS 40
-#define AUDIO_LOW_MS    25
-#define AUDIO_HIGH_MS   55
+#define AUDIO_TARGET_MS       25
+#define AUDIO_MARGIN_MS        5
+#define AUDIO_HARD_EXTRA_MS   30
+
+#define AUDIO_PPM_PER_FRAME    4
+#define AUDIO_MAX_PPM       5000
+#define AUDIO_SLEW_PPM        20
+
+#define PHASE_ONE (UINT64_C(1) << 32)
 
 static SDL_AudioDeviceID g_device;
-
 static int g_rate = 48000;
-static int g_channels = 2;
 
 static int16_t g_ring[AUDIO_RING_FRAMES * 2];
 
@@ -36,33 +29,63 @@ static uint32_t g_head;
 static uint32_t g_tail;
 static uint32_t g_count;
 
-static int g_playing;
+static uint32_t g_callback_frames;
 
-/*
- * -1 = consume one source frame less per callback
- *  0 = exact 1:1
- * +1 = consume one source frame more per callback
- *
- * At a normal 512-frame callback this is only ~0.195 % correction.
- * Hysteresis means it does not jump back and forth every callback.
- */
-static int g_drift_mode;
+static int g_playing;
+static uint64_t g_phase;
+static int32_t g_ratio_ppm;
 
 static unsigned long g_packets;
 static unsigned long g_failed;
 static unsigned long g_dropped;
 
 
-static int16_t ring_sample(uint32_t offset,
-                           int channel)
+static int clamp_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+
+static uint32_t target_frames(void)
+{
+    uint32_t target =
+        (uint32_t)(
+            (uint64_t)g_rate *
+            AUDIO_TARGET_MS /
+            1000u);
+
+    if (g_callback_frames) {
+        const uint32_t minimum =
+            g_callback_frames +
+            (uint32_t)(
+                (uint64_t)g_rate *
+                AUDIO_MARGIN_MS /
+                1000u);
+
+        if (target < minimum) {
+            target = minimum;
+        }
+    }
+
+    if (target > AUDIO_RING_FRAMES / 2u) {
+        target = AUDIO_RING_FRAMES / 2u;
+    }
+
+    return target;
+}
+
+
+static int16_t sample_at(uint32_t offset,
+                         int channel)
 {
     const uint32_t frame =
         (g_tail + offset) %
         AUDIO_RING_FRAMES;
 
     return g_ring[
-        (size_t)frame *
-        (size_t)g_channels +
+        (size_t)frame * 2u +
         (size_t)channel];
 }
 
@@ -73,190 +96,157 @@ static void audio_callback(void *userdata,
 {
     (void)userdata;
 
-    memset(
-        stream,
-        0,
-        (size_t)len);
-
-    if (g_rate <= 0 ||
-        g_channels != 2) {
-        return;
-    }
+    memset(stream, 0, (size_t)len);
 
     const uint32_t out_frames =
         (uint32_t)len /
-        ((uint32_t)sizeof(int16_t) * 2u);
+        (sizeof(int16_t) * 2u);
 
-    if (!out_frames) {
+    if (!out_frames ||
+        g_rate <= 0) {
         return;
     }
 
-    const uint32_t start_frames =
-        (uint32_t)(
-            (uint64_t)g_rate *
-            AUDIO_START_MS /
-            1000u);
+    g_callback_frames =
+        out_frames;
 
-    const uint32_t target_frames =
-        (uint32_t)(
-            (uint64_t)g_rate *
-            AUDIO_TARGET_MS /
-            1000u);
-
-    const uint32_t low_frames =
-        (uint32_t)(
-            (uint64_t)g_rate *
-            AUDIO_LOW_MS /
-            1000u);
-
-    const uint32_t high_frames =
-        (uint32_t)(
-            (uint64_t)g_rate *
-            AUDIO_HIGH_MS /
-            1000u);
+    const uint32_t target =
+        target_frames();
 
     if (!g_playing) {
-        if (g_count < start_frames) {
+        if (g_count < target) {
             return;
         }
 
         g_playing = 1;
-        g_drift_mode = 0;
+        g_phase = 0;
+        g_ratio_ppm = 0;
     }
 
     /*
-     * Wide hysteresis:
-     *
-     * enter correction only outside 25..55 ms,
-     * leave it again around the 40 ms target.
+     * Queue depth controls a real continuous source-rate ratio.
+     * Unlike the old +/-1 frame per callback scheme, correction strength
+     * does not depend on SDL's callback size.
      */
-    if (g_drift_mode == 0) {
-        if (g_count > high_frames) {
-            g_drift_mode = 1;
-        } else if (g_count < low_frames) {
-            g_drift_mode = -1;
-        }
+    const int error =
+        (int)g_count -
+        (int)target;
 
-    } else if (g_drift_mode > 0) {
-        if (g_count <= target_frames) {
-            g_drift_mode = 0;
-        }
+    int wanted_ppm =
+        error *
+        AUDIO_PPM_PER_FRAME;
 
-    } else {
-        if (g_count >= target_frames) {
-            g_drift_mode = 0;
-        }
-    }
+    wanted_ppm =
+        clamp_int(
+            wanted_ppm,
+            -AUDIO_MAX_PPM,
+            AUDIO_MAX_PPM);
 
-    int consume =
-        (int)out_frames +
-        g_drift_mode;
+    int delta =
+        wanted_ppm -
+        g_ratio_ppm;
 
-    if (consume < 2) {
-        consume = 2;
-    }
+    delta =
+        clamp_int(
+            delta,
+            -AUDIO_SLEW_PPM,
+            AUDIO_SLEW_PPM);
 
-    if (g_count <
-        (uint32_t)consume) {
+    g_ratio_ppm += delta;
 
-        /*
-         * A real underrun: output silence until a short clean buffer has
-         * formed again.
-         */
+    const int64_t correction =
+        ((int64_t)PHASE_ONE *
+         g_ratio_ppm) /
+        1000000ll;
+
+    const uint64_t step =
+        (uint64_t)(
+            (int64_t)PHASE_ONE +
+            correction);
+
+    const uint64_t last =
+        g_phase +
+        step *
+        (uint64_t)(
+            out_frames - 1u);
+
+    const uint32_t required =
+        (uint32_t)(
+            last >> 32) +
+        2u;
+
+    if (g_count < required) {
         g_playing = 0;
-        g_drift_mode = 0;
+        g_phase = 0;
+        g_ratio_ppm = 0;
         return;
     }
 
     int16_t *out =
         (int16_t *)stream;
 
-    if (out_frames == 1) {
-        out[0] = ring_sample(0, 0);
-        out[1] = ring_sample(0, 1);
+    uint64_t phase =
+        g_phase;
 
-    } else {
-        /*
-         * Map consume input frames onto exactly out_frames output
-         * frames.
-         *
-         * Normal operation:
-         *     512 -> 512
-         *
-         * Clock correction:
-         *     513 -> 512
-         * or  511 -> 512
-         *
-         * The last generated sample lands on the last consumed source
-         * sample, so the next callback continues with the immediately
-         * following source frame rather than restarting a fractional
-         * phase as the old corrector did.
-         */
-        const uint64_t scale =
-            ((uint64_t)(consume - 1) << 16) /
-            (uint64_t)(out_frames - 1);
+    for (uint32_t i = 0;
+         i < out_frames;
+         ++i) {
 
-        for (uint32_t i = 0;
-             i < out_frames;
-             ++i) {
+        const uint32_t a =
+            (uint32_t)(
+                phase >> 32);
 
-            const uint64_t pos =
-                (uint64_t)i *
-                scale;
+        const uint32_t frac =
+            (uint32_t)phase;
 
-            const uint32_t a =
-                (uint32_t)(
-                    pos >> 16);
+        const uint32_t b =
+            a + 1u;
 
-            const uint32_t frac =
-                (uint32_t)(
-                    pos & 0xffffu);
+        for (int ch = 0;
+             ch < 2;
+             ++ch) {
 
-            uint32_t b =
-                a + 1;
+            const int32_t sa =
+                sample_at(a, ch);
 
-            if (b >=
-                (uint32_t)consume) {
-                b =
-                    (uint32_t)consume - 1;
-            }
+            const int32_t sb =
+                sample_at(b, ch);
 
-            for (int ch = 0;
-                 ch < 2;
-                 ++ch) {
-
-                const int32_t sa =
-                    ring_sample(
-                        a,
-                        ch);
-
-                const int32_t sb =
-                    ring_sample(
-                        b,
-                        ch);
-
-                const int32_t mixed =
-                    sa +
-                    (int32_t)(
-                        ((int64_t)(sb - sa) *
-                         (int64_t)frac) >>
-                        16);
-
-                out[
-                    (size_t)i * 2u +
-                    (size_t)ch] =
-                        (int16_t)mixed;
-            }
+            out[
+                (size_t)i * 2u +
+                (size_t)ch] =
+                    (int16_t)(
+                        sa +
+                        (int32_t)(
+                            ((int64_t)
+                                 (sb - sa) *
+                             frac) >>
+                            32));
         }
+
+        phase += step;
+    }
+
+    const uint32_t consumed =
+        (uint32_t)(
+            phase >> 32);
+
+    g_phase =
+        phase &
+        (PHASE_ONE - 1u);
+
+    if (consumed > g_count) {
+        g_playing = 0;
+        g_phase = 0;
+        g_ratio_ppm = 0;
+        return;
     }
 
     g_tail =
-        (g_tail +
-         (uint32_t)consume) %
+        (g_tail + consumed) %
         AUDIO_RING_FRAMES;
 
-    g_count -=
-        (uint32_t)consume;
+    g_count -= consumed;
 }
 
 
@@ -275,14 +265,12 @@ int audio_init(int rate,
 
     if (rate <= 0 ||
         channels != 2) {
-
         if (why && why_size) {
             snprintf(
                 why,
                 why_size,
-                "PCM expects 48k stereo");
+                "PCM expects stereo");
         }
-
         return -1;
     }
 
@@ -295,9 +283,8 @@ int audio_init(int rate,
     want.freq = rate;
     want.format = AUDIO_S16SYS;
     want.channels = 2;
-    want.samples = 512;
+    want.samples = 256;
     want.callback = audio_callback;
-    want.userdata = NULL;
 
     g_device =
         SDL_OpenAudioDevice(
@@ -315,7 +302,6 @@ int audio_init(int rate,
                 "SDL audio: %s",
                 SDL_GetError());
         }
-
         return -1;
     }
 
@@ -333,32 +319,37 @@ int audio_init(int rate,
                 have.format);
         }
 
-        SDL_CloseAudioDevice(
-            g_device);
-
+        SDL_CloseAudioDevice(g_device);
         g_device = 0;
-
         return -1;
     }
 
     g_rate = rate;
-    g_channels = 2;
 
     g_head = 0;
     g_tail = 0;
     g_count = 0;
 
+    g_callback_frames =
+        have.samples;
+
     g_playing = 0;
-    g_drift_mode = 0;
+    g_phase = 0;
+    g_ratio_ppm = 0;
 
     g_packets = 0;
     g_failed = 0;
     g_dropped = 0;
 
     WHBLogPrintf(
-        "audio: raw PCM S16LE -> AX, %dHz stereo samples=%u",
+        "audio: UDP PCM -> AX %dHz samples=%u target=%ums",
         have.freq,
-        have.samples);
+        have.samples,
+        (unsigned)(
+            (uint64_t)
+                target_frames() *
+            1000ull /
+            (uint64_t)g_rate));
 
     SDL_PauseAudioDevice(
         g_device,
@@ -371,13 +362,8 @@ int audio_init(int rate,
 void audio_exit(void)
 {
     if (g_device) {
-        SDL_PauseAudioDevice(
-            g_device,
-            1);
-
-        SDL_CloseAudioDevice(
-            g_device);
-
+        SDL_PauseAudioDevice(g_device, 1);
+        SDL_CloseAudioDevice(g_device);
         g_device = 0;
     }
 
@@ -385,8 +371,11 @@ void audio_exit(void)
     g_tail = 0;
     g_count = 0;
 
+    g_callback_frames = 0;
+
     g_playing = 0;
-    g_drift_mode = 0;
+    g_phase = 0;
+    g_ratio_ppm = 0;
 }
 
 
@@ -399,66 +388,80 @@ void audio_push_pcm_s16le(const uint8_t *data,
         return;
     }
 
-    /*
-     * Stereo, signed 16-bit:
-     *
-     * 4 bytes per PCM frame.
-     */
     if ((size & 3u) != 0) {
         g_failed++;
         return;
     }
 
-    uint32_t frames =
+    const uint32_t frames =
         size / 4u;
 
-    if (!frames) {
+    if (!frames ||
+        frames >
+            C2S_PCM_UDP_MAX_FRAMES) {
+        g_failed++;
         return;
     }
 
-    g_packets++;
+    SDL_LockAudioDevice(g_device);
 
-    /*
-     * Packets are normally 240 frames / 5 ms.
-     * Protect against a malformed giant packet anyway.
-     */
-    if (frames >
-        AUDIO_RING_FRAMES) {
+    const uint32_t target =
+        target_frames();
 
-        const uint32_t skip =
-            frames -
-            AUDIO_RING_FRAMES;
+    uint32_t hard_max =
+        target +
+        (uint32_t)(
+            (uint64_t)g_rate *
+            AUDIO_HARD_EXTRA_MS /
+            1000u);
 
-        data +=
-            (size_t)skip * 4u;
-
-        frames =
-            AUDIO_RING_FRAMES;
-
-        g_dropped++;
+    if (hard_max >
+        AUDIO_RING_FRAMES - frames) {
+        hard_max =
+            AUDIO_RING_FRAMES - frames;
     }
 
-    SDL_LockAudioDevice(
-        g_device);
+    /*
+     * One exceptional live-edge recovery rather than hundreds of tiny
+     * overflow drops.
+     */
+    if (g_count + frames >
+            hard_max &&
+        g_count > target) {
 
-    const uint32_t free_frames =
-        AUDIO_RING_FRAMES -
-        g_count;
-
-    if (frames > free_frames) {
-        /*
-         * Emergency only. Keep the live edge rather than allowing
-         * seconds of stale sound to accumulate.
-         */
         const uint32_t remove =
-            frames -
-            free_frames;
+            g_count -
+            target;
 
         g_tail =
             (g_tail + remove) %
             AUDIO_RING_FRAMES;
 
         g_count -= remove;
+
+        g_phase = 0;
+        g_ratio_ppm = 0;
+
+        g_dropped++;
+    }
+
+    if (frames >
+        AUDIO_RING_FRAMES -
+        g_count) {
+
+        const uint32_t remove =
+            frames -
+            (AUDIO_RING_FRAMES -
+             g_count);
+
+        g_tail =
+            (g_tail + remove) %
+            AUDIO_RING_FRAMES;
+
+        g_count -= remove;
+
+        g_phase = 0;
+        g_ratio_ppm = 0;
 
         g_dropped++;
     }
@@ -477,16 +480,13 @@ void audio_push_pcm_s16le(const uint8_t *data,
 
             const size_t at =
                 ((size_t)i * 2u +
-                 (size_t)ch) * 2u;
+                 ch) *
+                2u;
 
-            /*
-             * Wire is explicitly little-endian.
-             * PPC/Wii U is big-endian, so build the numeric sample
-             * instead of memcpy'ing the bytes into AUDIO_S16SYS.
-             */
             const uint16_t u =
                 (uint16_t)data[at] |
-                ((uint16_t)data[at + 1] << 8);
+                ((uint16_t)data[
+                    at + 1u] << 8);
 
             g_ring[
                 (size_t)dst * 2u +
@@ -499,11 +499,10 @@ void audio_push_pcm_s16le(const uint8_t *data,
         (g_head + frames) %
         AUDIO_RING_FRAMES;
 
-    g_count +=
-        frames;
+    g_count += frames;
+    g_packets++;
 
-    SDL_UnlockAudioDevice(
-        g_device);
+    SDL_UnlockAudioDevice(g_device);
 }
 
 
@@ -532,17 +531,15 @@ unsigned audio_queue_ms(void)
         return 0;
     }
 
-    SDL_LockAudioDevice(
-        g_device);
+    SDL_LockAudioDevice(g_device);
 
     const uint32_t frames =
         g_count;
 
-    SDL_UnlockAudioDevice(
-        g_device);
+    SDL_UnlockAudioDevice(g_device);
 
     return (unsigned)(
-        ((uint64_t)frames *
-         1000ull) /
+        (uint64_t)frames *
+        1000ull /
         (uint64_t)g_rate);
 }

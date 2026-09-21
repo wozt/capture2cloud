@@ -535,6 +535,26 @@ int main(int argc, char **argv)
                 }
             }
         } else {
+            /*
+             * Drain low-latency PCM before processing large H264 TCP
+             * frames.
+             */
+            {
+                const uint8_t *audio_payload;
+                uint32_t audio_size;
+
+                while (net_take_audio(
+                           &audio_payload,
+                           &audio_size)) {
+
+                    if (audio_alive) {
+                        audio_push_pcm_s16le(
+                            audio_payload,
+                            audio_size);
+                    }
+                }
+            }
+
             net_poll();
 
             /*
@@ -549,9 +569,13 @@ int main(int argc, char **argv)
             int kind;
             while ((kind = net_take_frame(&payload, &size, &flags)) != 0) {
                 if (kind == C2S_MSG_AUDIO) {
+                    /*
+                     * TCP PCM is only the compatibility fallback.
+                     */
                     if (audio_alive &&
                         net_info()->audio_codec ==
-                            C2S_CODEC_PCM_S16LE) {
+                            C2S_CODEC_PCM_S16LE &&
+                        !net_info()->audio_udp) {
 
                         audio_push_pcm_s16le(
                             payload,

@@ -178,6 +178,7 @@ typedef struct {
 
     /* This client explicitly negotiated raw S16LE audio. */
     int pcm_audio;
+    int pcm_udp;
 
     /*
      * Native peer IPv4 in network byte order.
@@ -844,10 +845,25 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
                                   uint32_t size)
 {
     if (!s ||
-        s->audio_udp_fd < 0 ||
         !data ||
         !size ||
         (size & 3u) != 0) {
+        return;
+    }
+
+    /*
+     * Compatibility fallback for PCM clients without UDP support.
+     */
+    broadcast_filtered(
+        s,
+        SS_STREAM_WIIU,
+        C2S_MSG_AUDIO,
+        0,
+        data,
+        size,
+        2);
+
+    if (s->audio_udp_fd < 0) {
         return;
     }
 
@@ -859,10 +875,6 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
         return;
     }
 
-    /*
-     * Take a snapshot of the destinations under the client lock, then
-     * perform the UDP sends without holding it.
-     */
     uint32_t peers[SS_MAX_CLIENTS];
     int peer_count = 0;
     uint32_t sequence = 0;
@@ -880,6 +892,7 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
             c->handshake_done &&
             c->on_wiiu_port &&
             c->pcm_audio &&
+            c->pcm_udp &&
             c->peer_ipv4 != 0) {
 
             peers[peer_count++] =
@@ -902,33 +915,25 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
         sizeof(C2sPcmUdpHeader) +
         C2S_PCM_UDP_MAX_FRAMES * 4u];
 
-    C2sPcmUdpHeader header;
+    C2sPcmUdpHeader h;
 
-    header.magic =
+    h.magic =
         c2s_le32(C2S_PCM_UDP_MAGIC);
 
-    header.sequence =
+    h.sequence =
         c2s_le32(sequence);
 
-    header.frames =
+    h.frames =
         c2s_le16((uint16_t)frames);
 
-    header.reserved =
+    h.reserved =
         c2s_le16(0);
 
-    memcpy(
-        packet,
-        &header,
-        sizeof(header));
-
-    memcpy(
-        packet + sizeof(header),
-        data,
-        size);
+    memcpy(packet, &h, sizeof(h));
+    memcpy(packet + sizeof(h), data, size);
 
     const size_t packet_size =
-        sizeof(header) +
-        size;
+        sizeof(h) + size;
 
     for (int i = 0;
          i < peer_count;
@@ -946,12 +951,7 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
         dst.sin_port =
             htons(C2S_WIIU_AUDIO_PORT);
 
-        /*
-         * UDP live audio: if the kernel cannot accept one datagram now,
-         * dropping that 5 ms packet is better than making later audio
-         * wait behind it.
-         */
-        sendto(
+        (void)sendto(
             s->audio_udp_fd,
             packet,
             packet_size,
