@@ -81,7 +81,7 @@ static void draw_settings(const Settings *s, const char *note, int decoder_ok, c
     char host[32];
     settings_host_string(s, host, sizeof(host));
 
-    ui_text(300, 70, UI_SIZE_TITLE, UI_TEXT, "capture2cloud");
+    ui_text(300, 70, UI_SIZE_BODY, UI_TEXT, "capture2cloud");
 
     ui_text(180, 140, UI_SIZE_BODY, UI_DIM, "host");
     ui_box(R_HOST.x, R_HOST.y, R_HOST.w, R_HOST.h, UI_FIELD, UI_DIM);
