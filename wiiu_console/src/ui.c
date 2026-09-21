@@ -11,6 +11,15 @@
 #include <coreinit/time.h>
 #include <whb/log.h>
 
+/*
+ * Benchmark temporaire:
+ *   1 = H264DEC -> SDL_UpdateNVTexture -> SDL_RenderCopy
+ *   0 = H264DEC -> gx2_video zero-copy
+ *
+ * Ne change ni le decodeur H264, ni l'audio AX, ni le reseau.
+ */
+#define UI_FORCE_SDL_VIDEO 1
+
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
 static TTF_Font     *g_body;
@@ -164,8 +173,12 @@ int ui_init(char *why, size_t why_size)
      * SDL has initialized GX2 by this point, which is exactly when the
      * raw NV12 renderer can safely allocate its shaders and buffers.
      */
+#if UI_FORCE_SDL_VIDEO
+    g_gx2_video_ready = 0;
+#else
     g_gx2_video_ready =
         gx2_video_init() == 0;
+#endif
 
     g_gx2_video_failure_logged = 0;
 
@@ -175,9 +188,14 @@ int ui_init(char *why, size_t why_size)
 
     WHBLogPrintf(
         "ui video: %s",
+#if UI_FORCE_SDL_VIDEO
+        "FORCED SDL NV12 benchmark"
+#else
         g_gx2_video_ready
             ? "direct GX2 NV12 enabled"
-            : "GX2 unavailable; SDL YUV fallback");
+            : "GX2 unavailable; SDL YUV fallback"
+#endif
+    );
 
     /*
      * The console's own font, out of shared memory.
@@ -526,9 +544,13 @@ void ui_present(void)
 
 const char *ui_video_renderer_name(void)
 {
+#if UI_FORCE_SDL_VIDEO
+    return "SDL NV12 BENCH";
+#else
     return g_gx2_video_ready
         ? "GX2 zero-copy NV12"
         : "SDL NV12 fallback";
+#endif
 }
 
 void ui_present_stats(uint32_t *avg_us,
