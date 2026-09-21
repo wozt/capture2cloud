@@ -183,6 +183,55 @@ static void edit_password(
 
 
 /*
+ * swkbd owns and modifies raw GX2 state while it is visible.  The Wii U
+ * SDL renderer caches that state internally and has no public way to
+ * invalidate it afterwards.  Recreate the display and controller just as
+ * we already do after the HOME overlay; otherwise cached glyph textures
+ * are drawn with swkbd's colour shader and become solid rectangles.
+ */
+static int rebuild_ui_after_keyboard(
+    int *ui_alive,
+    int *input_alive,
+    const Settings *settings,
+    char *why,
+    size_t why_size)
+{
+    WHBLogPrintf("swkbd: rebuilding SDL/GX2 renderer");
+
+    if (*input_alive) {
+        input_exit();
+        *input_alive = 0;
+    }
+
+    if (*ui_alive) {
+        ui_shutdown();
+        *ui_alive = 0;
+    }
+
+    why[0] = '\0';
+    if (ui_init(why, why_size) != 0) {
+        WHBLogPrintf("swkbd: UI rebuild failed -- %s", why);
+        return -1;
+    }
+    *ui_alive = 1;
+
+    char input_why[96] = { 0 };
+    *input_alive =
+        input_init(input_why, sizeof(input_why)) == 0;
+
+    if (*input_alive) {
+        input_set_config(&settings->input);
+    }
+
+    WHBLogPrintf(
+        "swkbd: renderer rebuilt, input %s",
+        *input_alive ? "ready" : input_why);
+
+    return 0;
+}
+
+
+/*
  * Exchange a password for the host's temporary session token.
  *
  * Returns 1 when connection may continue.
@@ -627,6 +676,14 @@ int main(int argc, char **argv)
                         parse_host,
                         &settings);
 
+                    if (rebuild_ui_after_keyboard(
+                            &ui_alive, &input_alive, &settings,
+                            why, sizeof(why)) != 0) {
+                        proc_stop();
+                        continue;
+                    }
+                    memset(&in, 0, sizeof(in));
+
             } else if (menu_action == MENU_ACTION_NATIVE_PORT) {
 
                     char current[16];
@@ -645,6 +702,14 @@ int main(int argc, char **argv)
                         sizeof(note),
                         parse_port,
                         &settings.port);
+
+                    if (rebuild_ui_after_keyboard(
+                            &ui_alive, &input_alive, &settings,
+                            why, sizeof(why)) != 0) {
+                        proc_stop();
+                        continue;
+                    }
+                    memset(&in, 0, sizeof(in));
 
             } else if (menu_action == MENU_ACTION_WEB_PORT) {
 
@@ -665,12 +730,28 @@ int main(int argc, char **argv)
                         parse_port,
                         &settings.web_port);
 
+                    if (rebuild_ui_after_keyboard(
+                            &ui_alive, &input_alive, &settings,
+                            why, sizeof(why)) != 0) {
+                        proc_stop();
+                        continue;
+                    }
+                    memset(&in, 0, sizeof(in));
+
             } else if (menu_action == MENU_ACTION_PASSWORD) {
 
                     edit_password(
                         password,
                         note,
                         sizeof(note));
+
+                    if (rebuild_ui_after_keyboard(
+                            &ui_alive, &input_alive, &settings,
+                            why, sizeof(why)) != 0) {
+                        proc_stop();
+                        continue;
+                    }
+                    memset(&in, 0, sizeof(in));
 
             } else if (menu_action == MENU_ACTION_REMOTE_HOME ||
                        menu_action == MENU_ACTION_WAKE ||
@@ -1012,6 +1093,14 @@ int main(int argc, char **argv)
                             parse_host,
                             &settings);
 
+                        if (rebuild_ui_after_keyboard(
+                                &ui_alive, &input_alive, &settings,
+                                why, sizeof(why)) != 0) {
+                            proc_stop();
+                            continue;
+                        }
+                        memset(&in, 0, sizeof(in));
+
             } else if (menu_action == MENU_ACTION_NATIVE_PORT) {
 
                         char current[16];
@@ -1030,6 +1119,14 @@ int main(int argc, char **argv)
                             sizeof(note),
                             parse_port,
                             &settings.port);
+
+                        if (rebuild_ui_after_keyboard(
+                                &ui_alive, &input_alive, &settings,
+                                why, sizeof(why)) != 0) {
+                            proc_stop();
+                            continue;
+                        }
+                        memset(&in, 0, sizeof(in));
 
             } else if (menu_action == MENU_ACTION_WEB_PORT) {
 
@@ -1050,12 +1147,28 @@ int main(int argc, char **argv)
                             parse_port,
                             &settings.web_port);
 
+                        if (rebuild_ui_after_keyboard(
+                                &ui_alive, &input_alive, &settings,
+                                why, sizeof(why)) != 0) {
+                            proc_stop();
+                            continue;
+                        }
+                        memset(&in, 0, sizeof(in));
+
             } else if (menu_action == MENU_ACTION_PASSWORD) {
 
                         edit_password(
                             password,
                             note,
                             sizeof(note));
+
+                        if (rebuild_ui_after_keyboard(
+                                &ui_alive, &input_alive, &settings,
+                                why, sizeof(why)) != 0) {
+                            proc_stop();
+                            continue;
+                        }
+                        memset(&in, 0, sizeof(in));
 
             } else if (menu_action == MENU_ACTION_REMOTE_HOME ||
                        menu_action == MENU_ACTION_WAKE ||
