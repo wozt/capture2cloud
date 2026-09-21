@@ -60,6 +60,11 @@ void ui_poll(UiInput *in);
 void ui_begin(void);
 void ui_present(void);
 
+/* Saves the composed frame to the app directory on SD for UI debugging. */
+int ui_debug_capture(unsigned index,
+                     char *path,
+                     size_t path_size);
+
 const char *ui_video_renderer_name(void);
 
 void ui_present_stats(uint32_t *avg_us,

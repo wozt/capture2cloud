@@ -133,6 +133,9 @@ keep up at 1080p60 grows a queue that never drains.
   input is rejected server-side.
 - The touch menu has separate Connection and Console pages. Console
   exposes HOME, wake, adapter reset and host restart with CONTROL gating.
+- Wii U menu drawing uses a reusable `menu.c/.h` component. Backgrounds
+  and text are flushed as separate layers after GX2 video, with automatic
+  BMP captures for the first hardware openings.
 
 ### ProcUI lifecycle
 
