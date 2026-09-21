@@ -35,9 +35,9 @@ needs the password, and that is checked on the host — not hidden in the
 page, where hiding it would mean anyone who opens the developer tools is
 a player.
 
-**Three clients at once.** The browser, an Android app, and a Nintendo
-Switch homebrew, all connected together if you like. Two people can
-watch while a third plays.
+**Four client types.** The browser, Android app, Nintendo Switch
+homebrew and Wii U console homebrew can all use the same host. Watching
+and playing still use the same host-side authentication.
 
 **A window on the machine itself**, with a tray icon and a settings
 window — handy for sharing the screen over Discord, and the only place
@@ -180,21 +180,32 @@ it. A path nobody is on costs nothing.
 
 ---
 
-## The other two clients
+## Native clients
 
-Both skip the browser entirely and read the host's own protocol off a
-socket, which on a local network is the same picture without a jitter
-buffer.
+The native clients skip the browser and speak `c2s_protocol.h` directly.
 
-**`switch_homebrew/`** — H.264 at 720p60, decoded on the console's own
-video engine, with an on-screen touch pad and the same settings as the
-page. Copy the `.nro` to `/switch/` on the SD card.
+**`switch_homebrew/`** — H.264 at 720p60, decoded on the console's video
+engine, with controller and touch input.
 
-**`android/`** — the same stream and the same menu, with hardware
-H.264, Bluetooth and USB-OTG controllers, movable on-screen buttons and
-an automatic bitrate. Install the `.apk` from a release.
+**`android/`** — hardware H.264, Bluetooth/USB controllers, touch
+controls and automatic bitrate.
 
-Both are in every [release](../../releases), built and signed.
+**`wiiu_console/`** — homebrew running directly on a Wii U. The tested
+path is 720p60 H.264 decoded by **H264DEC** and displayed from the NV12
+decode buffers through a custom **GX2 zero-copy** renderer. Raw 48 kHz
+stereo PCM arrives separately over UDP and is played directly through
+**AX**.
+
+The Wii U GamePad sends the same 21-slot controller state as the other
+clients, mapped by physical button position. The menu supports host and
+port configuration, password login through `nn::swkbd`, saved session
+tokens, diagnostics, and **REMOTE HOME** for opening the captured
+console's system menu.
+
+The Wii U client uses **TCP 5083** for H.264/control and **UDP 5084** for
+PCM audio. Authentication uses `/login` on `WEB_PORT` (5080 by default).
+The password itself is never stored; only the temporary session token
+may be saved to SD.
 
 ---
 

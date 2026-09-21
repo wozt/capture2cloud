@@ -1,9 +1,9 @@
 /*
  * capture2cloud on a Wii U console.
  *
- * Connects to the host, decodes with the console's hardware H.264, and
- * draws on the television. Sound, controller input and the password are
- * steps three to five in SPEC.md.
+ * Connects to the host, decodes H.264 with H264DEC, displays its NV12
+ * output directly through GX2, plays PCM through AX, and forwards the
+ * Wii U GamePad to the remote console.
  *
  * Rebuilt on SDL2 after four probes settled the one thing that decides
  * the shape of this program: OSScreen and GX2 cannot both be used. Once
@@ -86,8 +86,12 @@ static const Rect R_CONNECT = {
     275, 215, 220, 46
 };
 
-static const Rect R_QUIT = {
+static const Rect R_REMOTE_HOME = {
     515, 215, 220, 46
+};
+
+static const Rect R_QUIT = {
+    755, 215, 260, 46
 };
 
 static const Rect R_MENU = {
@@ -284,6 +288,17 @@ static void draw_settings(
         &R_CONNECT,
         "CONNECT",
         UI_ACCENT);
+
+    const NetInfo *net =
+        net_info();
+
+    draw_button(
+        &R_REMOTE_HOME,
+        "REMOTE HOME",
+        net->state == NET_CONNECTED &&
+        net->may_control
+            ? UI_ACCENT
+            : UI_PANEL);
 
     draw_button(
         &R_QUIT,
@@ -1013,6 +1028,32 @@ int main(int argc, char **argv)
                         sizeof(note));
 
                 } else if (hit(
+                               &R_REMOTE_HOME,
+                               in.touch_x,
+                               in.touch_y)) {
+
+                    const NetInfo *info =
+                        net_info();
+
+                    if (info->state ==
+                            NET_CONNECTED &&
+                        info->may_control) {
+
+                        net_send_home();
+
+                        snprintf(
+                            note,
+                            sizeof(note),
+                            "remote HOME sent");
+
+                    } else {
+                        snprintf(
+                            note,
+                            sizeof(note),
+                            "remote HOME requires CONTROL");
+                    }
+
+                } else if (hit(
                                &R_QUIT,
                                in.touch_x,
                                in.touch_y)) {
@@ -1343,6 +1384,32 @@ int main(int argc, char **argv)
                             password,
                             note,
                             sizeof(note));
+
+                    } else if (hit(
+                                   &R_REMOTE_HOME,
+                                   in.touch_x,
+                                   in.touch_y)) {
+
+                        const NetInfo *info =
+                            net_info();
+
+                        if (info->state ==
+                                NET_CONNECTED &&
+                            info->may_control) {
+
+                            net_send_home();
+
+                            snprintf(
+                                note,
+                                sizeof(note),
+                                "remote HOME sent");
+
+                        } else {
+                            snprintf(
+                                note,
+                                sizeof(note),
+                                "remote HOME requires CONTROL");
+                        }
 
                     } else if (hit(
                                    &R_CONNECT,
