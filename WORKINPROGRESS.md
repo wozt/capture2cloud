@@ -131,6 +131,8 @@ keep up at 1080p60 grows a queue that never drains.
   stored on SD.
 - A token gives `CONTROL`; otherwise the connection remains a viewer and
   input is rejected server-side.
+- The touch menu has separate Connection and Console pages. Console
+  exposes HOME, wake, adapter reset and host restart with CONTROL gating.
 
 ### ProcUI lifecycle
 

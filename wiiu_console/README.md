@@ -13,15 +13,12 @@ build it and what works so far.
 
 ## What works today
 
-Step one of five: **it connects, it decodes, and it draws on the TV.**
+Validated on Wii U hardware: H.264 video through H264DEC/GX2, PCM audio
+through AX, GamePad input, password login, saved session token and normal
+HOME-menu suspend/resume/exit.
 
-That is all. No sound, no controller input, no menu, no password — those
-are steps two to five in the spec, and each is easier to get right once
-this one is known to work.
-
-> **Not yet run on a console.** It builds; nothing below has been seen on
-> real hardware. Every number in the spec that is measured says so, and
-> none of them came from this client yet.
+The touch menu now separates connection settings from remote-console
+actions. Stream and controller settings are the next UI iterations.
 
 ## Building
 
@@ -41,17 +38,23 @@ which produces `capture2wiiu.rpx`. Copy it to the SD card and launch it
 from the Homebrew Launcher, or send it over the network with
 `wiiload capture2wiiu.rpx`.
 
-## Configuring it
+For the normal development loop, `tools/dev.sh` discovers the Wii U from
+its FTP service, builds the client, starts `udplogserver`, then launches
+the RPX through wiiload:
 
-One line, in [`src/main.c`](src/main.c):
-
-```c
-#define HOST_ADDRESS "192.168.1.10"
+```sh
+./tools/dev.sh
 ```
 
-Reading it from the SD card comes with step four, along with the
-password. Until then the address is compiled in, so there is exactly one
-thing to edit.
+The persistent WUHB lives at
+`sd:/wiiu/apps/capture2cloud/capture2wiiu.wuhb`. Client-only updates do
+not require a console reboot.
+
+## Configuring it
+
+Host, native port, web/login port and the temporary session token are
+stored in `sd:/wiiu/apps/capture2cloud/capture2cloud.cfg`. The password
+is entered with the Wii U keyboard and is never stored.
 
 ## How the picture gets there
 
