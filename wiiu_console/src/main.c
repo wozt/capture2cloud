@@ -42,6 +42,12 @@
 #define MAX_WIDTH  1280
 #define MAX_HEIGHT 720
 
+/*
+ * The password exists only in RAM long enough to exchange it for a
+ * session token. It is never written to the SD card.
+ */
+#define PASSWORD_CAP 96
+
 typedef enum { STATE_SETTINGS, STATE_STREAMING } State;
 
 typedef struct {
@@ -60,11 +66,34 @@ typedef struct {
     unsigned video_dropped;
 } StreamPerf;
 
-static const Rect R_HOST    = { 300, 125, 520, 54 };
-static const Rect R_PORT    = { 300, 195, 220, 54 };
-static const Rect R_CONNECT = { 300, 270, 220, 58 };
-static const Rect R_QUIT    = { 540, 270, 280, 58 };
-static const Rect R_MENU    = { 1248,   8, 24, 24 };
+static const Rect R_HOST = {
+    275, 90, 350, 42
+};
+
+static const Rect R_PORT = {
+    835, 90, 180, 42
+};
+
+static const Rect R_PASSWORD = {
+    275, 150, 350, 42
+};
+
+static const Rect R_WEB_PORT = {
+    835, 150, 180, 42
+};
+
+static const Rect R_CONNECT = {
+    275, 215, 220, 46
+};
+
+static const Rect R_QUIT = {
+    515, 215, 220, 46
+};
+
+static const Rect R_MENU = {
+    1248, 8, 24, 24
+};
+
 
 static int hit(const Rect *r, int x, int y)
 {
@@ -77,36 +106,211 @@ static void draw_button(const Rect *r, const char *label, UiColour fill)
     ui_text_centred(r->x, r->y, r->w, r->h, UI_SIZE_BODY, UI_TEXT, label);
 }
 
-static void draw_settings(const Settings *s, const char *note, int decoder_ok, const char *why)
+static void draw_settings(
+    const Settings *s,
+    const char *password,
+    const char *note,
+    int decoder_ok,
+    const char *why)
 {
     char host[32];
-    settings_host_string(s, host, sizeof(host));
+    char value[24];
 
-    ui_text(300, 70, UI_SIZE_BODY, UI_TEXT, "capture2cloud");
+    settings_host_string(
+        s,
+        host,
+        sizeof(host));
 
-    ui_text(180, 140, UI_SIZE_BODY, UI_DIM, "host");
-    ui_box(R_HOST.x, R_HOST.y, R_HOST.w, R_HOST.h, UI_FIELD, UI_DIM);
-    const int unset = (strcmp(host, "0.0.0.0") == 0);
-    ui_text_centred(R_HOST.x, R_HOST.y, R_HOST.w, R_HOST.h, UI_SIZE_BODY,
-                    unset ? UI_DIM : UI_TEXT, unset ? "tap to set" : host);
+    const int host_unset =
+        strcmp(
+            host,
+            "0.0.0.0") == 0;
 
-    ui_text(180, 210, UI_SIZE_BODY, UI_DIM, "port");
-    ui_box(R_PORT.x, R_PORT.y, R_PORT.w, R_PORT.h, UI_FIELD, UI_DIM);
-    {
-        char p[16];
-        snprintf(p, sizeof(p), "%u", s->port);
-        ui_text_centred(R_PORT.x, R_PORT.y, R_PORT.w, R_PORT.h, UI_SIZE_BODY, UI_TEXT, p);
+    /*
+     * Compact two-column connection area.
+     */
+    ui_text(
+        160, 48,
+        UI_SIZE_BODY,
+        UI_TEXT,
+        "capture2cloud");
+
+    /* left column -------------------------------------------------- */
+
+    ui_text(
+        160, 100,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "host");
+
+    ui_box(
+        R_HOST.x,
+        R_HOST.y,
+        R_HOST.w,
+        R_HOST.h,
+        UI_FIELD,
+        UI_DIM);
+
+    ui_text_centred(
+        R_HOST.x,
+        R_HOST.y,
+        R_HOST.w,
+        R_HOST.h,
+        UI_SIZE_BODY,
+        host_unset
+            ? UI_DIM
+            : UI_TEXT,
+        host_unset
+            ? "tap to set"
+            : host);
+
+
+    ui_text(
+        160, 160,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "password");
+
+    ui_box(
+        R_PASSWORD.x,
+        R_PASSWORD.y,
+        R_PASSWORD.w,
+        R_PASSWORD.h,
+        UI_FIELD,
+        UI_DIM);
+
+    const char *auth_text;
+    UiColour auth_colour;
+
+    if (password &&
+        password[0]) {
+
+        auth_text =
+            "********";
+
+        auth_colour =
+            UI_TEXT;
+
+    } else if (s->token[0]) {
+
+        auth_text =
+            "token saved";
+
+        auth_colour =
+            UI_ACCENT;
+
+    } else {
+
+        auth_text =
+            "tap to enter";
+
+        auth_colour =
+            UI_DIM;
     }
 
-    draw_button(&R_CONNECT, "CONNECT", UI_ACCENT);
-    draw_button(&R_QUIT, "HOME -> EXIT", UI_PANEL);
+    ui_text_centred(
+        R_PASSWORD.x,
+        R_PASSWORD.y,
+        R_PASSWORD.w,
+        R_PASSWORD.h,
+        UI_SIZE_BODY,
+        auth_colour,
+        auth_text);
+
+
+    /* right column ------------------------------------------------- */
+
+    ui_text(
+        690, 100,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "native port");
+
+    ui_box(
+        R_PORT.x,
+        R_PORT.y,
+        R_PORT.w,
+        R_PORT.h,
+        UI_FIELD,
+        UI_DIM);
+
+    snprintf(
+        value,
+        sizeof(value),
+        "%u",
+        s->port);
+
+    ui_text_centred(
+        R_PORT.x,
+        R_PORT.y,
+        R_PORT.w,
+        R_PORT.h,
+        UI_SIZE_BODY,
+        UI_TEXT,
+        value);
+
+
+    ui_text(
+        690, 160,
+        UI_SIZE_BODY,
+        UI_DIM,
+        "web port");
+
+    ui_box(
+        R_WEB_PORT.x,
+        R_WEB_PORT.y,
+        R_WEB_PORT.w,
+        R_WEB_PORT.h,
+        UI_FIELD,
+        UI_DIM);
+
+    snprintf(
+        value,
+        sizeof(value),
+        "%u",
+        s->web_port);
+
+    ui_text_centred(
+        R_WEB_PORT.x,
+        R_WEB_PORT.y,
+        R_WEB_PORT.w,
+        R_WEB_PORT.h,
+        UI_SIZE_BODY,
+        UI_TEXT,
+        value);
+
+
+    draw_button(
+        &R_CONNECT,
+        "CONNECT",
+        UI_ACCENT);
+
+    draw_button(
+        &R_QUIT,
+        "HOME -> EXIT",
+        UI_PANEL);
+
 
     if (!decoder_ok) {
-        ui_text(300, 340, UI_SIZE_BODY, UI_DANGER, "decoder: %s", why);
-    } else if (note && note[0]) {
-        ui_text(300, 340, UI_SIZE_BODY, UI_DANGER, "%s", note);
+        ui_text(
+            160, 285,
+            UI_SIZE_BODY,
+            UI_DANGER,
+            "decoder: %s",
+            why);
+
+    } else if (note &&
+               note[0]) {
+
+        ui_text(
+            160, 285,
+            UI_SIZE_BODY,
+            UI_DANGER,
+            "%s",
+            note);
     }
 }
+
 
 static void draw_streaming(const Settings *s,
                            const StreamPerf *perf)
@@ -148,7 +352,7 @@ static void draw_streaming(const Settings *s,
      * Compact diagnostics: one useful fact per line.
      */
     ui_text(
-        180, 385,
+        160, 330,
         UI_SIZE_BODY,
         UI_TEXT,
         "%s | %ux%u H264 | %u.%u Mb/s",
@@ -159,7 +363,7 @@ static void draw_streaming(const Settings *s,
         (perf->net_kbps % 1000) / 100);
 
     ui_text(
-        180, 425,
+        160, 365,
         UI_SIZE_BODY,
         UI_DIM,
         "FPS  RX %u | DEC %u | SHOW %u | LOOP %u",
@@ -169,7 +373,7 @@ static void draw_streaming(const Settings *s,
         perf->loop_fps);
 
     ui_text(
-        180, 465,
+        160, 400,
         UI_SIZE_BODY,
         UI_DIM,
         "H264 %u.%u ms | bind %u.%u ms | present %u.%u ms",
@@ -181,7 +385,7 @@ static void draw_streaming(const Settings *s,
         (present_avg_us % 1000) / 100);
 
     ui_text(
-        180, 505,
+        160, 435,
         UI_SIZE_BODY,
         UI_DIM,
         "VQ %u drop %u | AQ %u ms drop %lu bad %lu",
@@ -192,7 +396,7 @@ static void draw_streaming(const Settings *s,
         audio_failed);
 
     ui_text(
-        180, 545,
+        160, 470,
         UI_SIZE_BODY,
         UI_DIM,
         "AIN %u | AX %u | USE %u | CB %u | under %u | %s",
@@ -208,7 +412,7 @@ static void draw_streaming(const Settings *s,
 
     if (input_available()) {
         ui_text(
-            180, 585,
+            160, 505,
             UI_SIZE_BODY,
             info->may_control
                 ? UI_TEXT
@@ -227,7 +431,7 @@ static void draw_streaming(const Settings *s,
             pad[PAD_Y]);
     } else {
         ui_text(
-            180, 585,
+            160, 505,
             UI_SIZE_BODY,
             UI_DANGER,
             "INPUT: Wii U GamePad unavailable");
@@ -273,21 +477,183 @@ static int parse_port(const char *text, void *target)
 
 /* Opens the console's keyboard for one field and puts the answer back.
  * `parse` returns 0 when the text was acceptable. */
-static void edit_field(const char *hint, const char *current, char *note, size_t note_size,
-                       int (*parse)(const char *, void *), void *target)
+static void edit_field(
+    const char *hint,
+    const char *current,
+    int numeric,
+    char *note,
+    size_t note_size,
+    int (*parse)(const char *, void *),
+    void *target)
 {
-    char typed[64], why[96];
-    const int r = keyboard_prompt(hint, current, 1, typed, sizeof(typed), why, sizeof(why));
+    char typed[64];
+    char why[96];
+
+    const int r =
+        keyboard_prompt(
+            hint,
+            current,
+            numeric,
+            typed,
+            sizeof(typed),
+            why,
+            sizeof(why));
+
     if (r < 0) {
-        snprintf(note, note_size, "%s", why);
+        snprintf(
+            note,
+            note_size,
+            "%s",
+            why);
+
     } else if (r == 1) {
-        if (parse(typed, target) != 0) {
-            snprintf(note, note_size, "not a %s: %s", hint, typed);
+
+        if (parse(
+                typed,
+                target) != 0) {
+
+            snprintf(
+                note,
+                note_size,
+                "not a %s: %s",
+                hint,
+                typed);
+
         } else {
             note[0] = '\0';
         }
     }
 }
+
+
+static void edit_password(
+    char password[PASSWORD_CAP],
+    char *note,
+    size_t note_size)
+{
+    char typed[PASSWORD_CAP];
+    char why[96];
+
+    /*
+     * Do not pre-fill the keyboard with the existing password.
+     * It stays in RAM but is never redisplayed in plain text.
+     */
+    const int r =
+        keyboard_prompt(
+            "capture2cloud password",
+            NULL,
+            0,
+            typed,
+            sizeof(typed),
+            why,
+            sizeof(why));
+
+    if (r < 0) {
+        snprintf(
+            note,
+            note_size,
+            "%s",
+            why);
+
+        return;
+    }
+
+    if (r == 0) {
+        return;
+    }
+
+    snprintf(
+        password,
+        PASSWORD_CAP,
+        "%s",
+        typed);
+
+    if (password[0]) {
+        snprintf(
+            note,
+            note_size,
+            "password ready - press CONNECT");
+
+    } else {
+        snprintf(
+            note,
+            note_size,
+            "password cleared");
+    }
+}
+
+
+/*
+ * Exchange a password for the host's temporary session token.
+ *
+ * Returns 1 when connection may continue.
+ * Returns 0 on login failure; the existing stream is left untouched.
+ *
+ * An empty password means "do not login now": use the saved token if
+ * one exists, otherwise connect as a viewer.
+ */
+static int authenticate_if_needed(
+    Settings *settings,
+    char password[PASSWORD_CAP],
+    char *note,
+    size_t note_size)
+{
+    if (!password[0]) {
+        return 1;
+    }
+
+    char host[32];
+    char token[C2S_MAX_TOKEN_LEN + 1];
+    char error[96];
+
+    settings_host_string(
+        settings,
+        host,
+        sizeof(host));
+
+    token[0] = '\0';
+    error[0] = '\0';
+
+    if (!net_login(
+            host,
+            settings->web_port,
+            password,
+            token,
+            sizeof(token),
+            error,
+            sizeof(error))) {
+
+        snprintf(
+            note,
+            note_size,
+            "login: %s",
+            error);
+
+        return 0;
+    }
+
+    snprintf(
+        settings->token,
+        sizeof(settings->token),
+        "%s",
+        token);
+
+    /*
+     * Password has served its purpose. Keep only the token.
+     */
+    memset(
+        password,
+        0,
+        PASSWORD_CAP);
+
+    snprintf(
+        note,
+        note_size,
+        "login OK - player token received");
+
+    return 1;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -369,7 +735,11 @@ int main(int argc, char **argv)
     int audio_alive = 0;
 
     State state = STATE_SETTINGS;
+
     char note[160] = { 0 };
+
+    char password[PASSWORD_CAP] = { 0 };
+
     UiInput in;
     memset(&in, 0, sizeof(in));
 
@@ -566,25 +936,137 @@ int main(int argc, char **argv)
 
         if (state == STATE_SETTINGS) {
             if (in.tapped) {
-                if (hit(&R_HOST, in.touch_x, in.touch_y)) {
+
+                if (hit(
+                        &R_HOST,
+                        in.touch_x,
+                        in.touch_y)) {
+
                     char current[32];
-                    settings_host_string(&settings, current, sizeof(current));
-                    edit_field("host", current, note, sizeof(note), parse_host, &settings);
-                } else if (hit(&R_PORT, in.touch_x, in.touch_y)) {
+
+                    settings_host_string(
+                        &settings,
+                        current,
+                        sizeof(current));
+
+                    edit_field(
+                        "host",
+                        current,
+                        1,
+                        note,
+                        sizeof(note),
+                        parse_host,
+                        &settings);
+
+                } else if (hit(
+                               &R_PORT,
+                               in.touch_x,
+                               in.touch_y)) {
+
                     char current[16];
-                    snprintf(current, sizeof(current), "%u", settings.port);
-                    edit_field("port", current, note, sizeof(note), parse_port, &settings.port);
-                } else if (hit(&R_QUIT, in.touch_x, in.touch_y)) {
-                    snprintf(note, sizeof(note),
-                             "Press HOME, then choose Quitter");
-                } else if (hit(&R_CONNECT, in.touch_x, in.touch_y)) {
+
+                    snprintf(
+                        current,
+                        sizeof(current),
+                        "%u",
+                        settings.port);
+
+                    edit_field(
+                        "native port",
+                        current,
+                        1,
+                        note,
+                        sizeof(note),
+                        parse_port,
+                        &settings.port);
+
+                } else if (hit(
+                               &R_WEB_PORT,
+                               in.touch_x,
+                               in.touch_y)) {
+
+                    char current[16];
+
+                    snprintf(
+                        current,
+                        sizeof(current),
+                        "%u",
+                        settings.web_port);
+
+                    edit_field(
+                        "web port",
+                        current,
+                        1,
+                        note,
+                        sizeof(note),
+                        parse_port,
+                        &settings.web_port);
+
+                } else if (hit(
+                               &R_PASSWORD,
+                               in.touch_x,
+                               in.touch_y)) {
+
+                    edit_password(
+                        password,
+                        note,
+                        sizeof(note));
+
+                } else if (hit(
+                               &R_QUIT,
+                               in.touch_x,
+                               in.touch_y)) {
+
+                    snprintf(
+                        note,
+                        sizeof(note),
+                        "Press HOME, then choose Quitter");
+
+                } else if (hit(
+                               &R_CONNECT,
+                               in.touch_x,
+                               in.touch_y)) {
+
                     if (!decoder_ok) {
-                        snprintf(note, sizeof(note), "no decoder: %s", decoder_why);
-                    } else if (settings.host[0] == 0) {
-                        snprintf(note, sizeof(note), "set the host address first");
-                    } else if (net_init() != 0) {
-                        snprintf(note, sizeof(note), "%s", net_info()->status);
-                    } else {
+
+                        snprintf(
+                            note,
+                            sizeof(note),
+                            "no decoder: %s",
+                            decoder_why);
+
+                    } else if (
+                        settings.host[0] == 0) {
+
+                        snprintf(
+                            note,
+                            sizeof(note),
+                            "set the host address first");
+
+                    } else if (
+                        net_init() != 0) {
+
+                        snprintf(
+                            note,
+                            sizeof(note),
+                            "%s",
+                            net_info()->status);
+
+                    } else if (
+                        authenticate_if_needed(
+                            &settings,
+                            password,
+                            note,
+                            sizeof(note))) {
+
+                        char host[32];
+                        char save_why[96];
+
+                        settings_host_string(
+                            &settings,
+                            host,
+                            sizeof(host));
+
                         if (!audio_alive) {
                             audio_why[0] = '\0';
 
@@ -596,7 +1078,9 @@ int main(int argc, char **argv)
                                     sizeof(audio_why)) == 0;
 
                             audio_alive =
-                                audio_ok ? 1 : 0;
+                                audio_ok
+                                    ? 1
+                                    : 0;
 
                             WHBLogPrintf(
                                 "capture2cloud: AX audio %s",
@@ -605,21 +1089,35 @@ int main(int argc, char **argv)
                                     : audio_why);
                         }
 
-                        char host[32], save_why[64];
-                        settings_host_string(&settings, host, sizeof(host));
-                        if (settings_save(&settings, save_why, sizeof(save_why)) != 0) {
-                            /* Worth saying, not worth stopping for: the
-                             * address still applies to this session. */
-                            snprintf(note, sizeof(note), "not saved: %s", save_why);
+                        if (settings_save(
+                                &settings,
+                                save_why,
+                                sizeof(save_why)) != 0) {
+
+                            snprintf(
+                                note,
+                                sizeof(note),
+                                "not saved: %s",
+                                save_why);
                         }
-                        /* No token: this connects as a viewer, which is
-                         * the right amount of trust for a client that
-                         * cannot yet ask for a password. */
-                        net_connect(host, settings.port, NULL);
-                        state = STATE_STREAMING;
+
+                        net_connect(
+                            host,
+                            settings.port,
+                            settings.token[0]
+                                ? settings.token
+                                : NULL);
+
+                        state =
+                            STATE_STREAMING;
+
                         menu_open = 0;
 
-                        memset(&perf, 0, sizeof(perf));
+                        memset(
+                            &perf,
+                            0,
+                            sizeof(perf));
+
                         rx_count = 0;
                         display_count = 0;
                         loop_count = 0;
@@ -630,10 +1128,19 @@ int main(int argc, char **argv)
                         video_synced = 0;
                         keyframe_requested = 0;
 
-                        fps_at = SDL_GetTicks();
-                        rx_bytes_at = net_info()->rx_bytes;
+                        fps_at =
+                            SDL_GetTicks();
 
-                        WHBLogPrintf("capture2cloud: connecting to %s:%u", host, settings.port);
+                        rx_bytes_at =
+                            net_info()->rx_bytes;
+
+                        WHBLogPrintf(
+                            "capture2cloud: connecting to %s:%u auth=%s",
+                            host,
+                            settings.port,
+                            settings.token[0]
+                                ? "token"
+                                : "viewer");
                     }
                 }
             }
@@ -751,10 +1258,22 @@ int main(int argc, char **argv)
             }
 
             if (in.tapped) {
-                if (hit(&R_MENU, in.touch_x, in.touch_y)) {
-                    menu_open = !menu_open;
+
+                if (hit(
+                        &R_MENU,
+                        in.touch_x,
+                        in.touch_y)) {
+
+                    menu_open =
+                        !menu_open;
+
                 } else if (menu_open) {
-                    if (hit(&R_HOST, in.touch_x, in.touch_y)) {
+
+                    if (hit(
+                            &R_HOST,
+                            in.touch_x,
+                            in.touch_y)) {
+
                         char current[32];
 
                         settings_host_string(
@@ -765,76 +1284,138 @@ int main(int argc, char **argv)
                         edit_field(
                             "host",
                             current,
+                            1,
                             note,
                             sizeof(note),
                             parse_host,
                             &settings);
 
-                    } else if (hit(&R_PORT,
+                    } else if (hit(
+                                   &R_PORT,
                                    in.touch_x,
                                    in.touch_y)) {
+
                         char current[16];
 
-                        snprintf(current,
-                                 sizeof(current),
-                                 "%u",
-                                 settings.port);
+                        snprintf(
+                            current,
+                            sizeof(current),
+                            "%u",
+                            settings.port);
 
                         edit_field(
-                            "port",
+                            "native port",
                             current,
+                            1,
                             note,
                             sizeof(note),
                             parse_port,
                             &settings.port);
 
-                    } else if (hit(&R_CONNECT,
+                    } else if (hit(
+                                   &R_WEB_PORT,
                                    in.touch_x,
                                    in.touch_y)) {
+
+                        char current[16];
+
+                        snprintf(
+                            current,
+                            sizeof(current),
+                            "%u",
+                            settings.web_port);
+
+                        edit_field(
+                            "web port",
+                            current,
+                            1,
+                            note,
+                            sizeof(note),
+                            parse_port,
+                            &settings.web_port);
+
+                    } else if (hit(
+                                   &R_PASSWORD,
+                                   in.touch_x,
+                                   in.touch_y)) {
+
+                        edit_password(
+                            password,
+                            note,
+                            sizeof(note));
+
+                    } else if (hit(
+                                   &R_CONNECT,
+                                   in.touch_x,
+                                   in.touch_y)) {
+
                         char host[32];
-                        char save_why[64];
+                        char save_why[96];
 
                         settings_host_string(
                             &settings,
                             host,
                             sizeof(host));
 
-                        if (settings_save(
+                        /*
+                         * net_login() uses its own short HTTP socket.
+                         * A failed password therefore leaves the current
+                         * media stream untouched and keeps the menu open.
+                         */
+                        if (authenticate_if_needed(
                                 &settings,
-                                save_why,
-                                sizeof(save_why)) != 0) {
-                            snprintf(note,
-                                     sizeof(note),
-                                     "not saved: %s",
-                                     save_why);
+                                password,
+                                note,
+                                sizeof(note))) {
+
+                            if (settings_save(
+                                    &settings,
+                                    save_why,
+                                    sizeof(save_why)) != 0) {
+
+                                snprintf(
+                                    note,
+                                    sizeof(note),
+                                    "not saved: %s",
+                                    save_why);
+                            }
+
+                            net_disconnect();
+
+                            net_connect(
+                                host,
+                                settings.port,
+                                settings.token[0]
+                                    ? settings.token
+                                    : NULL);
+
+                            have_frame = 0;
+                            menu_open = 0;
+
+                            video_synced = 0;
+                            keyframe_requested = 0;
+
+                            worker_decoded_at =
+                                video_worker_decoded_total();
+
+                            WHBLogPrintf(
+                                "capture2cloud: reconnecting to %s:%u auth=%s",
+                                host,
+                                settings.port,
+                                settings.token[0]
+                                    ? "token"
+                                    : "viewer");
                         }
 
-                        net_disconnect();
-                        net_connect(
-                            host,
-                            settings.port,
-                            NULL);
-
-                        have_frame = 0;
-                        menu_open = 0;
-
-                        video_synced = 0;
-                        keyframe_requested = 0;
-
-                        worker_decoded_at =
-                            video_worker_decoded_total();
-
-                        WHBLogPrintf(
-                            "capture2cloud: reconnecting to %s:%u",
-                            host,
-                            settings.port);
-
-                    } else if (hit(&R_QUIT,
+                    } else if (hit(
+                                   &R_QUIT,
                                    in.touch_x,
                                    in.touch_y)) {
-                        snprintf(note,
-                                 sizeof(note),
-                                 "Press HOME, then choose Quitter");
+
+                        snprintf(
+                            note,
+                            sizeof(note),
+                            "Press HOME, then choose Quitter");
                     }
                 }
             }
@@ -843,7 +1424,12 @@ int main(int argc, char **argv)
         ui_begin();
 
         if (state == STATE_SETTINGS) {
-            draw_settings(&settings, note, decoder_ok, decoder_why);
+            draw_settings(
+                &settings,
+                password,
+                note,
+                decoder_ok,
+                decoder_why);
         } else {
             /*
              * NV12 comes directly from H264DEC's rotating framebuffers
@@ -872,10 +1458,12 @@ int main(int argc, char **argv)
                 ui_box(120, 45, 1040, 560,
                        UI_BG, UI_DIM);
 
-                draw_settings(&settings,
-                              note,
-                              decoder_ok,
-                              decoder_why);
+                draw_settings(
+                    &settings,
+                    password,
+                    note,
+                    decoder_ok,
+                    decoder_why);
 
                 draw_streaming(&settings, &perf);
             }
