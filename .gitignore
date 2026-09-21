@@ -94,3 +94,4 @@ wiiu_console/bringup/*/*.wuhb
 # in this repository.
 wiiu_ethernet/
 patch.sh
+.cafeglsl/
