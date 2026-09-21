@@ -136,8 +136,9 @@ keep up at 1080p60 grows a queue that never drains.
 - Wii U menu drawing uses a reusable `menu.c/.h` component. Backgrounds
   and text are flushed as separate layers after GX2 video. Stream and
   controller pages apply their settings immediately.
-- Returning from `nn::swkbd` explicitly restores SDL's GX2 shader state;
-  this targets text turning into solid rectangles after password entry.
+- Returning from `nn::swkbd` rebuilds SDL/GX2 and GamePad input. SDL has
+  no public invalidation for GX2 state changed by the system keyboard;
+  keeping the renderer made glyph textures become solid rectangles.
 
 ### ProcUI lifecycle
 

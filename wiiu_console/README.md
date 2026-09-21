@@ -60,32 +60,23 @@ not require a console reboot.
 
 Host, native port, web/login port and the temporary session token are
 stored in `sd:/wiiu/apps/capture2cloud/capture2cloud.cfg`. The password
-is entered with the Wii U keyboard and is never stored.
+is entered with the Wii U keyboard and is never stored. Closing that
+keyboard rebuilds SDL/GX2 because the keyboard changes raw GX2 state.
 
 ## How the picture gets there
 
 | Piece | What it uses |
 |---|---|
 | Video decode | the console's hardware H.264 — `H264DECOpen` / `SetBitstream` / `Execute`, in [`src/video.c`](src/video.c) |
-| Display | **OSScreen, temporarily** — see below |
+| Display | SDL2/GX2 UI plus a custom zero-copy NV12 GX2 renderer |
 | Network | BSD sockets, ported from the Switch client |
 | Transport | [`../c2s_protocol.h`](../c2s_protocol.h), on port **5083** |
 
-### The display is temporary and deliberately so
+### Display
 
-OSScreen writes one 32-bit pixel at a time from the CPU. 720p60 is 55
-million pixel writes a second, so this draws a reduced picture — one
-pixel per 4×4 block — rather than pretending otherwise.
-
-It is here because it needs no shaders, which means the network and the
-decoder can be proven working before GX2 is written. **GX2 sampling the
-decoder's NV12 output directly is what replaces it**, and the only file
-that should have to change is `main.c`.
-
-SDL2 is not used and that is not an oversight: its Wii U renderer is real
-GX2, but it has no YUV shader, so an NV12 texture would go through SDL's
-*software* conversion. On a 1.24 GHz PowerPC that is not a thing that
-happens.
+SDL2 renders the menus and system font. The video path uploads H264DEC's
+NV12 planes directly to GX2 textures and converts them in a shader; the
+slow SDL software YUV conversion remains only as a fallback.
 
 ## Its own port, and why
 
