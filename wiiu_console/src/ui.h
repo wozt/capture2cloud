@@ -111,8 +111,8 @@ void ui_text_centred(int x, int y, int w, int h, int size, UiColour c, const cha
 /* How wide a string would be, for laying out beside it. */
 int  ui_text_width(int size, const char *text);
 
-#define UI_SIZE_BODY  28
-#define UI_SIZE_TITLE 44
+#define UI_SIZE_BODY  22
+#define UI_SIZE_TITLE 36
 
 #ifdef __cplusplus
 }
