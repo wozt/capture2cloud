@@ -33,6 +33,7 @@
 #include "settings.h"
 #include "ui.h"
 #include "video.h"
+#include "video_worker.h"
 
 /* The biggest picture the decoder reserves for. 720p60 is the path this
  * is built and measured on; see SPEC.md on why 1080p is offered rather
@@ -53,6 +54,9 @@ typedef struct {
     unsigned display_fps;
     unsigned loop_fps;
     unsigned net_kbps;
+
+    unsigned video_queue;
+    unsigned video_dropped;
 } StreamPerf;
 
 static const Rect R_HOST    = { 300, 125, 520, 54 };
@@ -113,7 +117,6 @@ static void draw_streaming(const Settings *s,
     VideoStats vs;
     Gx2VideoStats gs;
 
-    unsigned long audio_decoded = 0;
     unsigned long audio_failed = 0;
     unsigned long audio_dropped = 0;
 
@@ -123,7 +126,7 @@ static void draw_streaming(const Settings *s,
     video_stats_ex(&vs);
     gx2_video_stats(&gs);
 
-    audio_stats(&audio_decoded,
+    audio_stats(NULL,
                 &audio_failed,
                 &audio_dropped);
 
@@ -171,16 +174,18 @@ static void draw_streaming(const Settings *s,
         180, 505,
         UI_SIZE_BODY,
         UI_DIM,
-        "audio queue %u ms | bad %lu | drop %lu",
+        "VQ %u drop %u | AQ %u ms drop %lu bad %lu",
+        perf->video_queue,
+        perf->video_dropped,
         audio_queue_ms(),
-        audio_failed,
-        audio_dropped);
+        audio_dropped,
+        audio_failed);
 
     ui_text(
         180, 545,
         UI_SIZE_BODY,
         UI_DIM,
-        "decoder err %u | empty %u | present max %u.%u ms",
+        "decoder err %u empty %u | present max %u.%u ms",
         vs.errors,
         vs.empty,
         present_max_us / 1000,
@@ -200,6 +205,14 @@ static void draw_menu_marker(int open)
            open ? UI_ACCENT : UI_PANEL,
            UI_DIM);
 }
+
+static unsigned video_worker_decoded_total(void)
+{
+    VideoWorkerStats stats;
+    video_worker_stats(&stats);
+    return stats.decoded;
+}
+
 
 static int parse_host(const char *text, void *target)
 {
@@ -256,9 +269,32 @@ int main(int argc, char **argv)
     settings_load(&settings);
 
     char decoder_why[128] = { 0 };
+
     int decoder_ok =
-        video_init(MAX_WIDTH, MAX_HEIGHT, decoder_why, sizeof(decoder_why)) == 0;
-    WHBLogPrintf("capture2cloud: decoder %s", decoder_ok ? "ready" : decoder_why);
+        video_init(
+            MAX_WIDTH,
+            MAX_HEIGHT,
+            decoder_why,
+            sizeof(decoder_why)) == 0;
+
+    int video_worker_alive = 0;
+
+    if (decoder_ok) {
+        if (video_worker_start(
+                decoder_why,
+                sizeof(decoder_why)) == 0) {
+            video_worker_alive = 1;
+        } else {
+            video_exit();
+            decoder_ok = 0;
+        }
+    }
+
+    WHBLogPrintf(
+        "capture2cloud: decoder %s",
+        decoder_ok
+            ? "ready + threaded"
+            : decoder_why);
 
     char audio_why[128] = { 0 };
     int audio_ok =
@@ -285,9 +321,14 @@ int main(int argc, char **argv)
     memset(&perf, 0, sizeof(perf));
 
     unsigned rx_count = 0;
-    unsigned decode_count = 0;
     unsigned display_count = 0;
     unsigned loop_count = 0;
+
+    unsigned worker_decoded_at =
+        video_worker_decoded_total();
+
+    int video_synced = 0;
+    int keyframe_requested = 0;
 
     uint32_t fps_at = SDL_GetTicks();
     uint64_t rx_bytes_at = 0;
@@ -325,6 +366,11 @@ int main(int argc, char **argv)
             WHBLogPrintf("suspend 2/4: audio done");
 
             WHBLogPrintf("suspend 3/4: H264DEC begin");
+
+            if (video_worker_alive) {
+                video_worker_stop();
+                video_worker_alive = 0;
+            }
 
             if (video_alive) {
                 video_exit();
@@ -380,22 +426,49 @@ int main(int argc, char **argv)
             WHBLogPrintf("resume: rebuilding H264DEC");
 
             decoder_why[0] = '\0';
+
             decoder_ok =
-                video_init(MAX_WIDTH, MAX_HEIGHT,
-                           decoder_why, sizeof(decoder_why)) == 0;
+                video_init(
+                    MAX_WIDTH,
+                    MAX_HEIGHT,
+                    decoder_why,
+                    sizeof(decoder_why)) == 0;
 
-            video_alive = decoder_ok ? 1 : 0;
+            video_alive =
+                decoder_ok ? 1 : 0;
 
-            WHBLogPrintf("resume: decoder %s",
-                         decoder_ok ? "ready" : decoder_why);
+            video_worker_alive = 0;
+
+            if (decoder_ok) {
+                if (video_worker_start(
+                        decoder_why,
+                        sizeof(decoder_why)) == 0) {
+                    video_worker_alive = 1;
+                } else {
+                    video_exit();
+                    video_alive = 0;
+                    decoder_ok = 0;
+                }
+            }
+
+            WHBLogPrintf(
+                "resume: decoder %s",
+                decoder_ok
+                    ? "ready + threaded"
+                    : decoder_why);
 
             memset(&in, 0, sizeof(in));
             memset(&perf, 0, sizeof(perf));
 
             rx_count = 0;
-            decode_count = 0;
             display_count = 0;
             loop_count = 0;
+
+            worker_decoded_at =
+                video_worker_decoded_total();
+
+            video_synced = 0;
+            keyframe_requested = 0;
 
             fps_at = SDL_GetTicks();
             rx_bytes_at = net_info()->rx_bytes;
@@ -445,9 +518,15 @@ int main(int argc, char **argv)
 
                         memset(&perf, 0, sizeof(perf));
                         rx_count = 0;
-                        decode_count = 0;
                         display_count = 0;
                         loop_count = 0;
+
+                        worker_decoded_at =
+                            video_worker_decoded_total();
+
+                        video_synced = 0;
+                        keyframe_requested = 0;
+
                         fps_at = SDL_GetTicks();
                         rx_bytes_at = net_info()->rx_bytes;
 
@@ -482,11 +561,50 @@ int main(int argc, char **argv)
 
                 rx_count++;
 
-                if (video_decode(payload, size, &frame) == 1) {
-                    have_frame = 1;
-                    new_frame = 1;
-                    decode_count++;
+                /*
+                 * If the bounded queue ever overflows we have skipped a
+                 * predictive H.264 AU. Do not feed dependent pictures to
+                 * the decoder afterwards: wait for the next IDR.
+                 */
+                if (!video_synced) {
+                    if (!(flags & C2S_FLAG_KEYFRAME)) {
+                        if (!keyframe_requested) {
+                            net_send_keyframe_request();
+                            keyframe_requested = 1;
+                        }
+
+                        continue;
+                    }
+
+                    video_synced = 1;
+                    keyframe_requested = 0;
                 }
+
+                const int queued =
+                    video_worker_submit(
+                        payload,
+                        size);
+
+                if (queued <= 0) {
+                    video_synced = 0;
+
+                    if (!keyframe_requested) {
+                        net_send_keyframe_request();
+                        keyframe_requested = 1;
+                    }
+                }
+            }
+
+            /*
+             * H264DEC runs independently now. Take only the newest
+             * completed picture and immediately hand its NV12 buffer to
+             * GX2.
+             */
+            if (video_worker_alive &&
+                video_worker_take(&frame)) {
+
+                have_frame = 1;
+                new_frame = 1;
             }
 
             if (in.tapped) {
@@ -557,6 +675,12 @@ int main(int argc, char **argv)
                         have_frame = 0;
                         menu_open = 0;
 
+                        video_synced = 0;
+                        keyframe_requested = 0;
+
+                        worker_decoded_at =
+                            video_worker_decoded_total();
+
                         WHBLogPrintf(
                             "capture2cloud: reconnecting to %s:%u",
                             host,
@@ -579,9 +703,8 @@ int main(int argc, char **argv)
             draw_settings(&settings, note, decoder_ok, decoder_why);
         } else {
             /*
-             * Still temporary:
-             * SDL currently converts NV12 -> RGB on the CPU.
-             * The GX2-native path comes next.
+             * NV12 comes directly from H264DEC's rotating framebuffers
+             * and is sampled directly by the GX2 shader.
              */
             if (new_frame) {
                 if (ui_video_update_nv12(frame.luma,
@@ -646,10 +769,27 @@ int main(int argc, char **argv)
                         ((uint64_t)rx_count * 1000ull) /
                         elapsed);
 
+                VideoWorkerStats vw;
+                video_worker_stats(&vw);
+
+                const unsigned decoded_delta =
+                    vw.decoded -
+                    worker_decoded_at;
+
                 perf.decode_fps =
                     (unsigned)(
-                        ((uint64_t)decode_count * 1000ull) /
+                        ((uint64_t)decoded_delta *
+                         1000ull) /
                         elapsed);
+
+                perf.video_queue =
+                    vw.queue_depth;
+
+                perf.video_dropped =
+                    vw.dropped;
+
+                worker_decoded_at =
+                    vw.decoded;
 
                 perf.display_fps =
                     (unsigned)(
@@ -670,7 +810,6 @@ int main(int argc, char **argv)
                         elapsed);
 
                 rx_count = 0;
-                decode_count = 0;
                 display_count = 0;
                 loop_count = 0;
 
@@ -700,6 +839,12 @@ int main(int argc, char **argv)
         WHBLogPrintf("shutdown: final audio cleanup");
         audio_exit();
         audio_alive = 0;
+    }
+
+    if (video_worker_alive) {
+        WHBLogPrintf("shutdown: final video worker cleanup");
+        video_worker_stop();
+        video_worker_alive = 0;
     }
 
     if (video_alive) {
