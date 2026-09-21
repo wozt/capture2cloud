@@ -50,6 +50,11 @@
 
 typedef enum { STATE_SETTINGS, STATE_STREAMING } State;
 
+typedef enum {
+    MENU_CONNECTION,
+    MENU_CONSOLE
+} MenuPage;
+
 typedef struct {
     int x, y, w, h;
 } Rect;
@@ -98,6 +103,34 @@ static const Rect R_MENU = {
     1248, 8, 24, 24
 };
 
+static const Rect R_TAB_CONNECTION = {
+    690, 38, 155, 38
+};
+
+static const Rect R_TAB_CONSOLE = {
+    860, 38, 155, 38
+};
+
+static const Rect R_WAKE = {
+    275, 100, 220, 46
+};
+
+static const Rect R_RESET_DONGLE = {
+    515, 100, 220, 46
+};
+
+static const Rect R_RESTART_HOST = {
+    755, 100, 260, 46
+};
+
+static const Rect R_CONSOLE_HOME = {
+    275, 170, 220, 46
+};
+
+static const Rect R_CONSOLE_QUIT = {
+    515, 170, 500, 46
+};
+
 
 static int hit(const Rect *r, int x, int y)
 {
@@ -110,12 +143,30 @@ static void draw_button(const Rect *r, const char *label, UiColour fill)
     ui_text_centred(r->x, r->y, r->w, r->h, UI_SIZE_BODY, UI_TEXT, label);
 }
 
+static void draw_tabs(MenuPage page)
+{
+    draw_button(
+        &R_TAB_CONNECTION,
+        "CONNECTION",
+        page == MENU_CONNECTION
+            ? UI_ACCENT
+            : UI_PANEL);
+
+    draw_button(
+        &R_TAB_CONSOLE,
+        "CONSOLE",
+        page == MENU_CONSOLE
+            ? UI_ACCENT
+            : UI_PANEL);
+}
+
 static void draw_settings(
     const Settings *s,
     const char *password,
     const char *note,
     int decoder_ok,
-    const char *why)
+    const char *why,
+    MenuPage page)
 {
     char host[32];
     char value[24];
@@ -138,6 +189,61 @@ static void draw_settings(
         UI_SIZE_BODY,
         UI_TEXT,
         "capture2cloud");
+
+    draw_tabs(page);
+
+    if (page == MENU_CONSOLE) {
+        const NetInfo *net =
+            net_info();
+
+        const int enabled =
+            net->state == NET_CONNECTED &&
+            net->may_control;
+
+        draw_button(
+            &R_WAKE,
+            "WAKE",
+            enabled ? UI_ACCENT : UI_PANEL);
+
+        draw_button(
+            &R_RESET_DONGLE,
+            "RESET ADAPTER",
+            enabled ? UI_DANGER : UI_PANEL);
+
+        draw_button(
+            &R_RESTART_HOST,
+            "RESTART HOST",
+            enabled ? UI_DANGER : UI_PANEL);
+
+        draw_button(
+            &R_CONSOLE_HOME,
+            "REMOTE HOME",
+            enabled ? UI_ACCENT : UI_PANEL);
+
+        draw_button(
+            &R_CONSOLE_QUIT,
+            "WII U HOME MENU -> QUITTER",
+            UI_PANEL);
+
+        ui_text(
+            160, 250,
+            UI_SIZE_BODY,
+            enabled ? UI_TEXT : UI_DIM,
+            enabled
+                ? "remote controls: ready"
+                : "remote controls require a connected CONTROL session");
+
+        if (note && note[0]) {
+            ui_text(
+                160, 285,
+                UI_SIZE_BODY,
+                UI_DANGER,
+                "%s",
+                note);
+        }
+
+        return;
+    }
 
     /* left column -------------------------------------------------- */
 
@@ -323,6 +429,63 @@ static void draw_settings(
             UI_DANGER,
             "%s",
             note);
+    }
+}
+
+static void handle_console_tap(
+    int x,
+    int y,
+    char *note,
+    size_t note_size)
+{
+    const NetInfo *net =
+        net_info();
+
+    const int enabled =
+        net->state == NET_CONNECTED &&
+        net->may_control;
+
+    if (hit(&R_CONSOLE_QUIT, x, y)) {
+        snprintf(
+            note,
+            note_size,
+            "Press HOME, then choose Quitter");
+
+        return;
+    }
+
+    if (!hit(&R_WAKE, x, y) &&
+        !hit(&R_RESET_DONGLE, x, y) &&
+        !hit(&R_RESTART_HOST, x, y) &&
+        !hit(&R_CONSOLE_HOME, x, y)) {
+
+        return;
+    }
+
+    if (!enabled) {
+        snprintf(
+            note,
+            note_size,
+            "remote controls require CONTROL");
+
+        return;
+    }
+
+    if (hit(&R_WAKE, x, y)) {
+        net_send_wake();
+        snprintf(note, note_size, "wake request sent");
+
+    } else if (hit(&R_RESET_DONGLE, x, y)) {
+        net_send_reset_dongle();
+        snprintf(note, note_size, "adapter reset requested");
+
+    } else if (hit(&R_RESTART_HOST, x, y)) {
+        net_send_restart();
+        snprintf(note, note_size, "host restart requested");
+
+    } else if (hit(&R_CONSOLE_HOME, x, y)) {
+        net_send_home();
+        snprintf(note, note_size, "remote HOME sent");
     }
 }
 
@@ -762,6 +925,7 @@ int main(int argc, char **argv)
     int have_frame = 0;
     int new_frame = 0;
     int menu_open = 0;
+    MenuPage menu_page = MENU_CONNECTION;
     StreamPerf perf;
     memset(&perf, 0, sizeof(perf));
 
@@ -953,6 +1117,30 @@ int main(int argc, char **argv)
             if (in.tapped) {
 
                 if (hit(
+                        &R_TAB_CONNECTION,
+                        in.touch_x,
+                        in.touch_y)) {
+
+                    menu_page = MENU_CONNECTION;
+                    note[0] = '\0';
+
+                } else if (hit(
+                               &R_TAB_CONSOLE,
+                               in.touch_x,
+                               in.touch_y)) {
+
+                    menu_page = MENU_CONSOLE;
+                    note[0] = '\0';
+
+                } else if (menu_page == MENU_CONSOLE) {
+
+                    handle_console_tap(
+                        in.touch_x,
+                        in.touch_y,
+                        note,
+                        sizeof(note));
+
+                } else if (hit(
                         &R_HOST,
                         in.touch_x,
                         in.touch_y)) {
@@ -1311,6 +1499,30 @@ int main(int argc, char **argv)
                 } else if (menu_open) {
 
                     if (hit(
+                            &R_TAB_CONNECTION,
+                            in.touch_x,
+                            in.touch_y)) {
+
+                        menu_page = MENU_CONNECTION;
+                        note[0] = '\0';
+
+                    } else if (hit(
+                                   &R_TAB_CONSOLE,
+                                   in.touch_x,
+                                   in.touch_y)) {
+
+                        menu_page = MENU_CONSOLE;
+                        note[0] = '\0';
+
+                    } else if (menu_page == MENU_CONSOLE) {
+
+                        handle_console_tap(
+                            in.touch_x,
+                            in.touch_y,
+                            note,
+                            sizeof(note));
+
+                    } else if (hit(
                             &R_HOST,
                             in.touch_x,
                             in.touch_y)) {
@@ -1496,7 +1708,8 @@ int main(int argc, char **argv)
                 password,
                 note,
                 decoder_ok,
-                decoder_why);
+                decoder_why,
+                menu_page);
         } else {
             /*
              * NV12 comes directly from H264DEC's rotating framebuffers
@@ -1530,7 +1743,8 @@ int main(int argc, char **argv)
                     password,
                     note,
                     decoder_ok,
-                    decoder_why);
+                    decoder_why,
+                    menu_page);
 
                 draw_streaming(&settings, &perf);
             }

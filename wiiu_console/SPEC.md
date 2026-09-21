@@ -9,9 +9,9 @@ the PC and talks to a GamePad over a radio, with no Wii U involved. This
 one runs on the console, uses its hardware decoder, and needs nothing
 but a network.
 
-> **Status: specification only.** Nothing is built. Everything below that
-> is measured is marked; everything else is from research or from how the
-> other clients work, and is a plan rather than a fact.
+> **Status:** the client is running on real Wii U hardware. This document
+> keeps the original design; current validated state is in `README.md` and
+> `../WORKINPROGRESS.md`.
 >
 > The four questions that shaped it have been answered and the answers
 > are folded in. They are kept at the end as decisions, with what each
