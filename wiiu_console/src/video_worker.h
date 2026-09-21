@@ -40,6 +40,15 @@ void video_worker_stop(void);
 int video_worker_submit(const uint8_t *data, uint32_t size);
 
 /*
+ * Same submission, but if a short TCP burst fills the compressed queue,
+ * wait briefly for H264DEC to free a slot rather than dropping a
+ * predictive frame and forcing an IDR resync.
+ */
+int video_worker_submit_wait(const uint8_t *data,
+                             uint32_t size,
+                             uint32_t timeout_us);
+
+/*
  * Returns the newest decoded picture once.
  *
  * Older pictures are intentionally collapsed: for game streaming the

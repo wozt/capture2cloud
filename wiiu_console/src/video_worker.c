@@ -18,7 +18,7 @@
  * A small queue only absorbs scheduling/network jitter. It must never
  * become a latency reservoir.
  */
-#define VIDEO_PACKET_SLOTS 4
+#define VIDEO_PACKET_SLOTS 8
 #define VIDEO_WORKER_STACK_SIZE (64 * 1024)
 
 typedef struct {
@@ -35,6 +35,7 @@ static uint8_t g_stack[VIDEO_WORKER_STACK_SIZE]
 static OSMutex g_mutex;
 static OSCondition g_cond;
 static OSEvent g_frame_event;
+static OSEvent g_space_event;
 
 static VideoPacket g_packets[VIDEO_PACKET_SLOTS];
 
@@ -99,8 +100,11 @@ static int worker_entry(int argc, const char **argv)
             (g_read + 1) %
             VIDEO_PACKET_SLOTS;
 
+        int signal_space = 0;
+
         if (g_count) {
             g_count--;
+            signal_space = 1;
         }
 
         int signal_frame = 0;
@@ -115,6 +119,11 @@ static int worker_entry(int argc, const char **argv)
         }
 
         OSUnlockMutex(&g_mutex);
+
+        if (signal_space) {
+            OSSignalEvent(
+                &g_space_event);
+        }
 
         if (signal_frame) {
             OSSignalEvent(
@@ -164,6 +173,18 @@ int video_worker_start(char *why, size_t why_size)
      */
     OSInitEvent(
         &g_frame_event,
+        FALSE,
+        OS_EVENT_MODE_MANUAL);
+
+    /*
+     * Signalled whenever H264DEC releases one compressed-AU slot.
+     *
+     * Manual reset lets the producer clear it while holding g_mutex
+     * immediately before waiting, so a release cannot be lost between
+     * "queue is full" and the actual wait.
+     */
+    OSInitEvent(
+        &g_space_event,
         FALSE,
         OS_EVENT_MODE_MANUAL);
 
@@ -256,8 +277,8 @@ void video_worker_stop(void)
 }
 
 
-int video_worker_submit(const uint8_t *data,
-                        uint32_t size)
+static int video_worker_submit_now(const uint8_t *data,
+                                   uint32_t size)
 {
     if (!g_started ||
         !data ||
@@ -268,8 +289,16 @@ int video_worker_submit(const uint8_t *data,
     OSLockMutex(&g_mutex);
 
     if (g_count >= VIDEO_PACKET_SLOTS) {
-        g_dropped++;
+        /*
+         * Clear while holding the same mutex the decoder uses when it
+         * releases a slot. A subsequent release therefore cannot race
+         * between this test and the producer's wait.
+         */
+        OSResetEvent(
+            &g_space_event);
+
         OSUnlockMutex(&g_mutex);
+
         return 0;
     }
 
@@ -287,16 +316,27 @@ int video_worker_submit(const uint8_t *data,
 
         if (!new_data) {
             g_errors++;
-            OSUnlockMutex(&g_mutex);
+
+            OSUnlockMutex(
+                &g_mutex);
+
             return -1;
         }
 
-        packet->data = new_data;
-        packet->capacity = new_capacity;
+        packet->data =
+            new_data;
+
+        packet->capacity =
+            new_capacity;
     }
 
-    memcpy(packet->data, data, size);
-    packet->size = size;
+    memcpy(
+        packet->data,
+        data,
+        size);
+
+    packet->size =
+        size;
 
     g_write =
         (g_write + 1) %
@@ -305,11 +345,69 @@ int video_worker_submit(const uint8_t *data,
     g_count++;
     g_submitted++;
 
-    OSSignalCond(&g_cond);
+    OSSignalCond(
+        &g_cond);
 
-    OSUnlockMutex(&g_mutex);
+    OSUnlockMutex(
+        &g_mutex);
 
     return 1;
+}
+
+
+int video_worker_submit_wait(const uint8_t *data,
+                             uint32_t size,
+                             uint32_t timeout_us)
+{
+    int rc =
+        video_worker_submit_now(
+            data,
+            size);
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    /*
+     * A full queue here normally means TCP delivered several AUs at
+     * once. H264DEC takes ~8.4 ms, so waiting one decoder cycle is much
+     * cheaper than losing a predictive AU and then throwing away every
+     * P-frame until the next IDR.
+     */
+    if (timeout_us &&
+        OSWaitEventWithTimeout(
+            &g_space_event,
+            OSMicrosecondsToTicks(
+                timeout_us))) {
+
+        rc =
+            video_worker_submit_now(
+                data,
+                size);
+
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    /*
+     * Only a genuine sustained overload reaches here.
+     */
+    OSLockMutex(&g_mutex);
+    g_dropped++;
+    OSUnlockMutex(&g_mutex);
+
+    return 0;
+}
+
+
+int video_worker_submit(const uint8_t *data,
+                        uint32_t size)
+{
+    return video_worker_submit_wait(
+        data,
+        size,
+        0);
 }
 
 
