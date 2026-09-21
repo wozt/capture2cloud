@@ -549,9 +549,15 @@ int main(int argc, char **argv)
             int kind;
             while ((kind = net_take_frame(&payload, &size, &flags)) != 0) {
                 if (kind == C2S_MSG_AUDIO) {
-                    if (audio_alive) {
-                        audio_decode(payload, size);
+                    if (audio_alive &&
+                        net_info()->audio_codec ==
+                            C2S_CODEC_PCM_S16LE) {
+
+                        audio_push_pcm_s16le(
+                            payload,
+                            size);
                     }
+
                     continue;
                 }
 

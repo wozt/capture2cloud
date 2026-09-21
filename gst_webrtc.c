@@ -2256,10 +2256,48 @@ void gst_webrtc_stream_push_video(GstWebrtcStream *g, const uint8_t *const plane
 }
 
 void gst_webrtc_stream_push_audio(GstWebrtcStream *g, const int16_t *pcm_interleaved, size_t frames) {
-    if (!g) {
+    if (!g || !pcm_interleaved || !frames) {
         return;
     }
-    size_t bytes = frames * (size_t)g->audio_channels * sizeof(int16_t);
+
+    const size_t bytes =
+        frames *
+        (size_t)g->audio_channels *
+        sizeof(int16_t);
+
+    /*
+     * The capture thread hands us post-DSP S16LE PCM in 5 ms blocks.
+     *
+     * Send those bytes directly to a capable Wii U console BEFORE the
+     * Opus branch. On the Linux host int16_t is little-endian, matching
+     * C2S_CODEC_PCM_S16LE.
+     */
+    if (g->switch_out) {
+        switch_stream_send_audio_pcm(
+            g->switch_out,
+            (const uint8_t *)pcm_interleaved,
+            (uint32_t)bytes);
+    }
+
+    /*
+     * If the PCM Wii U is the only consumer, do not even feed opusenc.
+     */
+    const int web_opus_clients =
+        gst_webrtc_stream_get_client_count(
+            g,
+            NULL);
+
+    const int native_opus_clients =
+        g->switch_out
+            ? switch_stream_opus_audio_client_count(
+                  g->switch_out)
+            : 0;
+
+    if (web_opus_clients <= 0 &&
+        native_opus_clients <= 0) {
+        return;
+    }
+
     GstBuffer *buffer = gst_buffer_new_allocate(NULL, bytes, NULL);
     gst_buffer_fill(buffer, 0, pcm_interleaved, bytes);
     GST_BUFFER_PTS(buffer) = gst_util_uint64_scale(g->audio_frames, GST_SECOND, g->audio_rate);

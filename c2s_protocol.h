@@ -96,11 +96,19 @@ static inline uint32_t c2s_le32(uint32_t v)
 
 /* --- client -> server, once, immediately after connecting ---------- */
 
+/*
+ * Optional client capabilities carried in C2sHello.reserved.
+ *
+ * Zero remains the legacy behaviour, so old clients and old servers
+ * remain wire-compatible.
+ */
+#define C2S_HELLO_CAP_PCM_S16LE 0x0001u
+
 typedef struct __attribute__((packed)) {
     uint32_t magic;        /* C2S_MAGIC */
     uint8_t  version;      /* C2S_VERSION */
     uint8_t  token_len;    /* 0 when no password is configured host-side */
-    uint16_t reserved;
+    uint16_t reserved;     /* C2S_HELLO_CAP_* */
     /* followed by token_len bytes of the session token */
 } C2sHello;
 
@@ -139,7 +147,16 @@ typedef enum {
      * something that looks close, and the client falls back to decoding
      * ordinary H.264 and encoding it again itself.
      */
-    C2S_CODEC_DRC_H264 = 4
+    C2S_CODEC_DRC_H264 = 4,
+
+    /*
+     * Raw interleaved signed 16-bit little-endian PCM.
+     *
+     * Used by the native Wii U console client: the capture source is
+     * already PCM, so compressing it to Opus only to immediately decode
+     * it back to PCM on a fast LAN buys nothing.
+     */
+    C2S_CODEC_PCM_S16LE = 5
 } C2sCodec;
 
 /* Fixed by the pad's protocol, not chosen: the panel libdrc feeds is

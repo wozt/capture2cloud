@@ -396,7 +396,16 @@ static void finish_connect(void) {
     hello.magic = c2s_le32(C2S_MAGIC);
     hello.version = C2S_VERSION;
     hello.token_len = token_len;
-    hello.reserved = c2s_le16(0);
+
+    /*
+     * This console can consume the capture PCM directly.
+     *
+     * Older hosts simply see a non-zero reserved field and continue to
+     * answer Opus; the reply's audio_codec tells us what was negotiated.
+     */
+    hello.reserved =
+        c2s_le16(
+            C2S_HELLO_CAP_PCM_S16LE);
     if (send_all(&hello, sizeof(hello)) != 0 ||
         (token_len && send_all(g_token, token_len) != 0)) {
         fail("sending hello", errno, "the host closed during the handshake");
@@ -550,6 +559,7 @@ static void handle_handshake_reply(void) {
     g_info.width = ack.width;
     g_info.height = ack.height;
     g_info.video_codec = ack.video_codec;
+    g_info.audio_codec = ack.audio_codec;
     g_info.audio_rate = ack.audio_rate;
     g_info.audio_channels = ack.audio_channels;
     g_info.state = NET_CONNECTED;

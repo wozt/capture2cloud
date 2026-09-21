@@ -108,7 +108,14 @@ int switch_stream_max_clients(void);
  * wrong chain do not fail cleanly -- they decode into a picture. */
 void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, uint32_t size,
                               int keyframe);
+/* Opus for legacy/native/browser clients that negotiated it. */
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size);
+
+/* Raw S16LE PCM, only to Wii U console clients that advertised support. */
+void switch_stream_send_audio_pcm(SwitchStream *s, const uint8_t *data, uint32_t size);
+
+/* Used to avoid running opusenc at all when PCM Wii U is the only listener. */
+int switch_stream_opus_audio_client_count(SwitchStream *s);
 
 /* The size the stream is encoded at, announced in the handshake so the
  * client knows what to expect before the first frame. */
