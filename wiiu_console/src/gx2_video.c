@@ -514,6 +514,28 @@ int gx2_video_draw(int target_width,
     }
 
     /*
+     * SDL draws the menu before/after this raw GX2 pass and may leave
+     * viewport/scissor state behind.
+     *
+     * Unlike shaders/blend/depth, these were not restored previously.
+     * That can leave parts of a previous menu frame untouched by the
+     * following video frame ("ghost" rectangles).
+     */
+    GX2SetViewport(
+        0.0f,
+        0.0f,
+        (float)target_width,
+        (float)target_height,
+        0.0f,
+        1.0f);
+
+    GX2SetScissor(
+        0,
+        0,
+        target_width,
+        target_height);
+
+    /*
      * The video is opaque.
      *
      * Don't inherit SDL's current blend/depth/cull state because it can
