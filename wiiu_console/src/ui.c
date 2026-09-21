@@ -18,7 +18,7 @@
  *
  * Ne change ni le decodeur H264, ni l'audio AX, ni le reseau.
  */
-#define UI_FORCE_SDL_VIDEO 1
+#define UI_FORCE_SDL_VIDEO 0
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
