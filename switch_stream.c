@@ -145,6 +145,14 @@
  * everything. */
 #define SS_SOCKET_SNDBUF 262144
 
+/*
+ * Audio is never intentionally sacrificed just because a video message
+ * is partially written. Bound the exceptional backlog anyway: a client
+ * that is this far behind is better reconnected than given seconds of
+ * stale sound.
+ */
+#define SS_AUDIO_PENDING_MAX_BYTES 262144
+
 /* Shortest gap between forced keyframes. See last_keyframe_ms. */
 #define SS_KEYFRAME_MIN_INTERVAL_MS 1000
 
@@ -167,6 +175,9 @@ typedef struct {
     int is_ws;
     int on_drc_port;   /* arrived on the GamePad's own port */
     int on_wiiu_port;  /* arrived on the Wii U console's own port */
+
+    /* This client explicitly negotiated raw S16LE audio. */
+    int pcm_audio;
 
     /*
      * Native peer IPv4 in network byte order.
@@ -311,7 +322,13 @@ static uint8_t slot_codec(int slot) {
 /* slot_filter < 0 means every client; otherwise only those on that
  * stream. Video is always filtered -- handing a client another
  * encode's bytes produces a picture, and the picture is bright pink. */
-static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t flags,
+static void broadcast_filtered(SwitchStream *s, int slot_filter,
+                               uint8_t type, uint8_t flags,
+                               const uint8_t *data, uint32_t size,
+                               int pcm_filter);
+
+static void broadcast(SwitchStream *s, int slot_filter,
+                      uint8_t type, uint8_t flags,
                       const uint8_t *data, uint32_t size);
 static void send_group_state(SwitchStream *s, int index);
 static int send_msg_now(SsClient *c, uint8_t type, const void *data, uint32_t size);
@@ -439,8 +456,10 @@ static void drop_client(SwitchStream *s, int i, const char *why) {
     recount(s);
 }
 
-static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t flags,
-                      const uint8_t *data, uint32_t size) {
+static void broadcast_filtered(SwitchStream *s, int slot_filter,
+                               uint8_t type, uint8_t flags,
+                               const uint8_t *data, uint32_t size,
+                               int pcm_filter) {
     if (!s || size > C2S_MAX_PAYLOAD) {
         return;
     }
@@ -478,6 +497,16 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
             continue;
         }
 
+        /*
+         * -1 = any negotiated audio format
+         *  0 = Opus clients only
+         *  1 = PCM clients only
+         */
+        if (pcm_filter >= 0 &&
+            !!c->pcm_audio != !!pcm_filter) {
+            continue;
+        }
+
         if (flush_pending(c) != 0) {
             drop_client(s, i, "connection gone");
             continue;
@@ -497,16 +526,37 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
             }
         }
 
+        uint32_t pending_prefix = 0;
+
         if (c->pending_len) {
-            /* Still catching up on the previous frame, so this one is
-             * skipped -- but VP8 is predictive, and a gap leaves every
-             * frame after it decoding against something the client never
-             * received. The picture then stays broken until the next
-             * keyframe, which at the usual interval is five seconds
-             * away. Asking for one now is the difference between a
-             * dropped frame and five seconds of smeared garbage. */
-            skipped = 1;
-            continue;
+            /*
+             * Video remains expendable: staying at the live edge matters
+             * more than delivering a stale picture.
+             *
+             * Audio is different. A missing PCM packet literally removes
+             * 5 ms of waveform, so append it behind the bytes already in
+             * flight instead of intentionally creating a hole.
+             */
+            if (type != C2S_MSG_AUDIO) {
+                skipped = 1;
+                continue;
+            }
+
+            if (c->pending_sent) {
+                const uint32_t remain =
+                    c->pending_len -
+                    c->pending_sent;
+
+                memmove(c->pending,
+                        c->pending + c->pending_sent,
+                        remain);
+
+                c->pending_len = remain;
+                c->pending_sent = 0;
+            }
+
+            pending_prefix =
+                c->pending_len;
         }
 
         /* Header and payload are one message: a header whose payload
@@ -517,24 +567,70 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
          * handshake the page reads exactly what the console reads. */
         uint8_t wsh[10];
         const size_t wsh_len = c->is_ws ? ws_binary_header(total, wsh) : 0;
-        const uint32_t on_wire = total + (uint32_t)wsh_len;
+        const uint32_t on_wire =
+            total +
+            (uint32_t)wsh_len;
 
-        if (on_wire > c->pending_cap) {
-            uint8_t *bigger = realloc(c->pending, on_wire);
+        const uint32_t needed =
+            pending_prefix +
+            on_wire;
+
+        if (type == C2S_MSG_AUDIO &&
+            needed > SS_AUDIO_PENDING_MAX_BYTES) {
+
+            drop_client(
+                s,
+                i,
+                "audio backlog");
+
+            continue;
+        }
+
+        if (needed > c->pending_cap) {
+            uint8_t *bigger =
+                realloc(
+                    c->pending,
+                    needed);
+
             if (!bigger) {
-                continue; /* skip this frame; the client stays */
+                continue;
             }
-            c->pending = bigger;
-            c->pending_cap = on_wire;
+
+            c->pending =
+                bigger;
+
+            c->pending_cap =
+                needed;
         }
+
+        uint8_t *dst =
+            c->pending +
+            pending_prefix;
+
         if (wsh_len) {
-            memcpy(c->pending, wsh, wsh_len);
+            memcpy(
+                dst,
+                wsh,
+                wsh_len);
         }
-        memcpy(c->pending + wsh_len, &h, sizeof(h));
+
+        memcpy(
+            dst + wsh_len,
+            &h,
+            sizeof(h));
+
         if (size) {
-            memcpy(c->pending + wsh_len + sizeof(h), data, size);
+            memcpy(
+                dst +
+                    wsh_len +
+                    sizeof(h),
+                data,
+                size);
         }
-        c->pending_len = on_wire;
+
+        c->pending_len =
+            needed;
+
         c->pending_sent = 0;
 
         if (flush_pending(c) != 0) {
@@ -568,6 +664,21 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
         }
     }
 }
+
+static void broadcast(SwitchStream *s, int slot_filter,
+                      uint8_t type, uint8_t flags,
+                      const uint8_t *data, uint32_t size)
+{
+    broadcast_filtered(
+        s,
+        slot_filter,
+        type,
+        flags,
+        data,
+        size,
+        -1);
+}
+
 
 void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, uint32_t size,
                               int keyframe) {
@@ -698,9 +809,70 @@ void switch_stream_set_drc_available(SwitchStream *s, int available) {
     s->drc_available = available ? 1 : 0;
 }
 
-void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size) {
-    /* One encode, everybody: sound has no stream groups. */
-    broadcast(s, -1, C2S_MSG_AUDIO, 0, data, size);
+void switch_stream_send_audio(SwitchStream *s,
+                              const uint8_t *data,
+                              uint32_t size)
+{
+    /*
+     * Opus goes to every legacy/non-PCM client, including browsers,
+     * Switch and GamePad clients.
+     */
+    broadcast_filtered(
+        s,
+        -1,
+        C2S_MSG_AUDIO,
+        0,
+        data,
+        size,
+        0);
+}
+
+
+void switch_stream_send_audio_pcm(SwitchStream *s,
+                                  const uint8_t *data,
+                                  uint32_t size)
+{
+    /*
+     * Raw PCM is intentionally specific to the Wii U console stream.
+     */
+    broadcast_filtered(
+        s,
+        SS_STREAM_WIIU,
+        C2S_MSG_AUDIO,
+        0,
+        data,
+        size,
+        1);
+}
+
+
+int switch_stream_opus_audio_client_count(SwitchStream *s)
+{
+    if (!s) {
+        return 0;
+    }
+
+    int count = 0;
+
+    SDL_LockMutex(s->mutex);
+
+    for (int i = 0;
+         i < SS_MAX_CLIENTS;
+         ++i) {
+
+        const SsClient *c =
+            &s->clients[i];
+
+        if (c->in_use &&
+            c->handshake_done &&
+            !c->pcm_audio) {
+            count++;
+        }
+    }
+
+    SDL_UnlockMutex(s->mutex);
+
+    return count;
 }
 
 void switch_stream_set_video_size(SwitchStream *s, uint16_t width, uint16_t height) {
@@ -809,8 +981,24 @@ static void handle_hello(SwitchStream *s, int index) {
         ack.width = s->group_stream_known[slot] ? s->group_width[slot] : s->width;
         ack.height = s->group_stream_known[slot] ? s->group_height[slot] : s->height;
     }
+    /*
+     * Legacy clients leave C2sHello.reserved at zero and therefore keep
+     * receiving Opus exactly as before.
+     *
+     * Only the Wii U console currently advertises raw PCM support.
+     */
+    c->pcm_audio =
+        c->on_wiiu_port &&
+        ((c2s_le16(hello.reserved) &
+          C2S_HELLO_CAP_PCM_S16LE) != 0);
+
     ack.video_codec = c->codec;
-    ack.audio_codec = C2S_CODEC_OPUS;
+
+    ack.audio_codec =
+        c->pcm_audio
+            ? C2S_CODEC_PCM_S16LE
+            : C2S_CODEC_OPUS;
+
     ack.audio_rate = 48000;
     ack.audio_channels = 2;
 

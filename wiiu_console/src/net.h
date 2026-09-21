@@ -28,6 +28,7 @@ typedef struct {
     int      may_control;   /* 0 when the host accepted us as a viewer */
     uint16_t width, height;
     uint8_t  video_codec;   /* what the host is encoding right now */
+    uint8_t  audio_codec;   /* negotiated audio format */
     uint16_t audio_rate;
     uint8_t  audio_channels;
     char     status[96];    /* human-readable, for the menu */

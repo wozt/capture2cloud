@@ -13,10 +13,13 @@ int audio_init(int rate, int channels,
 
 void audio_exit(void);
 
-/* One Opus packet from C2S. */
-void audio_decode(const uint8_t *data, uint32_t size);
+/*
+ * One C2S_CODEC_PCM_S16LE packet from the host.
+ */
+void audio_push_pcm_s16le(const uint8_t *data,
+                          uint32_t size);
 
-void audio_stats(unsigned long *decoded,
+void audio_stats(unsigned long *packets,
                  unsigned long *failed,
                  unsigned long *dropped);
 

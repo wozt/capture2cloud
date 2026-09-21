@@ -58,7 +58,7 @@ LDFLAGS	=	-g $(MACHDEP) $(RPXSPECS) -Wl,-Map,$(notdir $*.map)
 # SDL2_ttf pulls freetype, which pulls harfbuzz, which pulls freetype
 # back -- hence freetype on both sides of it. The font itself is not
 # shipped: it comes from the console's shared memory (see ui.c).
-LIBS	:=	-lopus -lSDL2_ttf -lfreetype -lharfbuzz -lfreetype -lbrotlidec -lbrotlicommon -lpng -lbz2 -lz \
+LIBS	:=	-lSDL2_ttf -lfreetype -lharfbuzz -lfreetype -lbrotlidec -lbrotlicommon -lpng -lbz2 -lz \
 			-lSDL2 -lwut -lm
 
 #---------------------------------------------------------------------------------
