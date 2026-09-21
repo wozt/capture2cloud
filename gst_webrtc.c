@@ -1938,6 +1938,12 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
     if (!dest) {
         return;
     }
+
+    const gint64 wiiu_work_start =
+        slot == SS_STREAM_WIIU
+            ? g_get_monotonic_time()
+            : 0;
+
     /* Each chain is fed at its own size: a handheld's and a monitor's
      * are not the same picture. */
     /* The pad's panel is 864x480 and nothing else, so its chain is fed
@@ -2008,7 +2014,61 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
     GST_BUFFER_PTS(buffer) = pts;
     GST_BUFFER_DTS(buffer) = pts;
     GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(1, GST_SECOND, 60);
-    gst_app_src_push_buffer(GST_APP_SRC(dest), buffer);
+
+    const GstFlowReturn push_rc =
+        gst_app_src_push_buffer(
+            GST_APP_SRC(dest),
+            buffer);
+
+    if (slot == SS_STREAM_WIIU) {
+        static gint64 diag_at = 0;
+        static guint32 feed_frames = 0;
+        static guint32 bad_push = 0;
+        static guint64 work_us_total = 0;
+        static guint32 work_us_max = 0;
+
+        const gint64 now =
+            g_get_monotonic_time();
+
+        const guint32 work_us =
+            (guint32)(now - wiiu_work_start);
+
+        feed_frames++;
+        work_us_total += work_us;
+
+        if (work_us > work_us_max) {
+            work_us_max = work_us;
+        }
+
+        if (push_rc != GST_FLOW_OK) {
+            bad_push++;
+        }
+
+        if (!diag_at) {
+            diag_at = now;
+        }
+
+        if (now - diag_at >= G_USEC_PER_SEC) {
+            fprintf(stderr,
+                    "WIIU FEED: frames=%u target=%dx%d "
+                    "work=%.2fms max=%.2fms bad_push=%u\n",
+                    feed_frames,
+                    dw,
+                    dh,
+                    feed_frames
+                        ? (double)work_us_total /
+                          (double)feed_frames / 1000.0
+                        : 0.0,
+                    (double)work_us_max / 1000.0,
+                    bad_push);
+
+            feed_frames = 0;
+            bad_push = 0;
+            work_us_total = 0;
+            work_us_max = 0;
+            diag_at = now;
+        }
+    }
 }
 
 /* Scales the captured frame to the native clients' size and pushes it.

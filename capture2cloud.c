@@ -955,6 +955,9 @@ int main(int argc, char **argv) {
      * viewer. */
     Uint32 last_frame_ms = 0;
     Uint32 last_push_ms = 0;
+
+    Uint32 capture_diag_at = 0;
+    unsigned capture_diag_frames = 0;
     /* Edge-logged, so the log says when the encoder went idle rather
      * than repeating it sixty times a second. */
     int browser_fed = -1, native_fed = -1;
@@ -1166,6 +1169,23 @@ int main(int argc, char **argv) {
              * previous push means we were busy downstream and never
              * asked. */
             Uint32 frame_ms = SDL_GetTicks();
+
+            capture_diag_frames++;
+
+            if (!capture_diag_at) {
+                capture_diag_at = frame_ms;
+            }
+
+            if (frame_ms - capture_diag_at >= 1000) {
+                fprintf(stderr,
+                        "HOST CAPTURE: frames=%u previous_push=%u ms\n",
+                        capture_diag_frames,
+                        (unsigned)last_push_ms);
+
+                capture_diag_frames = 0;
+                capture_diag_at = frame_ms;
+            }
+
             if (app_verbose() && last_frame_ms != 0 && frame_ms - last_frame_ms > FRAME_GAP_WARN_MS) {
                 fprintf(stderr, "video_capture: %u ms gap before this frame (previous push took %u ms)\n",
                         (unsigned)(frame_ms - last_frame_ms), (unsigned)last_push_ms);
