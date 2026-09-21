@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "c2s_protocol.h"
+#include "input.h"
 
 /*
  * Persistent Wii U client settings.
@@ -16,6 +17,8 @@ typedef struct {
     uint8_t  host[4];
     uint16_t port;       /* native Wii U stream, normally 5083 */
     uint16_t web_port;   /* HTTP /login, normally 5080 */
+
+    InputConfig input;
 
     char token[C2S_MAX_TOKEN_LEN + 1];
 } Settings;

@@ -41,6 +41,13 @@ enum {
 
 typedef int8_t PadState21[PAD_SLOT_COUNT];
 
+typedef struct {
+    uint8_t deadzone[2];       /* percent, left/right */
+    uint8_t range[2];          /* percent that counts as fully pushed */
+    uint8_t invert_y;
+    uint8_t face_by_position;  /* Xbox positions instead of Wii U letters */
+} InputConfig;
+
 /*
  * SDL owns VPAD in this client already.
  *
@@ -68,5 +75,8 @@ int  input_available(void);
 
 /* Last physical state sampled, even when forwarding is disabled. */
 void input_snapshot(PadState21 out);
+
+void input_set_config(const InputConfig *config);
+void input_get_config(InputConfig *config);
 
 #endif

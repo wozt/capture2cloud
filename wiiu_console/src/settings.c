@@ -13,6 +13,12 @@ static const Settings DEFAULTS = {
     .host = { 0, 0, 0, 0 },
     .port = C2S_WIIU_PORT,
     .web_port = 5080,
+    .input = {
+        .deadzone = { 3, 3 },
+        .range = { 100, 100 },
+        .invert_y = 0,
+        .face_by_position = 1
+    },
     .token = ""
 };
 
@@ -68,6 +74,7 @@ void settings_load(Settings *out)
 
         unsigned a, b, c, d;
         unsigned port;
+        unsigned value;
 
         if (sscanf(
                 line,
@@ -103,6 +110,18 @@ void settings_load(Settings *out)
             out->web_port =
                 (uint16_t)port;
 
+        } else if (sscanf(line, " left_deadzone = %u", &value) == 1) {
+            out->input.deadzone[0] = value > 40 ? 40 : value;
+        } else if (sscanf(line, " right_deadzone = %u", &value) == 1) {
+            out->input.deadzone[1] = value > 40 ? 40 : value;
+        } else if (sscanf(line, " left_range = %u", &value) == 1) {
+            out->input.range[0] = value < 45 ? 45 : value > 100 ? 100 : value;
+        } else if (sscanf(line, " right_range = %u", &value) == 1) {
+            out->input.range[1] = value < 45 ? 45 : value > 100 ? 100 : value;
+        } else if (sscanf(line, " invert_y = %u", &value) == 1) {
+            out->input.invert_y = value != 0;
+        } else if (sscanf(line, " face_by_position = %u", &value) == 1) {
+            out->input.face_by_position = value != 0;
         } else {
             char token[
                 C2S_MAX_TOKEN_LEN + 1];
@@ -163,6 +182,12 @@ int settings_save(const Settings *s,
         "host = %u.%u.%u.%u\n"
         "port = %u\n"
         "web_port = %u\n"
+        "left_deadzone = %u\n"
+        "right_deadzone = %u\n"
+        "left_range = %u\n"
+        "right_range = %u\n"
+        "invert_y = %u\n"
+        "face_by_position = %u\n"
         "token = %s\n",
         s->host[0],
         s->host[1],
@@ -170,6 +195,12 @@ int settings_save(const Settings *s,
         s->host[3],
         s->port,
         s->web_port,
+        s->input.deadzone[0],
+        s->input.deadzone[1],
+        s->input.range[0],
+        s->input.range[1],
+        s->input.invert_y,
+        s->input.face_by_position,
         s->token);
 
     fclose(f);

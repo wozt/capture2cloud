@@ -18,12 +18,13 @@ through AX, GamePad input, password login, saved session token and normal
 HOME-menu suspend/resume/exit.
 
 The touch menu is implemented in `src/menu.c/.h`: layout, hit testing and
-layered drawing live outside the application loop. Connection and Console
-are the first two pages; Stream and Controls are the next UI iterations.
+layered drawing live outside the application loop. Its Connection, Stream,
+Controls and Console pages use settings the Wii U path can actually apply.
 
-The first settings frame and first two in-stream menu openings are saved as
-`menu-debug-0.bmp` through `menu-debug-2.bmp` beside the WUHB for hardware
-rendering checks.
+Stream exposes the safe 480p/720p profiles, 30/60 fps and bitrate. Controls
+exposes per-stick deadzone/range, Y inversion and face-button mapping. ZL/ZR
+remain digital, and separate TV/GamePad output waits for a dual-target GX2
+renderer instead of presenting controls that do nothing.
 
 ## Building
 

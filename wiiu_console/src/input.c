@@ -47,15 +47,14 @@ enum {
  */
 #define STICK_RAW_MAX 32752
 
-/*
- * Temporary fixed deadzone for bring-up.
- *
- * Once hardware direction/range is validated this moves into Settings,
- * independently for both sticks as required by SPEC.md.
- */
-#define STICK_DEADZONE 1000
-
 static SDL_Joystick *g_pad;
+
+static InputConfig g_config = {
+    .deadzone = { 3, 3 },
+    .range = { 100, 100 },
+    .invert_y = 0,
+    .face_by_position = 1
+};
 
 static PadState21 g_state;
 static PadState21 g_last_sent;
@@ -69,7 +68,7 @@ static uint32_t g_last_send_ms;
  * The deadzone is removed rather than merely zeroed, so once outside it
  * the remaining physical travel still spans the complete output range.
  */
-static int8_t axis_to_wire(Sint16 raw)
+static int8_t axis_to_wire(Sint16 raw, int stick)
 {
     int value = (int)raw;
     int sign = 1;
@@ -79,17 +78,27 @@ static int8_t axis_to_wire(Sint16 raw)
         value = -value;
     }
 
-    if (value <= STICK_DEADZONE) {
+    int dead =
+        STICK_RAW_MAX * g_config.deadzone[stick] / 100;
+
+    int range =
+        STICK_RAW_MAX * g_config.range[stick] / 100;
+
+    if (range <= dead) {
+        range = dead + 1;
+    }
+
+    if (value <= dead) {
         return 0;
     }
 
-    if (value > STICK_RAW_MAX) {
-        value = STICK_RAW_MAX;
+    if (value > range) {
+        value = range;
     }
 
     int scaled =
-        (value - STICK_DEADZONE) * 100 /
-        (STICK_RAW_MAX - STICK_DEADZONE);
+        (value - dead) * 100 /
+        (range - dead);
 
     if (scaled > 100) {
         scaled = 100;
@@ -142,17 +151,17 @@ static void sample_pad(PadState21 out)
      * physical Y (left)   -> PAD_X
      * physical X (top)    -> PAD_Y
      */
-    out[PAD_A] =
-        pressed(WIIU_BTN_B);
-
-    out[PAD_B] =
-        pressed(WIIU_BTN_A);
-
-    out[PAD_X] =
-        pressed(WIIU_BTN_Y);
-
-    out[PAD_Y] =
-        pressed(WIIU_BTN_X);
+    if (g_config.face_by_position) {
+        out[PAD_A] = pressed(WIIU_BTN_B);
+        out[PAD_B] = pressed(WIIU_BTN_A);
+        out[PAD_X] = pressed(WIIU_BTN_Y);
+        out[PAD_Y] = pressed(WIIU_BTN_X);
+    } else {
+        out[PAD_A] = pressed(WIIU_BTN_A);
+        out[PAD_B] = pressed(WIIU_BTN_B);
+        out[PAD_X] = pressed(WIIU_BTN_X);
+        out[PAD_Y] = pressed(WIIU_BTN_Y);
+    }
 
 
     out[PAD_LB] =
@@ -213,25 +222,29 @@ static void sample_pad(PadState21 out)
         axis_to_wire(
             SDL_JoystickGetAxis(
                 g_pad,
-                0));
+                0),
+            0);
 
     out[PAD_LY] =
-        axis_to_wire(
+        (g_config.invert_y ? -1 : 1) * axis_to_wire(
             SDL_JoystickGetAxis(
                 g_pad,
-                1));
+                1),
+            0);
 
     out[PAD_RX] =
         axis_to_wire(
             SDL_JoystickGetAxis(
                 g_pad,
-                2));
+                2),
+            1);
 
     out[PAD_RY] =
-        axis_to_wire(
+        (g_config.invert_y ? -1 : 1) * axis_to_wire(
             SDL_JoystickGetAxis(
                 g_pad,
-                3));
+                3),
+            1);
 
     /*
      * PAD_GUIDE remains zero.
@@ -376,6 +389,36 @@ void input_snapshot(PadState21 out)
         out,
         g_state,
         sizeof(PadState21));
+}
+
+void input_set_config(const InputConfig *config)
+{
+    if (!config) {
+        return;
+    }
+
+    g_config = *config;
+
+    for (int i = 0; i < 2; ++i) {
+        if (g_config.deadzone[i] > 40)
+            g_config.deadzone[i] = 40;
+        if (g_config.range[i] < 45)
+            g_config.range[i] = 45;
+        if (g_config.range[i] > 100)
+            g_config.range[i] = 100;
+        if (g_config.range[i] <= g_config.deadzone[i])
+            g_config.range[i] = g_config.deadzone[i] + 1;
+    }
+
+    g_config.invert_y = !!g_config.invert_y;
+    g_config.face_by_position = !!g_config.face_by_position;
+}
+
+void input_get_config(InputConfig *config)
+{
+    if (config) {
+        *config = g_config;
+    }
 }
 
 

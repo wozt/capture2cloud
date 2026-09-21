@@ -6,6 +6,8 @@
 
 typedef enum {
     MENU_PAGE_CONNECTION,
+    MENU_PAGE_STREAM,
+    MENU_PAGE_CONTROLS,
     MENU_PAGE_CONSOLE
 } MenuPage;
 
@@ -16,6 +18,15 @@ typedef enum {
     MENU_ACTION_WEB_PORT,
     MENU_ACTION_PASSWORD,
     MENU_ACTION_CONNECT,
+    MENU_ACTION_RESOLUTION,
+    MENU_ACTION_FRAME_RATE,
+    MENU_ACTION_BITRATE,
+    MENU_ACTION_LEFT_DEADZONE,
+    MENU_ACTION_LEFT_RANGE,
+    MENU_ACTION_RIGHT_DEADZONE,
+    MENU_ACTION_RIGHT_RANGE,
+    MENU_ACTION_INVERT_Y,
+    MENU_ACTION_FACE_MAPPING,
     MENU_ACTION_REMOTE_HOME,
     MENU_ACTION_WAKE,
     MENU_ACTION_RESET_DONGLE,
@@ -36,8 +47,10 @@ typedef struct {
 typedef struct {
     MenuPage page;
     int open;
-    unsigned capture_pending;
-    unsigned capture_index;
+    unsigned resolution_index;
+    unsigned fps_index;
+    unsigned bitrate_index;
+    int profile_dirty;
 } MenuState;
 
 typedef struct {
@@ -63,8 +76,23 @@ MenuAction menu_input(MenuState *menu,
 void menu_draw(const MenuState *menu,
                const MenuView *view);
 
-/* First settings frame and first two stream-menu openings request a capture. */
-int menu_take_capture(MenuState *menu,
-                      unsigned *index);
+void menu_adopt_stream(MenuState *menu,
+                       unsigned width,
+                       unsigned height,
+                       unsigned fps,
+                       unsigned bitrate_kbps);
+
+int menu_change_stream(MenuState *menu,
+                       MenuAction action,
+                       unsigned *width,
+                       unsigned *height,
+                       unsigned *fps,
+                       unsigned *bitrate_kbps);
+
+int menu_take_profile_dirty(MenuState *menu,
+                            unsigned *width,
+                            unsigned *height,
+                            unsigned *fps,
+                            unsigned *bitrate_kbps);
 
 #endif

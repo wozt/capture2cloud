@@ -47,8 +47,10 @@ static const UiColour MENU_RED = { 0x9a, 0x43, 0x43, 0xff };
 static const MenuRect R_MARKER = { 1238, 10, 32, 32 };
 static const MenuRect R_MENU = { 64, 38, 1152, 644 };
 static const MenuRect R_SIDEBAR = { 84, 92, 218, 548 };
-static const MenuRect R_CONNECTION = { 100, 184, 186, 54 };
-static const MenuRect R_CONSOLE = { 100, 250, 186, 54 };
+static const MenuRect R_CONNECTION = { 100, 174, 186, 48 };
+static const MenuRect R_STREAM = { 100, 232, 186, 48 };
+static const MenuRect R_CONTROLS = { 100, 290, 186, 48 };
+static const MenuRect R_CONSOLE = { 100, 348, 186, 48 };
 
 static const MenuRect R_HOST = { 348, 148, 520, 60 };
 static const MenuRect R_PASSWORD = { 348, 220, 520, 60 };
@@ -62,6 +64,32 @@ static const MenuRect R_REMOTE_HOME = { 756, 148, 414, 64 };
 static const MenuRect R_RESET = { 348, 230, 390, 64 };
 static const MenuRect R_RESTART = { 756, 230, 414, 64 };
 static const MenuRect R_CONSOLE_EXIT = { 348, 326, 822, 58 };
+
+static const MenuRect R_RESOLUTION = { 348, 148, 390, 64 };
+static const MenuRect R_FRAME_RATE = { 756, 148, 414, 64 };
+static const MenuRect R_BITRATE = { 348, 230, 390, 64 };
+static const MenuRect R_OUTPUT = { 756, 230, 414, 64 };
+
+static const MenuRect R_LEFT_DEAD = { 348, 148, 390, 58 };
+static const MenuRect R_LEFT_RANGE = { 756, 148, 414, 58 };
+static const MenuRect R_RIGHT_DEAD = { 348, 218, 390, 58 };
+static const MenuRect R_RIGHT_RANGE = { 756, 218, 414, 58 };
+static const MenuRect R_INVERT_Y = { 348, 288, 390, 58 };
+static const MenuRect R_FACE_MAPPING = { 756, 288, 414, 58 };
+
+typedef struct {
+    unsigned width;
+    unsigned height;
+    const char *label;
+} Resolution;
+
+static const Resolution RESOLUTIONS[] = {
+    { 848, 480, "480p" },
+    { 1280, 720, "720p" }
+};
+
+static const unsigned FRAME_RATES[] = { 30, 60 };
+static const unsigned BITRATES[] = { 2500, 4000, 6000, 10000, 15000 };
 
 static int hit(const MenuRect *r, int x, int y)
 {
@@ -209,6 +237,14 @@ static void add_shell(MenuCanvas *canvas,
            menu->page == MENU_PAGE_CONNECTION
                ? UI_ACCENT : UI_PANEL,
            UI_TEXT);
+    button(canvas, R_STREAM, "Stream",
+           menu->page == MENU_PAGE_STREAM
+               ? UI_ACCENT : UI_PANEL,
+           UI_TEXT);
+    button(canvas, R_CONTROLS, "Controls",
+           menu->page == MENU_PAGE_CONTROLS
+               ? UI_ACCENT : UI_PANEL,
+           UI_TEXT);
     button(canvas, R_CONSOLE, "Console",
            menu->page == MENU_PAGE_CONSOLE
                ? UI_ACCENT : UI_PANEL,
@@ -272,6 +308,71 @@ static void add_connection(MenuCanvas *canvas,
 
     text_at(canvas, 348, 438, UI_SIZE_BODY, UI_DIM,
             "%s", net_info()->status);
+}
+
+static void add_stream(MenuCanvas *canvas,
+                       const MenuState *menu)
+{
+    char fps[24];
+    char bitrate[24];
+
+    snprintf(fps, sizeof(fps), "%u fps",
+             FRAME_RATES[menu->fps_index]);
+    snprintf(bitrate, sizeof(bitrate), "%u kbps",
+             BITRATES[menu->bitrate_index]);
+
+    text_at(canvas, 348, 74, UI_SIZE_TITLE,
+            UI_TEXT, "Stream");
+    text_at(canvas, 348, 112, UI_SIZE_BODY,
+            UI_DIM, "Changes are sent to the dedicated Wii U encoder");
+
+    field(canvas, R_RESOLUTION, "Resolution",
+          RESOLUTIONS[menu->resolution_index].label, UI_TEXT);
+    field(canvas, R_FRAME_RATE, "Frame rate", fps, UI_TEXT);
+    field(canvas, R_BITRATE, "Bitrate", bitrate, UI_TEXT);
+    field(canvas, R_OUTPUT, "Display", "TV + GamePad", UI_DIM);
+
+    text_at(canvas, 348, 326, UI_SIZE_BODY, MENU_GREEN,
+            "720p60 is the validated path");
+    text_at(canvas, 348, 362, UI_SIZE_BODY, UI_DIM,
+            "1080p stays hidden until the decoder is allocated and tested for it");
+    text_at(canvas, 348, 398, UI_SIZE_BODY, UI_DIM,
+            "Separate TV / GamePad output needs a dual GX2 scan-target renderer");
+}
+
+static void add_controls(MenuCanvas *canvas,
+                         const MenuView *view)
+{
+    char left_dead[16];
+    char left_range[16];
+    char right_dead[16];
+    char right_range[16];
+
+    const InputConfig *input = &view->settings->input;
+
+    snprintf(left_dead, sizeof(left_dead), "%u%%", input->deadzone[0]);
+    snprintf(left_range, sizeof(left_range), "%u%%", input->range[0]);
+    snprintf(right_dead, sizeof(right_dead), "%u%%", input->deadzone[1]);
+    snprintf(right_range, sizeof(right_range), "%u%%", input->range[1]);
+
+    text_at(canvas, 348, 74, UI_SIZE_TITLE,
+            UI_TEXT, "Controls");
+    text_at(canvas, 348, 112, UI_SIZE_BODY,
+            UI_DIM, "Applied immediately to Wii U GamePad input");
+
+    field(canvas, R_LEFT_DEAD, "Left deadzone", left_dead, UI_TEXT);
+    field(canvas, R_LEFT_RANGE, "Left full range", left_range, UI_TEXT);
+    field(canvas, R_RIGHT_DEAD, "Right deadzone", right_dead, UI_TEXT);
+    field(canvas, R_RIGHT_RANGE, "Right full range", right_range, UI_TEXT);
+    field(canvas, R_INVERT_Y, "Invert stick Y",
+          input->invert_y ? "On" : "Off",
+          input->invert_y ? MENU_GREEN : UI_TEXT);
+    field(canvas, R_FACE_MAPPING, "Face buttons",
+          input->face_by_position ? "Xbox positions" : "Wii U letters",
+          UI_TEXT);
+
+    text_at(canvas, 348, 382, UI_SIZE_BODY, UI_DIM,
+            "ZL / ZR are digital on this SDL Wii U path; no fake threshold is shown");
 }
 
 static void add_console(MenuCanvas *canvas,
@@ -353,7 +454,106 @@ void menu_init(MenuState *menu)
     memset(menu, 0, sizeof(*menu));
     menu->page = MENU_PAGE_CONNECTION;
     menu->open = 1;
-    menu->capture_pending = 1;
+    menu->resolution_index = 1;
+    menu->fps_index = 1;
+    menu->bitrate_index = 2;
+}
+
+static void stream_values(const MenuState *menu,
+                          unsigned *width,
+                          unsigned *height,
+                          unsigned *fps,
+                          unsigned *bitrate_kbps)
+{
+    if (width) *width = RESOLUTIONS[menu->resolution_index].width;
+    if (height) *height = RESOLUTIONS[menu->resolution_index].height;
+    if (fps) *fps = FRAME_RATES[menu->fps_index];
+    if (bitrate_kbps) *bitrate_kbps = BITRATES[menu->bitrate_index];
+}
+
+void menu_adopt_stream(MenuState *menu,
+                       unsigned width,
+                       unsigned height,
+                       unsigned fps,
+                       unsigned bitrate_kbps)
+{
+    if (!menu) return;
+    if (menu->profile_dirty) return;
+
+    unsigned best = 0;
+    unsigned best_cost = ~0u;
+    for (unsigned i = 0; i < sizeof(RESOLUTIONS) / sizeof(RESOLUTIONS[0]); ++i) {
+        unsigned cost =
+            (RESOLUTIONS[i].height > height
+                 ? RESOLUTIONS[i].height - height
+                 : height - RESOLUTIONS[i].height) * 10 +
+            (RESOLUTIONS[i].width > width
+                 ? RESOLUTIONS[i].width - width
+                 : width - RESOLUTIONS[i].width);
+        if (cost < best_cost) {
+            best = i;
+            best_cost = cost;
+        }
+    }
+    menu->resolution_index = best;
+
+    menu->fps_index = fps >= 45 ? 1 : 0;
+
+    best = 0;
+    best_cost = ~0u;
+    for (unsigned i = 0; i < sizeof(BITRATES) / sizeof(BITRATES[0]); ++i) {
+        unsigned cost = BITRATES[i] > bitrate_kbps
+            ? BITRATES[i] - bitrate_kbps
+            : bitrate_kbps - BITRATES[i];
+        if (cost < best_cost) {
+            best = i;
+            best_cost = cost;
+        }
+    }
+    menu->bitrate_index = best;
+}
+
+int menu_change_stream(MenuState *menu,
+                       MenuAction action,
+                       unsigned *width,
+                       unsigned *height,
+                       unsigned *fps,
+                       unsigned *bitrate_kbps)
+{
+    if (!menu) return 0;
+
+    if (action == MENU_ACTION_RESOLUTION) {
+        menu->resolution_index =
+            (menu->resolution_index + 1) %
+            (sizeof(RESOLUTIONS) / sizeof(RESOLUTIONS[0]));
+    } else if (action == MENU_ACTION_FRAME_RATE) {
+        menu->fps_index =
+            (menu->fps_index + 1) %
+            (sizeof(FRAME_RATES) / sizeof(FRAME_RATES[0]));
+    } else if (action == MENU_ACTION_BITRATE) {
+        menu->bitrate_index =
+            (menu->bitrate_index + 1) %
+            (sizeof(BITRATES) / sizeof(BITRATES[0]));
+    } else {
+        return 0;
+    }
+
+    menu->profile_dirty = 1;
+    stream_values(menu, width, height, fps, bitrate_kbps);
+    return 1;
+}
+
+int menu_take_profile_dirty(MenuState *menu,
+                            unsigned *width,
+                            unsigned *height,
+                            unsigned *fps,
+                            unsigned *bitrate_kbps)
+{
+    if (!menu || !menu->profile_dirty) return 0;
+
+    menu->profile_dirty = 0;
+    stream_values(menu, width, height, fps, bitrate_kbps);
+    return 1;
 }
 
 void menu_force_open(MenuState *menu, int open)
@@ -378,10 +578,6 @@ MenuAction menu_input(MenuState *menu,
         hit(&R_MARKER, input->touch_x, input->touch_y)) {
         menu->open = !menu->open;
 
-        if (menu->open && menu->capture_index < 3) {
-            menu->capture_pending = 1;
-        }
-
         return MENU_ACTION_NONE;
     }
 
@@ -391,6 +587,16 @@ MenuAction menu_input(MenuState *menu,
 
     if (hit(&R_CONNECTION, input->touch_x, input->touch_y)) {
         menu->page = MENU_PAGE_CONNECTION;
+        return MENU_ACTION_NONE;
+    }
+
+    if (hit(&R_STREAM, input->touch_x, input->touch_y)) {
+        menu->page = MENU_PAGE_STREAM;
+        return MENU_ACTION_NONE;
+    }
+
+    if (hit(&R_CONTROLS, input->touch_x, input->touch_y)) {
+        menu->page = MENU_PAGE_CONTROLS;
         return MENU_ACTION_NONE;
     }
 
@@ -412,6 +618,26 @@ MenuAction menu_input(MenuState *menu,
             return MENU_ACTION_CONNECT;
         if (hit(&R_EXIT, input->touch_x, input->touch_y))
             return MENU_ACTION_EXIT_HELP;
+    } else if (menu->page == MENU_PAGE_STREAM) {
+        if (hit(&R_RESOLUTION, input->touch_x, input->touch_y))
+            return MENU_ACTION_RESOLUTION;
+        if (hit(&R_FRAME_RATE, input->touch_x, input->touch_y))
+            return MENU_ACTION_FRAME_RATE;
+        if (hit(&R_BITRATE, input->touch_x, input->touch_y))
+            return MENU_ACTION_BITRATE;
+    } else if (menu->page == MENU_PAGE_CONTROLS) {
+        if (hit(&R_LEFT_DEAD, input->touch_x, input->touch_y))
+            return MENU_ACTION_LEFT_DEADZONE;
+        if (hit(&R_LEFT_RANGE, input->touch_x, input->touch_y))
+            return MENU_ACTION_LEFT_RANGE;
+        if (hit(&R_RIGHT_DEAD, input->touch_x, input->touch_y))
+            return MENU_ACTION_RIGHT_DEADZONE;
+        if (hit(&R_RIGHT_RANGE, input->touch_x, input->touch_y))
+            return MENU_ACTION_RIGHT_RANGE;
+        if (hit(&R_INVERT_Y, input->touch_x, input->touch_y))
+            return MENU_ACTION_INVERT_Y;
+        if (hit(&R_FACE_MAPPING, input->touch_x, input->touch_y))
+            return MENU_ACTION_FACE_MAPPING;
     } else {
         if (hit(&R_WAKE, input->touch_x, input->touch_y))
             return MENU_ACTION_WAKE;
@@ -450,6 +676,10 @@ void menu_draw(const MenuState *menu,
 
     if (menu->page == MENU_PAGE_CONNECTION) {
         add_connection(&canvas, view);
+    } else if (menu->page == MENU_PAGE_STREAM) {
+        add_stream(&canvas, menu);
+    } else if (menu->page == MENU_PAGE_CONTROLS) {
+        add_controls(&canvas, view);
     } else {
         add_console(&canvas, view);
     }
@@ -463,21 +693,4 @@ void menu_draw(const MenuState *menu,
                UI_ACCENT, UI_DIM);
         ui_flush();
     }
-}
-
-int menu_take_capture(MenuState *menu,
-                      unsigned *index)
-{
-    if (!menu || !menu->capture_pending) {
-        return 0;
-    }
-
-    menu->capture_pending = 0;
-
-    if (index) {
-        *index = menu->capture_index;
-    }
-
-    menu->capture_index++;
-    return 1;
 }

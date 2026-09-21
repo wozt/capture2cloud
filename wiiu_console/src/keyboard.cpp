@@ -219,5 +219,11 @@ int keyboard_prompt(const char *hint, const char *initial, int numeric,
     FSDelClient(fsClient, FS_ERROR_FLAG_NONE);
     FSShutdown();
     MEMFreeToDefaultHeap(fsClient);
+
+    /* swkbd draws and tears down its own raw GX2 state. SDL still thinks
+     * its previous shader is bound, which made text textures render as
+     * solid rectangles after entering a new password. */
+    ui_restore_after_external_gx2();
+
     return result;
 }
