@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <coreinit/condition.h>
+#include <coreinit/core.h>
 #include <coreinit/mutex.h>
 #include <coreinit/thread.h>
 #include <whb/log.h>
@@ -145,6 +146,28 @@ int video_worker_start(char *why, size_t why_size)
     OSInitMutex(&g_mutex);
     OSInitCond(&g_cond);
 
+    /*
+     * Keep the H264 worker off:
+     *
+     *   - the main application's current core;
+     *   - CPU2, which the AX88179 module deliberately reserves for
+     *     its USB worker + lwIP.
+     *
+     * Normally the title's main loop is on CPU1, so this selects CPU0.
+     */
+    const uint32_t main_core =
+        OSGetCoreId();
+
+    const uint16_t worker_affinity =
+        main_core == 0
+            ? OS_THREAD_ATTRIB_AFFINITY_CPU1
+            : OS_THREAD_ATTRIB_AFFINITY_CPU0;
+
+    WHBLogPrintf(
+        "video worker: main core=%u worker core=%u",
+        (unsigned)main_core,
+        main_core == 0 ? 1u : 0u);
+
     if (!OSCreateThread(
             &g_thread,
             worker_entry,
@@ -153,7 +176,7 @@ int video_worker_start(char *why, size_t why_size)
             g_stack + sizeof(g_stack),
             sizeof(g_stack),
             16,
-            OS_THREAD_ATTRIB_AFFINITY_ANY)) {
+            worker_affinity)) {
 
         if (why && why_size) {
             snprintf(
