@@ -17,8 +17,13 @@ Validated on Wii U hardware: H.264 video through H264DEC/GX2, PCM audio
 through AX, GamePad input, password login, saved session token and normal
 HOME-menu suspend/resume/exit.
 
-The touch menu now separates connection settings from remote-console
-actions. Stream and controller settings are the next UI iterations.
+The touch menu is implemented in `src/menu.c/.h`: layout, hit testing and
+layered drawing live outside the application loop. Connection and Console
+are the first two pages; Stream and Controls are the next UI iterations.
+
+The first settings frame and first two in-stream menu openings are saved as
+`menu-debug-0.bmp` through `menu-debug-2.bmp` beside the WUHB for hardware
+rendering checks.
 
 ## Building
 

@@ -29,6 +29,7 @@
 #include "audio.h"
 #include "input.h"
 #include "keyboard.h"
+#include "menu.h"
 #include "net.h"
 #include "proc.h"
 #include "settings.h"
@@ -49,586 +50,6 @@
 #define PASSWORD_CAP 96
 
 typedef enum { STATE_SETTINGS, STATE_STREAMING } State;
-
-typedef enum {
-    MENU_CONNECTION,
-    MENU_CONSOLE
-} MenuPage;
-
-typedef struct {
-    int x, y, w, h;
-} Rect;
-
-
-typedef struct {
-    unsigned rx_fps;
-    unsigned decode_fps;
-    unsigned display_fps;
-    unsigned loop_fps;
-    unsigned net_kbps;
-
-    unsigned video_queue;
-    unsigned video_dropped;
-} StreamPerf;
-
-static const Rect R_HOST = {
-    275, 90, 350, 42
-};
-
-static const Rect R_PORT = {
-    835, 90, 180, 42
-};
-
-static const Rect R_PASSWORD = {
-    275, 150, 350, 42
-};
-
-static const Rect R_WEB_PORT = {
-    835, 150, 180, 42
-};
-
-static const Rect R_CONNECT = {
-    275, 215, 220, 46
-};
-
-static const Rect R_REMOTE_HOME = {
-    515, 215, 220, 46
-};
-
-static const Rect R_QUIT = {
-    755, 215, 260, 46
-};
-
-static const Rect R_MENU = {
-    1248, 8, 24, 24
-};
-
-static const Rect R_TAB_CONNECTION = {
-    690, 38, 155, 38
-};
-
-static const Rect R_TAB_CONSOLE = {
-    860, 38, 155, 38
-};
-
-static const Rect R_WAKE = {
-    275, 100, 220, 46
-};
-
-static const Rect R_RESET_DONGLE = {
-    515, 100, 220, 46
-};
-
-static const Rect R_RESTART_HOST = {
-    755, 100, 260, 46
-};
-
-static const Rect R_CONSOLE_HOME = {
-    275, 170, 220, 46
-};
-
-static const Rect R_CONSOLE_QUIT = {
-    515, 170, 500, 46
-};
-
-
-static int hit(const Rect *r, int x, int y)
-{
-    return x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;
-}
-
-static void draw_button(const Rect *r, const char *label, UiColour fill)
-{
-    ui_box(r->x, r->y, r->w, r->h, fill, UI_DIM);
-    ui_text_centred(r->x, r->y, r->w, r->h, UI_SIZE_BODY, UI_TEXT, label);
-}
-
-static void draw_tabs(MenuPage page)
-{
-    draw_button(
-        &R_TAB_CONNECTION,
-        "CONNECTION",
-        page == MENU_CONNECTION
-            ? UI_ACCENT
-            : UI_PANEL);
-
-    draw_button(
-        &R_TAB_CONSOLE,
-        "CONSOLE",
-        page == MENU_CONSOLE
-            ? UI_ACCENT
-            : UI_PANEL);
-}
-
-static void draw_settings(
-    const Settings *s,
-    const char *password,
-    const char *note,
-    int decoder_ok,
-    const char *why,
-    MenuPage page)
-{
-    char host[32];
-    char value[24];
-
-    settings_host_string(
-        s,
-        host,
-        sizeof(host));
-
-    const int host_unset =
-        strcmp(
-            host,
-            "0.0.0.0") == 0;
-
-    /*
-     * Compact two-column connection area.
-     */
-    ui_text(
-        160, 48,
-        UI_SIZE_BODY,
-        UI_TEXT,
-        "capture2cloud");
-
-    draw_tabs(page);
-
-    if (page == MENU_CONSOLE) {
-        const NetInfo *net =
-            net_info();
-
-        const int enabled =
-            net->state == NET_CONNECTED &&
-            net->may_control;
-
-        draw_button(
-            &R_WAKE,
-            "WAKE",
-            enabled ? UI_ACCENT : UI_PANEL);
-
-        draw_button(
-            &R_RESET_DONGLE,
-            "RESET ADAPTER",
-            enabled ? UI_DANGER : UI_PANEL);
-
-        draw_button(
-            &R_RESTART_HOST,
-            "RESTART HOST",
-            enabled ? UI_DANGER : UI_PANEL);
-
-        draw_button(
-            &R_CONSOLE_HOME,
-            "REMOTE HOME",
-            enabled ? UI_ACCENT : UI_PANEL);
-
-        draw_button(
-            &R_CONSOLE_QUIT,
-            "WII U HOME MENU -> QUITTER",
-            UI_PANEL);
-
-        ui_text(
-            160, 250,
-            UI_SIZE_BODY,
-            enabled ? UI_TEXT : UI_DIM,
-            enabled
-                ? "remote controls: ready"
-                : "remote controls require a connected CONTROL session");
-
-        if (note && note[0]) {
-            ui_text(
-                160, 285,
-                UI_SIZE_BODY,
-                UI_DANGER,
-                "%s",
-                note);
-        }
-
-        return;
-    }
-
-    /* left column -------------------------------------------------- */
-
-    ui_text(
-        160, 100,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "host");
-
-    ui_box(
-        R_HOST.x,
-        R_HOST.y,
-        R_HOST.w,
-        R_HOST.h,
-        UI_FIELD,
-        UI_DIM);
-
-    ui_text_centred(
-        R_HOST.x,
-        R_HOST.y,
-        R_HOST.w,
-        R_HOST.h,
-        UI_SIZE_BODY,
-        host_unset
-            ? UI_DIM
-            : UI_TEXT,
-        host_unset
-            ? "tap to set"
-            : host);
-
-
-    ui_text(
-        160, 160,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "password");
-
-    ui_box(
-        R_PASSWORD.x,
-        R_PASSWORD.y,
-        R_PASSWORD.w,
-        R_PASSWORD.h,
-        UI_FIELD,
-        UI_DIM);
-
-    const char *auth_text;
-    UiColour auth_colour;
-
-    if (password &&
-        password[0]) {
-
-        auth_text =
-            "********";
-
-        auth_colour =
-            UI_TEXT;
-
-    } else if (s->token[0]) {
-
-        auth_text =
-            "token saved";
-
-        auth_colour =
-            UI_ACCENT;
-
-    } else {
-
-        auth_text =
-            "tap to enter";
-
-        auth_colour =
-            UI_DIM;
-    }
-
-    ui_text_centred(
-        R_PASSWORD.x,
-        R_PASSWORD.y,
-        R_PASSWORD.w,
-        R_PASSWORD.h,
-        UI_SIZE_BODY,
-        auth_colour,
-        auth_text);
-
-
-    /* right column ------------------------------------------------- */
-
-    ui_text(
-        690, 100,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "native port");
-
-    ui_box(
-        R_PORT.x,
-        R_PORT.y,
-        R_PORT.w,
-        R_PORT.h,
-        UI_FIELD,
-        UI_DIM);
-
-    snprintf(
-        value,
-        sizeof(value),
-        "%u",
-        s->port);
-
-    ui_text_centred(
-        R_PORT.x,
-        R_PORT.y,
-        R_PORT.w,
-        R_PORT.h,
-        UI_SIZE_BODY,
-        UI_TEXT,
-        value);
-
-
-    ui_text(
-        690, 160,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "web port");
-
-    ui_box(
-        R_WEB_PORT.x,
-        R_WEB_PORT.y,
-        R_WEB_PORT.w,
-        R_WEB_PORT.h,
-        UI_FIELD,
-        UI_DIM);
-
-    snprintf(
-        value,
-        sizeof(value),
-        "%u",
-        s->web_port);
-
-    ui_text_centred(
-        R_WEB_PORT.x,
-        R_WEB_PORT.y,
-        R_WEB_PORT.w,
-        R_WEB_PORT.h,
-        UI_SIZE_BODY,
-        UI_TEXT,
-        value);
-
-
-    draw_button(
-        &R_CONNECT,
-        "CONNECT",
-        UI_ACCENT);
-
-    const NetInfo *net =
-        net_info();
-
-    draw_button(
-        &R_REMOTE_HOME,
-        "REMOTE HOME",
-        net->state == NET_CONNECTED &&
-        net->may_control
-            ? UI_ACCENT
-            : UI_PANEL);
-
-    draw_button(
-        &R_QUIT,
-        "HOME -> EXIT",
-        UI_PANEL);
-
-
-    if (!decoder_ok) {
-        ui_text(
-            160, 285,
-            UI_SIZE_BODY,
-            UI_DANGER,
-            "decoder: %s",
-            why);
-
-    } else if (note &&
-               note[0]) {
-
-        ui_text(
-            160, 285,
-            UI_SIZE_BODY,
-            UI_DANGER,
-            "%s",
-            note);
-    }
-}
-
-static void handle_console_tap(
-    int x,
-    int y,
-    char *note,
-    size_t note_size)
-{
-    const NetInfo *net =
-        net_info();
-
-    const int enabled =
-        net->state == NET_CONNECTED &&
-        net->may_control;
-
-    if (hit(&R_CONSOLE_QUIT, x, y)) {
-        snprintf(
-            note,
-            note_size,
-            "Press HOME, then choose Quitter");
-
-        return;
-    }
-
-    if (!hit(&R_WAKE, x, y) &&
-        !hit(&R_RESET_DONGLE, x, y) &&
-        !hit(&R_RESTART_HOST, x, y) &&
-        !hit(&R_CONSOLE_HOME, x, y)) {
-
-        return;
-    }
-
-    if (!enabled) {
-        snprintf(
-            note,
-            note_size,
-            "remote controls require CONTROL");
-
-        return;
-    }
-
-    if (hit(&R_WAKE, x, y)) {
-        net_send_wake();
-        snprintf(note, note_size, "wake request sent");
-
-    } else if (hit(&R_RESET_DONGLE, x, y)) {
-        net_send_reset_dongle();
-        snprintf(note, note_size, "adapter reset requested");
-
-    } else if (hit(&R_RESTART_HOST, x, y)) {
-        net_send_restart();
-        snprintf(note, note_size, "host restart requested");
-
-    } else if (hit(&R_CONSOLE_HOME, x, y)) {
-        net_send_home();
-        snprintf(note, note_size, "remote HOME sent");
-    }
-}
-
-
-static void draw_streaming(const Settings *s,
-                           const StreamPerf *perf)
-{
-    (void)s;
-
-    const NetInfo *info = net_info();
-
-    VideoStats vs;
-    Gx2VideoStats gs;
-
-    unsigned long audio_failed = 0;
-    unsigned long audio_dropped = 0;
-
-    AudioDiag audio_diag_now;
-    memset(
-        &audio_diag_now,
-        0,
-        sizeof(audio_diag_now));
-
-    uint32_t present_avg_us = 0;
-    uint32_t present_max_us = 0;
-
-    video_stats_ex(&vs);
-    gx2_video_stats(&gs);
-
-    audio_stats(NULL,
-                &audio_failed,
-                &audio_dropped);
-
-    audio_diag(
-        &audio_diag_now);
-
-    ui_present_stats(
-        &present_avg_us,
-        &present_max_us);
-
-    /*
-     * Compact diagnostics: one useful fact per line.
-     */
-    ui_text(
-        160, 330,
-        UI_SIZE_BODY,
-        UI_TEXT,
-        "%s | %ux%u H264 | %u.%u Mb/s",
-        ui_video_renderer_name(),
-        info->width,
-        info->height,
-        perf->net_kbps / 1000,
-        (perf->net_kbps % 1000) / 100);
-
-    ui_text(
-        160, 365,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "FPS  RX %u | DEC %u | SHOW %u | LOOP %u",
-        perf->rx_fps,
-        perf->decode_fps,
-        perf->display_fps,
-        perf->loop_fps);
-
-    ui_text(
-        160, 400,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "H264 %u.%u ms | bind %u.%u ms | present %u.%u ms",
-        vs.execute_avg_us / 1000,
-        (vs.execute_avg_us % 1000) / 100,
-        gs.copy_avg_us / 1000,
-        (gs.copy_avg_us % 1000) / 100,
-        present_avg_us / 1000,
-        (present_avg_us % 1000) / 100);
-
-    ui_text(
-        160, 435,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "VQ %u drop %u | AQ %u ms drop %lu bad %lu",
-        perf->video_queue,
-        perf->video_dropped,
-        audio_queue_ms(),
-        audio_dropped,
-        audio_failed);
-
-    ui_text(
-        160, 470,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "AIN %u | AX %u | USE %u | CB %u | under %u | %s",
-        audio_diag_now.input_fps,
-        audio_diag_now.device_fps,
-        audio_diag_now.used_fps,
-        audio_diag_now.callback_frames,
-        audio_diag_now.underruns,
-        info->audio_udp ? "UDP" : "TCP");
-
-    PadState21 pad;
-    input_snapshot(pad);
-
-    if (input_available()) {
-        ui_text(
-            160, 505,
-            UI_SIZE_BODY,
-            info->may_control
-                ? UI_TEXT
-                : UI_DANGER,
-            "INPUT %s | L %+d,%+d R %+d,%+d | A%d B%d X%d Y%d",
-            info->may_control
-                ? "CONTROL"
-                : "VIEWER",
-            pad[PAD_LX],
-            pad[PAD_LY],
-            pad[PAD_RX],
-            pad[PAD_RY],
-            pad[PAD_A],
-            pad[PAD_B],
-            pad[PAD_X],
-            pad[PAD_Y]);
-    } else {
-        ui_text(
-            160, 505,
-            UI_SIZE_BODY,
-            UI_DANGER,
-            "INPUT: Wii U GamePad unavailable");
-    }
-}
-
-static void draw_menu_marker(int open)
-{
-    /*
-     * Tiny persistent marker requested by the UI spec.
-     *
-     * It is deliberately not labelled: it must take almost no space
-     * over the game picture.
-     */
-    ui_box(R_MENU.x, R_MENU.y,
-           R_MENU.w, R_MENU.h,
-           open ? UI_ACCENT : UI_PANEL,
-           UI_DIM);
-}
 
 static unsigned video_worker_decoded_total(void)
 {
@@ -924,9 +345,9 @@ int main(int argc, char **argv)
     VideoFrame frame;
     int have_frame = 0;
     int new_frame = 0;
-    int menu_open = 0;
-    MenuPage menu_page = MENU_CONNECTION;
-    StreamPerf perf;
+    MenuState menu;
+    menu_init(&menu);
+    MenuPerf perf;
     memset(&perf, 0, sizeof(perf));
 
     unsigned rx_count = 0;
@@ -963,6 +384,7 @@ int main(int argc, char **argv)
 
             net_disconnect();
             state = STATE_SETTINGS;
+            menu_force_open(&menu, 1);
             have_frame = 0;
 
             WHBLogPrintf("suspend 2/4: audio begin");
@@ -1106,44 +528,21 @@ int main(int argc, char **argv)
         if (input_alive) {
             input_update(
                 state == STATE_STREAMING &&
-                !menu_open);
+                !menu_is_open(&menu));
         }
 
         if (in.quit) {
             proc_stop();
         }
 
+        const MenuAction menu_action =
+            menu_input(
+                &menu,
+                &in,
+                state == STATE_STREAMING);
+
         if (state == STATE_SETTINGS) {
-            if (in.tapped) {
-
-                if (hit(
-                        &R_TAB_CONNECTION,
-                        in.touch_x,
-                        in.touch_y)) {
-
-                    menu_page = MENU_CONNECTION;
-                    note[0] = '\0';
-
-                } else if (hit(
-                               &R_TAB_CONSOLE,
-                               in.touch_x,
-                               in.touch_y)) {
-
-                    menu_page = MENU_CONSOLE;
-                    note[0] = '\0';
-
-                } else if (menu_page == MENU_CONSOLE) {
-
-                    handle_console_tap(
-                        in.touch_x,
-                        in.touch_y,
-                        note,
-                        sizeof(note));
-
-                } else if (hit(
-                        &R_HOST,
-                        in.touch_x,
-                        in.touch_y)) {
+            if (menu_action == MENU_ACTION_HOST) {
 
                     char current[32];
 
@@ -1161,10 +560,7 @@ int main(int argc, char **argv)
                         parse_host,
                         &settings);
 
-                } else if (hit(
-                               &R_PORT,
-                               in.touch_x,
-                               in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_NATIVE_PORT) {
 
                     char current[16];
 
@@ -1183,10 +579,7 @@ int main(int argc, char **argv)
                         parse_port,
                         &settings.port);
 
-                } else if (hit(
-                               &R_WEB_PORT,
-                               in.touch_x,
-                               in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_WEB_PORT) {
 
                     char current[16];
 
@@ -1205,20 +598,17 @@ int main(int argc, char **argv)
                         parse_port,
                         &settings.web_port);
 
-                } else if (hit(
-                               &R_PASSWORD,
-                               in.touch_x,
-                               in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_PASSWORD) {
 
                     edit_password(
                         password,
                         note,
                         sizeof(note));
 
-                } else if (hit(
-                               &R_REMOTE_HOME,
-                               in.touch_x,
-                               in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_REMOTE_HOME ||
+                       menu_action == MENU_ACTION_WAKE ||
+                       menu_action == MENU_ACTION_RESET_DONGLE ||
+                       menu_action == MENU_ACTION_RESTART_HOST) {
 
                     const NetInfo *info =
                         net_info();
@@ -1227,34 +617,39 @@ int main(int argc, char **argv)
                             NET_CONNECTED &&
                         info->may_control) {
 
-                        net_send_home();
+                        if (menu_action == MENU_ACTION_REMOTE_HOME)
+                            net_send_home();
+                        else if (menu_action == MENU_ACTION_WAKE)
+                            net_send_wake();
+                        else if (menu_action == MENU_ACTION_RESET_DONGLE)
+                            net_send_reset_dongle();
+                        else
+                            net_send_restart();
 
                         snprintf(
                             note,
                             sizeof(note),
-                            "remote HOME sent");
+                            "%s sent",
+                            menu_action == MENU_ACTION_REMOTE_HOME ? "remote HOME" :
+                            menu_action == MENU_ACTION_WAKE ? "wake request" :
+                            menu_action == MENU_ACTION_RESET_DONGLE ? "adapter reset" :
+                            "host restart");
 
                     } else {
                         snprintf(
                             note,
                             sizeof(note),
-                            "remote HOME requires CONTROL");
+                            "remote commands require CONTROL");
                     }
 
-                } else if (hit(
-                               &R_QUIT,
-                               in.touch_x,
-                               in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_EXIT_HELP) {
 
                     snprintf(
                         note,
                         sizeof(note),
                         "Press HOME, then choose Quitter");
 
-                } else if (hit(
-                               &R_CONNECT,
-                               in.touch_x,
-                               in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_CONNECT) {
 
                     if (!decoder_ok) {
 
@@ -1340,7 +735,7 @@ int main(int argc, char **argv)
                         state =
                             STATE_STREAMING;
 
-                        menu_open = 0;
+                        menu_force_open(&menu, 0);
 
                         memset(
                             &perf,
@@ -1367,11 +762,10 @@ int main(int argc, char **argv)
                             "capture2cloud: connecting to %s:%u auth=%s",
                             host,
                             settings.port,
-                            settings.token[0]
-                                ? "token"
-                                : "viewer");
+                                settings.token[0]
+                                    ? "token"
+                                    : "viewer");
                     }
-                }
             }
         } else {
             /*
@@ -1486,46 +880,7 @@ int main(int argc, char **argv)
                 new_frame = 1;
             }
 
-            if (in.tapped) {
-
-                if (hit(
-                        &R_MENU,
-                        in.touch_x,
-                        in.touch_y)) {
-
-                    menu_open =
-                        !menu_open;
-
-                } else if (menu_open) {
-
-                    if (hit(
-                            &R_TAB_CONNECTION,
-                            in.touch_x,
-                            in.touch_y)) {
-
-                        menu_page = MENU_CONNECTION;
-                        note[0] = '\0';
-
-                    } else if (hit(
-                                   &R_TAB_CONSOLE,
-                                   in.touch_x,
-                                   in.touch_y)) {
-
-                        menu_page = MENU_CONSOLE;
-                        note[0] = '\0';
-
-                    } else if (menu_page == MENU_CONSOLE) {
-
-                        handle_console_tap(
-                            in.touch_x,
-                            in.touch_y,
-                            note,
-                            sizeof(note));
-
-                    } else if (hit(
-                            &R_HOST,
-                            in.touch_x,
-                            in.touch_y)) {
+            if (menu_action == MENU_ACTION_HOST) {
 
                         char current[32];
 
@@ -1543,10 +898,7 @@ int main(int argc, char **argv)
                             parse_host,
                             &settings);
 
-                    } else if (hit(
-                                   &R_PORT,
-                                   in.touch_x,
-                                   in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_NATIVE_PORT) {
 
                         char current[16];
 
@@ -1565,10 +917,7 @@ int main(int argc, char **argv)
                             parse_port,
                             &settings.port);
 
-                    } else if (hit(
-                                   &R_WEB_PORT,
-                                   in.touch_x,
-                                   in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_WEB_PORT) {
 
                         char current[16];
 
@@ -1587,20 +936,17 @@ int main(int argc, char **argv)
                             parse_port,
                             &settings.web_port);
 
-                    } else if (hit(
-                                   &R_PASSWORD,
-                                   in.touch_x,
-                                   in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_PASSWORD) {
 
                         edit_password(
                             password,
                             note,
                             sizeof(note));
 
-                    } else if (hit(
-                                   &R_REMOTE_HOME,
-                                   in.touch_x,
-                                   in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_REMOTE_HOME ||
+                       menu_action == MENU_ACTION_WAKE ||
+                       menu_action == MENU_ACTION_RESET_DONGLE ||
+                       menu_action == MENU_ACTION_RESTART_HOST) {
 
                         const NetInfo *info =
                             net_info();
@@ -1609,24 +955,32 @@ int main(int argc, char **argv)
                                 NET_CONNECTED &&
                             info->may_control) {
 
-                            net_send_home();
+                            if (menu_action == MENU_ACTION_REMOTE_HOME)
+                                net_send_home();
+                            else if (menu_action == MENU_ACTION_WAKE)
+                                net_send_wake();
+                            else if (menu_action == MENU_ACTION_RESET_DONGLE)
+                                net_send_reset_dongle();
+                            else
+                                net_send_restart();
 
                             snprintf(
                                 note,
                                 sizeof(note),
-                                "remote HOME sent");
+                                "%s sent",
+                                menu_action == MENU_ACTION_REMOTE_HOME ? "remote HOME" :
+                                menu_action == MENU_ACTION_WAKE ? "wake request" :
+                                menu_action == MENU_ACTION_RESET_DONGLE ? "adapter reset" :
+                                "host restart");
 
                         } else {
                             snprintf(
                                 note,
                                 sizeof(note),
-                                "remote HOME requires CONTROL");
+                                "remote commands require CONTROL");
                         }
 
-                    } else if (hit(
-                                   &R_CONNECT,
-                                   in.touch_x,
-                                   in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_CONNECT) {
 
                         char host[32];
                         char save_why[96];
@@ -1669,7 +1023,7 @@ int main(int argc, char **argv)
                                     : NULL);
 
                             have_frame = 0;
-                            menu_open = 0;
+                            menu_force_open(&menu, 0);
 
                             video_synced = 0;
                             keyframe_requested = 0;
@@ -1686,31 +1040,18 @@ int main(int argc, char **argv)
                                     : "viewer");
                         }
 
-                    } else if (hit(
-                                   &R_QUIT,
-                                   in.touch_x,
-                                   in.touch_y)) {
+            } else if (menu_action == MENU_ACTION_EXIT_HELP) {
 
                         snprintf(
                             note,
                             sizeof(note),
                             "Press HOME, then choose Quitter");
-                    }
-                }
             }
         }
 
         ui_begin();
 
-        if (state == STATE_SETTINGS) {
-            draw_settings(
-                &settings,
-                password,
-                note,
-                decoder_ok,
-                decoder_why,
-                menu_page);
-        } else {
+        if (state == STATE_STREAMING) {
             /*
              * NV12 comes directly from H264DEC's rotating framebuffers
              * and is sampled directly by the GX2 shader.
@@ -1729,27 +1070,37 @@ int main(int argc, char **argv)
             if (have_frame) {
                 ui_video_draw();
             }
+        }
 
-            /*
-             * Settings are an overlay, not part of the permanent
-             * streaming picture.
-             */
-            if (menu_open) {
-                ui_box(120, 45, 1040, 560,
-                       UI_BG, UI_DIM);
+        const MenuView menu_view = {
+            .settings = &settings,
+            .password = password,
+            .note = note,
+            .decoder_why = decoder_why,
+            .decoder_ok = decoder_ok,
+            .streaming = state == STATE_STREAMING,
+            .perf = &perf
+        };
 
-                draw_settings(
-                    &settings,
-                    password,
-                    note,
-                    decoder_ok,
-                    decoder_why,
-                    menu_page);
+        menu_draw(&menu, &menu_view);
 
-                draw_streaming(&settings, &perf);
+        unsigned capture_index;
+        if (menu_is_open(&menu) &&
+            menu_take_capture(&menu, &capture_index)) {
+
+            char capture_path[256];
+            if (ui_debug_capture(
+                    capture_index,
+                    capture_path,
+                    sizeof(capture_path)) == 0) {
+                WHBLogPrintf(
+                    "menu: debug capture saved %s",
+                    capture_path);
+            } else {
+                WHBLogPrintf(
+                    "menu: debug capture failed: %s",
+                    capture_path);
             }
-
-            draw_menu_marker(menu_open);
         }
 
         ui_present();

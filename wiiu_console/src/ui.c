@@ -10,6 +10,7 @@
 #include <coreinit/memory.h>
 #include <coreinit/time.h>
 #include <whb/log.h>
+#include <whb/sdcard.h>
 
 /*
  * Benchmark temporaire:
@@ -130,6 +131,9 @@ static TextEntry *entry_for(int size, UiColour colour, const char *text)
     }
 
     if (oldest->texture) {
+        /* A cached texture may still be referenced by SDL's queued draw
+         * commands. Execute those commands before reclaiming it. */
+        SDL_RenderFlush(g_renderer);
         SDL_DestroyTexture(oldest->texture);
     }
     snprintf(oldest->text, sizeof(oldest->text), "%s", text);
@@ -563,6 +567,11 @@ void ui_video_draw(void)
                 SDL_RenderFillRect(
                     g_renderer,
                     &probe);
+
+                /* Execute the TEXTURE -> COLOR repair now. Leaving it
+                 * queued beside the real menu made the Wii U backend
+                 * occasionally run a later background over its text. */
+                SDL_RenderFlush(g_renderer);
             }
 
             return;
@@ -628,6 +637,57 @@ void ui_present(void)
     if (us > g_present_us_max) {
         g_present_us_max = us;
     }
+}
+
+int ui_debug_capture(unsigned index,
+                     char *path,
+                     size_t path_size)
+{
+    if (!g_renderer || !path || path_size == 0) {
+        return -1;
+    }
+
+    if (!WHBMountSdCard()) {
+        snprintf(path, path_size, "SD unavailable");
+        return -1;
+    }
+
+    const char *root = WHBGetSdCardMountPath();
+    if (!root) {
+        snprintf(path, path_size, "SD path unavailable");
+        return -1;
+    }
+
+    snprintf(path, path_size,
+             "%s/wiiu/apps/capture2cloud/menu-debug-%u.bmp",
+             root, index);
+
+    SDL_Surface *surface =
+        SDL_CreateRGBSurfaceWithFormat(
+            0, UI_WIDTH, UI_HEIGHT, 32,
+            SDL_PIXELFORMAT_RGBA8888);
+
+    if (!surface) {
+        return -1;
+    }
+
+    ui_flush();
+
+    const int read_result =
+        SDL_RenderReadPixels(
+            g_renderer,
+            NULL,
+            surface->format->format,
+            surface->pixels,
+            surface->pitch);
+
+    int result = -1;
+    if (read_result == 0 && SDL_SaveBMP(surface, path) == 0) {
+        result = 0;
+    }
+
+    SDL_FreeSurface(surface);
+    return result;
 }
 
 const char *ui_video_renderer_name(void)
