@@ -36,16 +36,14 @@ static TTF_Font     *g_title;
 static SDL_Texture *g_video_texture;
 
 /*
- * GX2 state handoff target.
+ * Tiny transparent texture used to resynchronise SDL's software state
+ * cache after our raw GX2 video draw.
  *
- * Our zero-copy video renderer uses GX2 directly, outside SDL.
- * SDL's Wii U renderer caches shaders/textures/state and otherwise does
- * not know that gx2_video_draw() changed them.
- *
- * Switching briefly to this tiny render target and back makes SDL call
- * its SetRenderTarget backend, which restores SDL's GX2ContextState.
+ * gx2_video_draw() changes GX2 shaders/textures behind SDL's back.
+ * SDL therefore needs to observe a real TEXTURE -> COLOR transition
+ * before drawing ordinary UI again.
  */
-static SDL_Texture *g_state_reset_target;
+static SDL_Texture *g_state_reset_texture;
 
 static int g_video_width;
 static int g_video_height;
@@ -182,21 +180,33 @@ int ui_init(char *why, size_t why_size)
     }
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
 
-    g_state_reset_target =
+    g_state_reset_texture =
         SDL_CreateTexture(
             g_renderer,
             SDL_PIXELFORMAT_RGBA8888,
-            SDL_TEXTUREACCESS_TARGET,
+            SDL_TEXTUREACCESS_STATIC,
             1,
             1);
 
-    if (!g_state_reset_target) {
+    if (!g_state_reset_texture) {
         WHBLogPrintf(
-            "ui: GX2 state reset target unavailable: %s",
+            "ui: GX2 state reset texture unavailable: %s",
             SDL_GetError());
     } else {
+        const uint32_t transparent = 0;
+
+        SDL_UpdateTexture(
+            g_state_reset_texture,
+            NULL,
+            &transparent,
+            sizeof(transparent));
+
+        SDL_SetTextureBlendMode(
+            g_state_reset_texture,
+            SDL_BLENDMODE_BLEND);
+
         WHBLogPrintf(
-            "ui: GX2/SDL state handoff enabled");
+            "ui: GX2/SDL shader cache resync enabled");
     }
 
     /*
@@ -275,9 +285,9 @@ void ui_shutdown(void)
         g_video_texture = NULL;
     }
 
-    if (g_state_reset_target) {
-        SDL_DestroyTexture(g_state_reset_target);
-        g_state_reset_target = NULL;
+    if (g_state_reset_texture) {
+        SDL_DestroyTexture(g_state_reset_texture);
+        g_state_reset_texture = NULL;
     }
 
     g_video_width = 0;
@@ -515,38 +525,40 @@ void ui_video_draw(void)
                 UI_HEIGHT) == 0) {
 
             /*
-             * IMPORTANT:
+             * gx2_video_draw() bypasses SDL completely.
              *
-             * gx2_video_draw() changed shaders, textures, samplers and
-             * several GX2 states behind SDL's back.
+             * SDL Wii U caches which shader/texture it THINKS GX2 has
+             * bound. Merely restoring its context is not sufficient:
+             * the software cache still says "COLOR shader active".
              *
-             * SDL's Wii U backend caches those states and can otherwise
-             * believe its text texture is still bound. The visible
-             * symptom is a text-sized rectangle sampling the edge of the
-             * video -- notably the bottom-right video pixel.
+             * Force two real SDL state transitions:
              *
-             * SDL_SetRenderTarget() calls the Wii U backend's
-             * WIIU_SDL_SetRenderTarget(), which restores SDL's saved
-             * GX2ContextState. Switching back also restores the window
-             * viewport/clip state through SDL itself.
+             *   cached COLOR
+             *       -> transparent texture => TEXTURE shader rebind
+             *       -> transparent fill    => COLOR shader rebind
+             *
+             * Both draws are fully transparent and only one pixel.
+             * The following real UI therefore starts with SDL's cache
+             * and the actual GX2 state agreeing again.
              */
-            if (g_state_reset_target) {
-                if (SDL_SetRenderTarget(
-                        g_renderer,
-                        g_state_reset_target) != 0) {
+            if (g_state_reset_texture) {
+                SDL_Rect probe = {
+                    0, 0, 1, 1
+                };
 
-                    WHBLogPrintf(
-                        "ui: SDL state handoff begin failed: %s",
-                        SDL_GetError());
+                SDL_RenderCopy(
+                    g_renderer,
+                    g_state_reset_texture,
+                    NULL,
+                    &probe);
 
-                } else if (SDL_SetRenderTarget(
-                               g_renderer,
-                               NULL) != 0) {
+                SDL_SetRenderDrawColor(
+                    g_renderer,
+                    0, 0, 0, 0);
 
-                    WHBLogPrintf(
-                        "ui: SDL state handoff end failed: %s",
-                        SDL_GetError());
-                }
+                SDL_RenderFillRect(
+                    g_renderer,
+                    &probe);
             }
 
             return;
