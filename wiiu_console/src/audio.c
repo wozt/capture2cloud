@@ -1,80 +1,53 @@
 #include "audio.h"
 #include "c2s_protocol.h"
 
+#include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include <SDL2/SDL.h>
+#include <coreinit/cache.h>
+#include <coreinit/core.h>
+#include <coreinit/memorymap.h>
+#include <coreinit/time.h>
+
+#include <sndcore2/core.h>
+#include <sndcore2/voice.h>
+
 #include <whb/log.h>
 
-/*
- * Diagnostic/simple audio path.
- *
- * Host:
- *     S16LE 48 kHz stereo
- *          |
- *       UDP/5084
- *          |
- * Wii U PCM ring
- *          |
- *       1:1 copy
- *          |
- *       SDL2 / AX
- *
- * No Opus.
- * No software ASRC.
- * No artificial low-latency queue trimming.
- *
- * SDL's Wii U backend already programs AX's source-rate conversion.
- */
-
 #define AUDIO_RING_FRAMES 8192
-
-/*
- * UDP is currently drained from the ~60 Hz render loop, so packets
- * naturally arrive at the audio ring in ~15-20 ms batches.
- *
- * 30 ms startup gives that batching a little safety without becoming a
- * large persistent latency reservoir.
- */
 #define AUDIO_START_MS 30
-#define AUDIO_CALLBACK_MARGIN_MS 8
 
-static SDL_AudioDeviceID g_device;
-static int g_rate = 48000;
+#define AX_MIX_CHANNELS 6
+#define AX_BUS_MASTER   0
+#define AX_LEFT         0
+#define AX_RIGHT        1
 
-static int16_t g_ring[
-    AUDIO_RING_FRAMES * 2];
+static AXVoice *g_voice[2];
 
-static uint32_t g_head;
-static uint32_t g_tail;
+static int16_t *g_pcm[2];
+
+static uint32_t g_write_pos;
+static uint32_t g_last_read;
 static uint32_t g_count;
 
-static uint32_t g_callback_frames;
-
-static int g_playing;
+static int g_started;
+static int g_rate = 48000;
+static int g_ax_owned;
 
 static unsigned long g_packets;
 static unsigned long g_failed;
-
-/*
- * Now this means a REAL ring overflow only.
- *
- * There is no target+30ms trimming anymore.
- */
 static unsigned long g_dropped;
 
 static uint32_t g_underruns;
 
-/* Absolute frame counters used to measure the real rates. */
 static uint64_t g_input_total;
 static uint64_t g_device_total;
 static uint64_t g_used_total;
 
-/* Diagnostic sampling, updated from the UI/main thread. */
 static uint32_t g_diag_at;
-
 static uint64_t g_diag_input_at;
 static uint64_t g_diag_device_at;
 static uint64_t g_diag_used_at;
@@ -84,133 +57,328 @@ static unsigned g_diag_device_fps;
 static unsigned g_diag_used_fps;
 
 
-static uint32_t startup_frames(void)
-{
-    uint32_t frames =
-        (uint32_t)(
-            (uint64_t)g_rate *
-            AUDIO_START_MS /
-            1000u);
+/*
+ * Stereo voice 0 -> left
+ * Stereo voice 1 -> right
+ *
+ * Send to both TV and GamePad, matching the old SDL backend behaviour.
+ */
+static AXVoiceDeviceMixData g_stereo_mix[2][AX_MIX_CHANNELS] = {
+    [0] = {
+        [AX_LEFT] = {
+            .bus = {
+                [AX_BUS_MASTER] = {
+                    .volume = 0x8000,
+                    .delta = 0
+                }
+            }
+        }
+    },
 
-    /*
-     * Must contain at least one real hardware callback plus a little
-     * scheduling margin.
-     */
-    if (g_callback_frames) {
-        const uint32_t minimum =
-            g_callback_frames +
-            (uint32_t)(
-                (uint64_t)g_rate *
-                AUDIO_CALLBACK_MARGIN_MS /
-                1000u);
-
-        if (frames < minimum) {
-            frames = minimum;
+    [1] = {
+        [AX_RIGHT] = {
+            .bus = {
+                [AX_BUS_MASTER] = {
+                    .volume = 0x8000,
+                    .delta = 0
+                }
+            }
         }
     }
+};
 
-    if (frames >= AUDIO_RING_FRAMES) {
-        frames =
-            AUDIO_RING_FRAMES / 2u;
-    }
 
-    return frames;
+static uint32_t now_ms(void)
+{
+    return
+        (uint32_t)
+        OSTicksToMilliseconds(
+            OSGetSystemTime());
 }
 
 
-static void audio_callback(void *userdata,
-                           Uint8 *stream,
-                           int len)
+static void *ax_alloc(size_t bytes)
 {
-    (void)userdata;
-
-    memset(
-        stream,
-        0,
-        (size_t)len);
-
-    if (g_rate <= 0) {
-        return;
-    }
-
-    const uint32_t out_frames =
-        (uint32_t)len /
-        ((uint32_t)sizeof(int16_t) * 2u);
-
-    if (!out_frames) {
-        return;
-    }
-
     /*
-     * This is what SDL/AX ACTUALLY asks us for.
+     * AX/DSP must be able to see the physical memory.
+     *
+     * Same restriction used by the Wii U SDL2 backend.
      */
-    g_callback_frames =
-        out_frames;
+    for (int i = 0; i < 32; ++i) {
+        void *p =
+            memalign(0x40, bytes);
 
-    g_device_total +=
-        out_frames;
-
-    if (!g_playing) {
-        if (g_count <
-            startup_frames()) {
-            return;
+        if (!p) {
+            return NULL;
         }
 
-        g_playing = 1;
+        const uint32_t phys =
+            OSEffectiveToPhysical(
+                (uint32_t)(uintptr_t)p) &
+            0x1fffffffu;
+
+        const uint32_t end =
+            phys + (uint32_t)bytes;
+
+        if ((end & 0xe0000000u) == 0) {
+            return p;
+        }
+
+        free(p);
     }
 
-    if (g_count <
-        out_frames) {
+    return NULL;
+}
 
-        /*
-         * Genuine underrun.
-         *
-         * Do not repeat old samples and do not stretch anything:
-         * silence this callback and rebuild the short startup buffer.
-         */
+
+static void stop_voices(void)
+{
+    for (int ch = 0; ch < 2; ++ch) {
+        if (g_voice[ch]) {
+            AXSetVoiceState(
+                g_voice[ch],
+                AX_VOICE_STATE_STOPPED);
+        }
+    }
+
+    g_started = 0;
+}
+
+
+static void reset_voice_src(AXVoice *voice)
+{
+    AXVoiceSrc src;
+
+    memset(
+        &src,
+        0,
+        sizeof(src));
+
+    const float ratio =
+        (float)g_rate /
+        (float)AXGetInputSamplesPerSec();
+
+    src.ratio =
+        (uint32_t)(
+            ratio * 65536.0f +
+            0.5f);
+
+    src.currentOffsetFrac = 0;
+
+    memset(
+        src.lastSample,
+        0,
+        sizeof(src.lastSample));
+
+    AXSetVoiceSrc(
+        voice,
+        &src);
+
+    AXSetVoiceSrcType(
+        voice,
+        AX_VOICE_SRC_TYPE_LINEAR);
+}
+
+
+static void audio_sync_position(void)
+{
+    if (!g_started ||
+        !g_voice[0]) {
+        return;
+    }
+
+    uint32_t current =
+        AXGetVoiceCurrentOffsetEx(
+            g_voice[0],
+            g_pcm[0]);
+
+    if (current >= AUDIO_RING_FRAMES) {
+        current %=
+            AUDIO_RING_FRAMES;
+    }
+
+    const uint32_t consumed =
+        (current +
+         AUDIO_RING_FRAMES -
+         g_last_read) %
+        AUDIO_RING_FRAMES;
+
+    if (!consumed) {
+        return;
+    }
+
+    g_device_total +=
+        consumed;
+
+    g_used_total +=
+        consumed;
+
+    /*
+     * AX has reached or passed the end of valid queued PCM.
+     *
+     * Stop immediately and rebuild a short live buffer instead of
+     * letting the DSP loop over stale ring contents.
+     */
+    if (consumed >= g_count) {
         g_underruns++;
 
-        g_playing = 0;
+        g_count = 0;
+
+        g_write_pos =
+            current;
+
+        g_last_read =
+            current;
+
+        stop_voices();
 
         return;
     }
 
-    int16_t *out =
-        (int16_t *)stream;
+    g_count -=
+        consumed;
 
-    /*
-     * Strictly 1 source frame -> 1 output frame.
-     *
-     * No interpolation, no pitch shifting, no phase state.
-     */
-    for (uint32_t i = 0;
-         i < out_frames;
-         ++i) {
+    g_last_read =
+        current;
+}
 
-        const uint32_t src =
-            (g_tail + i) %
-            AUDIO_RING_FRAMES;
 
-        out[
-            (size_t)i * 2u] =
-                g_ring[
-                    (size_t)src * 2u];
-
-        out[
-            (size_t)i * 2u + 1u] =
-                g_ring[
-                    (size_t)src * 2u + 1u];
+static void start_if_ready(void)
+{
+    if (g_started ||
+        g_count <
+            (uint32_t)(
+                (uint64_t)g_rate *
+                AUDIO_START_MS /
+                1000u)) {
+        return;
     }
 
-    g_tail =
-        (g_tail + out_frames) %
+    /*
+     * Oldest queued frame.
+     */
+    const uint32_t start =
+        (g_write_pos +
+         AUDIO_RING_FRAMES -
+         g_count) %
         AUDIO_RING_FRAMES;
 
-    g_count -=
-        out_frames;
+    for (int ch = 0;
+         ch < 2;
+         ++ch) {
 
-    g_used_total +=
-        out_frames;
+        AXVoiceBegin(
+            g_voice[ch]);
+
+        AXSetVoiceCurrentOffset(
+            g_voice[ch],
+            start);
+
+        reset_voice_src(
+            g_voice[ch]);
+
+        AXVoiceEnd(
+            g_voice[ch]);
+
+        AXSetVoiceState(
+            g_voice[ch],
+            AX_VOICE_STATE_PLAYING);
+    }
+
+    g_last_read =
+        start;
+
+    g_started = 1;
+}
+
+
+static int setup_voice(int channel)
+{
+    AXVoice *voice =
+        AXAcquireVoice(
+            31,
+            NULL,
+            NULL);
+
+    if (!voice) {
+        return -1;
+    }
+
+    g_voice[channel] =
+        voice;
+
+    AXVoiceOffsets offsets;
+    AXVoiceVeData volume;
+
+    memset(
+        &offsets,
+        0,
+        sizeof(offsets));
+
+    memset(
+        &volume,
+        0,
+        sizeof(volume));
+
+    volume.volume =
+        0x8000;
+
+    offsets.dataType =
+        AX_VOICE_FORMAT_LPCM16;
+
+    offsets.loopingEnabled =
+        AX_VOICE_LOOP_ENABLED;
+
+    offsets.loopOffset =
+        0;
+
+    offsets.endOffset =
+        AUDIO_RING_FRAMES - 1u;
+
+    offsets.currentOffset =
+        0;
+
+    offsets.data =
+        g_pcm[channel];
+
+    AXVoiceBegin(
+        voice);
+
+    AXSetVoiceType(
+        voice,
+        0);
+
+    AXSetVoiceVe(
+        voice,
+        &volume);
+
+    AXSetVoiceDeviceMix(
+        voice,
+        AX_DEVICE_TYPE_TV,
+        0,
+        g_stereo_mix[channel]);
+
+    AXSetVoiceDeviceMix(
+        voice,
+        AX_DEVICE_TYPE_DRC,
+        0,
+        g_stereo_mix[channel]);
+
+    AXSetVoiceOffsets(
+        voice,
+        &offsets);
+
+    reset_voice_src(
+        voice);
+
+    AXVoiceEnd(
+        voice);
+
+    AXSetVoiceState(
+        voice,
+        AX_VOICE_STATE_STOPPED);
+
+    return 0;
 }
 
 
@@ -224,11 +392,9 @@ int audio_init(int rate,
         why[0] = '\0';
     }
 
-    if (g_device) {
-        audio_exit();
-    }
+    audio_exit();
 
-    if (rate <= 0 ||
+    if (rate != 48000 ||
         channels != 2) {
 
         if (why &&
@@ -237,82 +403,8 @@ int audio_init(int rate,
             snprintf(
                 why,
                 why_size,
-                "PCM expects stereo");
+                "AX path expects 48k stereo");
         }
-
-        return -1;
-    }
-
-    SDL_AudioSpec want;
-    SDL_AudioSpec have;
-
-    memset(
-        &want,
-        0,
-        sizeof(want));
-
-    memset(
-        &have,
-        0,
-        sizeof(have));
-
-    want.freq =
-        rate;
-
-    want.format =
-        AUDIO_S16SYS;
-
-    want.channels =
-        2;
-
-    want.samples =
-        256;
-
-    want.callback =
-        audio_callback;
-
-    g_device =
-        SDL_OpenAudioDevice(
-            NULL,
-            0,
-            &want,
-            &have,
-            SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
-
-    if (!g_device) {
-        if (why &&
-            why_size) {
-
-            snprintf(
-                why,
-                why_size,
-                "SDL audio: %s",
-                SDL_GetError());
-        }
-
-        return -1;
-    }
-
-    if (have.freq != rate ||
-        have.channels != 2 ||
-        have.format != AUDIO_S16SYS) {
-
-        if (why &&
-            why_size) {
-
-            snprintf(
-                why,
-                why_size,
-                "unexpected audio %dHz/%uch fmt=%04x",
-                have.freq,
-                have.channels,
-                have.format);
-        }
-
-        SDL_CloseAudioDevice(
-            g_device);
-
-        g_device = 0;
 
         return -1;
     }
@@ -320,14 +412,100 @@ int audio_init(int rate,
     g_rate =
         rate;
 
-    g_head = 0;
-    g_tail = 0;
+    /*
+     * Usually main() already runs on CPU1, the Wii U main core.
+     */
+    WHBLogPrintf(
+        "audio: direct AX init on CPU%u",
+        OSGetCoreId());
+
+    if (!AXIsInit()) {
+        AXInitParams params;
+
+        memset(
+            &params,
+            0,
+            sizeof(params));
+
+        params.renderer =
+            AX_INIT_RENDERER_48KHZ;
+
+        params.pipeline =
+            AX_INIT_PIPELINE_SINGLE;
+
+        AXInitWithParams(
+            &params);
+
+        g_ax_owned = 1;
+    }
+
+    const size_t bytes =
+        AUDIO_RING_FRAMES *
+        sizeof(int16_t);
+
+    g_pcm[0] =
+        ax_alloc(bytes);
+
+    g_pcm[1] =
+        ax_alloc(bytes);
+
+    if (!g_pcm[0] ||
+        !g_pcm[1]) {
+
+        if (why &&
+            why_size) {
+
+            snprintf(
+                why,
+                why_size,
+                "AX PCM allocation failed");
+        }
+
+        audio_exit();
+
+        return -1;
+    }
+
+    memset(
+        g_pcm[0],
+        0,
+        bytes);
+
+    memset(
+        g_pcm[1],
+        0,
+        bytes);
+
+    DCFlushRange(
+        g_pcm[0],
+        (uint32_t)bytes);
+
+    DCFlushRange(
+        g_pcm[1],
+        (uint32_t)bytes);
+
+    if (setup_voice(0) != 0 ||
+        setup_voice(1) != 0) {
+
+        if (why &&
+            why_size) {
+
+            snprintf(
+                why,
+                why_size,
+                "AX voice acquisition failed");
+        }
+
+        audio_exit();
+
+        return -1;
+    }
+
+    g_write_pos = 0;
+    g_last_read = 0;
     g_count = 0;
 
-    g_callback_frames =
-        have.samples;
-
-    g_playing = 0;
+    g_started = 0;
 
     g_packets = 0;
     g_failed = 0;
@@ -339,7 +517,7 @@ int audio_init(int rate,
     g_used_total = 0;
 
     g_diag_at =
-        SDL_GetTicks();
+        now_ms();
 
     g_diag_input_at = 0;
     g_diag_device_at = 0;
@@ -350,18 +528,10 @@ int audio_init(int rate,
     g_diag_used_fps = 0;
 
     WHBLogPrintf(
-        "audio: UDP PCM 1:1 -> SDL/AX %dHz cb=%u start=%ums",
-        have.freq,
-        have.samples,
-        (unsigned)(
-            (uint64_t)
-                startup_frames() *
-            1000ull /
-            (uint64_t)g_rate));
-
-    SDL_PauseAudioDevice(
-        g_device,
-        0);
+        "audio: direct AX ready input=%uHz frame=%u start=%ums",
+        AXGetInputSamplesPerSec(),
+        AXGetInputSamplesPerFrame(),
+        AUDIO_START_MS);
 
     return 0;
 }
@@ -369,31 +539,46 @@ int audio_init(int rate,
 
 void audio_exit(void)
 {
-    if (g_device) {
-        SDL_PauseAudioDevice(
-            g_device,
-            1);
+    stop_voices();
 
-        SDL_CloseAudioDevice(
-            g_device);
+    for (int ch = 0;
+         ch < 2;
+         ++ch) {
 
-        g_device = 0;
+        if (g_voice[ch]) {
+            AXFreeVoice(
+                g_voice[ch]);
+
+            g_voice[ch] =
+                NULL;
+        }
     }
 
-    g_head = 0;
-    g_tail = 0;
+    free(g_pcm[0]);
+    free(g_pcm[1]);
+
+    g_pcm[0] = NULL;
+    g_pcm[1] = NULL;
+
+    g_write_pos = 0;
+    g_last_read = 0;
     g_count = 0;
 
-    g_callback_frames = 0;
+    if (g_ax_owned &&
+        AXIsInit()) {
 
-    g_playing = 0;
+        AXQuit();
+    }
+
+    g_ax_owned = 0;
 }
 
 
 void audio_push_pcm_s16le(const uint8_t *data,
                           uint32_t size)
 {
-    if (!g_device ||
+    if (!g_pcm[0] ||
+        !g_pcm[1] ||
         !data ||
         !size) {
         return;
@@ -415,68 +600,97 @@ void audio_push_pcm_s16le(const uint8_t *data,
         return;
     }
 
-    SDL_LockAudioDevice(
-        g_device);
+    audio_sync_position();
 
     /*
-     * This is the ONLY drop condition now:
-     *
-     * the physical 8192-frame ring is genuinely full.
+     * For this diagnostic version, a drop means ONLY a genuine full
+     * hardware ring. No artificial target trimming exists anymore.
      */
     if (frames >
         AUDIO_RING_FRAMES -
         g_count) {
 
-        const uint32_t remove =
-            frames -
-            (AUDIO_RING_FRAMES -
-             g_count);
-
-        g_tail =
-            (g_tail + remove) %
-            AUDIO_RING_FRAMES;
-
-        g_count -=
-            remove;
-
         g_dropped++;
+
+        return;
     }
+
+    const uint32_t start =
+        g_write_pos;
 
     for (uint32_t i = 0;
          i < frames;
          ++i) {
 
         const uint32_t dst =
-            (g_head + i) %
+            (start + i) %
             AUDIO_RING_FRAMES;
 
-        for (uint32_t ch = 0;
-             ch < 2;
-             ++ch) {
+        const size_t at =
+            (size_t)i * 4u;
 
-            const size_t at =
-                ((size_t)i * 2u +
-                 (size_t)ch) *
-                2u;
+        const uint16_t left =
+            (uint16_t)data[at] |
+            ((uint16_t)data[
+                at + 1u] << 8);
 
-            /*
-             * Network PCM is S16LE.
-             * Wii U PPC is big endian.
-             */
-            const uint16_t u =
-                (uint16_t)data[at] |
-                ((uint16_t)data[
-                    at + 1u] << 8);
+        const uint16_t right =
+            (uint16_t)data[
+                at + 2u] |
+            ((uint16_t)data[
+                at + 3u] << 8);
 
-            g_ring[
-                (size_t)dst * 2u +
-                (size_t)ch] =
-                    (int16_t)u;
-        }
+        /*
+         * PPC is big-endian; assigning the numeric sample produces the
+         * LPCM16 byte order AX expects.
+         */
+        g_pcm[0][dst] =
+            (int16_t)left;
+
+        g_pcm[1][dst] =
+            (int16_t)right;
     }
 
-    g_head =
-        (g_head + frames) %
+    /*
+     * Flush only the regions just written.
+     */
+    const uint32_t first =
+        frames <
+            AUDIO_RING_FRAMES -
+            start
+        ? frames
+        : AUDIO_RING_FRAMES -
+            start;
+
+    DCFlushRange(
+        &g_pcm[0][start],
+        first *
+        sizeof(int16_t));
+
+    DCFlushRange(
+        &g_pcm[1][start],
+        first *
+        sizeof(int16_t));
+
+    if (frames > first) {
+        const uint32_t second =
+            frames -
+            first;
+
+        DCFlushRange(
+            &g_pcm[0][0],
+            second *
+            sizeof(int16_t));
+
+        DCFlushRange(
+            &g_pcm[1][0],
+            second *
+            sizeof(int16_t));
+    }
+
+    g_write_pos =
+        (g_write_pos +
+         frames) %
         AUDIO_RING_FRAMES;
 
     g_count +=
@@ -487,8 +701,7 @@ void audio_push_pcm_s16le(const uint8_t *data,
     g_input_total +=
         frames;
 
-    SDL_UnlockAudioDevice(
-        g_device);
+    start_if_ready();
 }
 
 
@@ -496,6 +709,8 @@ void audio_stats(unsigned long *packets,
                  unsigned long *failed,
                  unsigned long *dropped)
 {
+    audio_sync_position();
+
     if (packets) {
         *packets =
             g_packets;
@@ -524,40 +739,10 @@ void audio_diag(AudioDiag *diag)
         0,
         sizeof(*diag));
 
-    if (!g_device) {
-        return;
-    }
+    audio_sync_position();
 
     const uint32_t now =
-        SDL_GetTicks();
-
-    uint64_t input;
-    uint64_t device;
-    uint64_t used;
-
-    uint32_t callback_frames;
-    uint32_t underruns;
-
-    SDL_LockAudioDevice(
-        g_device);
-
-    input =
-        g_input_total;
-
-    device =
-        g_device_total;
-
-    used =
-        g_used_total;
-
-    callback_frames =
-        g_callback_frames;
-
-    underruns =
-        g_underruns;
-
-    SDL_UnlockAudioDevice(
-        g_device);
+        now_ms();
 
     const uint32_t elapsed =
         now -
@@ -566,21 +751,21 @@ void audio_diag(AudioDiag *diag)
     if (elapsed >= 1000) {
         g_diag_input_fps =
             (unsigned)(
-                (input -
+                (g_input_total -
                  g_diag_input_at) *
                 1000ull /
                 elapsed);
 
         g_diag_device_fps =
             (unsigned)(
-                (device -
+                (g_device_total -
                  g_diag_device_at) *
                 1000ull /
                 elapsed);
 
         g_diag_used_fps =
             (unsigned)(
-                (used -
+                (g_used_total -
                  g_diag_used_at) *
                 1000ull /
                 elapsed);
@@ -589,13 +774,13 @@ void audio_diag(AudioDiag *diag)
             now;
 
         g_diag_input_at =
-            input;
+            g_input_total;
 
         g_diag_device_at =
-            device;
+            g_device_total;
 
         g_diag_used_at =
-            used;
+            g_used_total;
     }
 
     diag->input_fps =
@@ -608,31 +793,22 @@ void audio_diag(AudioDiag *diag)
         g_diag_used_fps;
 
     diag->callback_frames =
-        callback_frames;
+        AXIsInit()
+            ? AXGetInputSamplesPerFrame()
+            : 0;
 
     diag->underruns =
-        underruns;
+        g_underruns;
 }
 
 
 unsigned audio_queue_ms(void)
 {
-    if (!g_device ||
-        g_rate <= 0) {
-        return 0;
-    }
+    audio_sync_position();
 
-    SDL_LockAudioDevice(
-        g_device);
-
-    const uint32_t frames =
-        g_count;
-
-    SDL_UnlockAudioDevice(
-        g_device);
-
-    return (unsigned)(
-        (uint64_t)frames *
-        1000ull /
-        (uint64_t)g_rate);
+    return
+        (unsigned)(
+            (uint64_t)g_count *
+            1000ull /
+            (uint64_t)g_rate);
 }
