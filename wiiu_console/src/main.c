@@ -318,16 +318,21 @@ int main(int argc, char **argv)
             : decoder_why);
 
     char audio_why[128] = { 0 };
-    int audio_ok =
-        audio_init(48000, 2,
-                   audio_why, sizeof(audio_why)) == 0;
 
-    WHBLogPrintf("capture2cloud: audio %s",
-                 audio_ok ? "ready" : audio_why);
+    /*
+     * Audio is intentionally NOT opened before CONNECT.
+     *
+     * This also makes the settings screen a clean test: if anything is
+     * audible there, it cannot come from Capture2Cloud audio.
+     */
+    int audio_ok = 1;
+
+    WHBLogPrintf(
+        "capture2cloud: audio deferred until CONNECT");
 
     int ui_alive = 1;
     int video_alive = decoder_ok ? 1 : 0;
-    int audio_alive = audio_ok ? 1 : 0;
+    int audio_alive = 0;
 
     State state = STATE_SETTINGS;
     char note[160] = { 0 };
@@ -430,19 +435,11 @@ int main(int argc, char **argv)
 
             ui_alive = 1;
 
-            WHBLogPrintf("resume: rebuilding audio");
+            audio_ok = 1;
+            audio_alive = 0;
 
-            audio_why[0] = '\0';
-
-            audio_ok =
-                audio_init(48000, 2,
-                           audio_why,
-                           sizeof(audio_why)) == 0;
-
-            audio_alive = audio_ok ? 1 : 0;
-
-            WHBLogPrintf("resume: audio %s",
-                         audio_ok ? "ready" : audio_why);
+            WHBLogPrintf(
+                "resume: audio deferred until CONNECT");
 
             WHBLogPrintf("resume: rebuilding H264DEC");
 
@@ -523,6 +520,26 @@ int main(int argc, char **argv)
                     } else if (net_init() != 0) {
                         snprintf(note, sizeof(note), "%s", net_info()->status);
                     } else {
+                        if (!audio_alive) {
+                            audio_why[0] = '\0';
+
+                            audio_ok =
+                                audio_init(
+                                    48000,
+                                    2,
+                                    audio_why,
+                                    sizeof(audio_why)) == 0;
+
+                            audio_alive =
+                                audio_ok ? 1 : 0;
+
+                            WHBLogPrintf(
+                                "capture2cloud: AX audio %s",
+                                audio_ok
+                                    ? "ready"
+                                    : audio_why);
+                        }
+
                         char host[32], save_why[64];
                         settings_host_string(&settings, host, sizeof(host));
                         if (settings_save(&settings, save_why, sizeof(save_why)) != 0) {
