@@ -138,7 +138,10 @@ keep up at 1080p60 grows a queue that never drains.
   controller pages apply their settings immediately.
 - Returning from `nn::swkbd` rebuilds SDL/GX2 and GamePad input. SDL has
   no public invalidation for GX2 state changed by the system keyboard;
-  keeping the renderer made glyph textures become solid rectangles.
+  keeping the renderer made glyph textures become solid rectangles. The full
+  password -> reconnect -> video -> menu sequence is validated on hardware.
+- Stream display now switches between TV + GamePad and GamePad only through
+  SDL's Wii U scan-target flag; the saved setting survives relaunches.
 
 ### ProcUI lifecycle
 

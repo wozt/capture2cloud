@@ -19,6 +19,7 @@ static const Settings DEFAULTS = {
         .invert_y = 0,
         .face_by_position = 1
     },
+    .output_mode = OUTPUT_TV_AND_GAMEPAD,
     .token = ""
 };
 
@@ -122,6 +123,11 @@ void settings_load(Settings *out)
             out->input.invert_y = value != 0;
         } else if (sscanf(line, " face_by_position = %u", &value) == 1) {
             out->input.face_by_position = value != 0;
+        } else if (sscanf(line, " output_mode = %u", &value) == 1) {
+            out->output_mode =
+                value < OUTPUT_MODE_COUNT
+                    ? (uint8_t)value
+                    : OUTPUT_TV_AND_GAMEPAD;
         } else {
             char token[
                 C2S_MAX_TOKEN_LEN + 1];
@@ -188,6 +194,7 @@ int settings_save(const Settings *s,
         "right_range = %u\n"
         "invert_y = %u\n"
         "face_by_position = %u\n"
+        "output_mode = %u\n"
         "token = %s\n",
         s->host[0],
         s->host[1],
@@ -201,6 +208,7 @@ int settings_save(const Settings *s,
         s->input.range[1],
         s->input.invert_y,
         s->input.face_by_position,
+        s->output_mode,
         s->token);
 
     fclose(f);

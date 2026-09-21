@@ -6,6 +6,12 @@
 #include "c2s_protocol.h"
 #include "input.h"
 
+enum {
+    OUTPUT_TV_AND_GAMEPAD = 0,
+    OUTPUT_GAMEPAD_ONLY = 1,
+    OUTPUT_MODE_COUNT = 2
+};
+
 /*
  * Persistent Wii U client settings.
  *
@@ -19,6 +25,8 @@ typedef struct {
     uint16_t web_port;   /* HTTP /login, normally 5080 */
 
     InputConfig input;
+
+    uint8_t output_mode; /* TV + GamePad, or GamePad only */
 
     char token[C2S_MAX_TOKEN_LEN + 1];
 } Settings;
