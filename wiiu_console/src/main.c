@@ -27,6 +27,7 @@
 #include "c2s_protocol.h"
 #include "gx2_video.h"
 #include "audio.h"
+#include "input.h"
 #include "keyboard.h"
 #include "net.h"
 #include "proc.h"
@@ -202,15 +203,35 @@ static void draw_streaming(const Settings *s,
         audio_diag_now.underruns,
         info->audio_udp ? "UDP" : "TCP");
 
-    ui_text(
-        180, 585,
-        UI_SIZE_BODY,
-        UI_DIM,
-        "decoder err %u empty %u | present max %u.%u ms",
-        vs.errors,
-        vs.empty,
-        present_max_us / 1000,
-        (present_max_us % 1000) / 100);
+    PadState21 pad;
+    input_snapshot(pad);
+
+    if (input_available()) {
+        ui_text(
+            180, 585,
+            UI_SIZE_BODY,
+            info->may_control
+                ? UI_TEXT
+                : UI_DANGER,
+            "INPUT %s | L %+d,%+d R %+d,%+d | A%d B%d X%d Y%d",
+            info->may_control
+                ? "CONTROL"
+                : "VIEWER",
+            pad[PAD_LX],
+            pad[PAD_LY],
+            pad[PAD_RX],
+            pad[PAD_RY],
+            pad[PAD_A],
+            pad[PAD_B],
+            pad[PAD_X],
+            pad[PAD_Y]);
+    } else {
+        ui_text(
+            180, 585,
+            UI_SIZE_BODY,
+            UI_DANGER,
+            "INPUT: Wii U GamePad unavailable");
+    }
 }
 
 static void draw_menu_marker(int open)
@@ -285,6 +306,19 @@ int main(int argc, char **argv)
         WHBLogUdpDeinit();
         return 1;
     }
+
+    char input_why[96] = { 0 };
+
+    int input_alive =
+        input_init(
+            input_why,
+            sizeof(input_why)) == 0;
+
+    WHBLogPrintf(
+        "capture2cloud: input %s",
+        input_alive
+            ? "Wii U GamePad ready"
+            : input_why);
 
     Settings settings;
     settings_load(&settings);
@@ -406,6 +440,11 @@ int main(int argc, char **argv)
             WHBLogPrintf("suspend 3/4: H264DEC done");
             WHBLogPrintf("suspend 4/4: SDL/GX2 begin");
 
+            if (input_alive) {
+                input_exit();
+                input_alive = 0;
+            }
+
             if (ui_alive) {
                 ui_shutdown();
                 ui_alive = 0;
@@ -434,6 +473,19 @@ int main(int argc, char **argv)
             }
 
             ui_alive = 1;
+
+            input_why[0] = '\0';
+
+            input_alive =
+                input_init(
+                    input_why,
+                    sizeof(input_why)) == 0;
+
+            WHBLogPrintf(
+                "resume: input %s",
+                input_alive
+                    ? "Wii U GamePad ready"
+                    : input_why);
 
             audio_ok = 1;
             audio_alive = 0;
@@ -495,6 +547,19 @@ int main(int argc, char **argv)
         }
 
         ui_poll(&in);
+
+        /*
+         * Forward physical controls only while actually playing.
+         *
+         * Opening the local menu immediately neutralises the remote pad
+         * while we continue sampling it for the diagnostics screen.
+         */
+        if (input_alive) {
+            input_update(
+                state == STATE_STREAMING &&
+                !menu_open);
+        }
+
         if (in.quit) {
             proc_stop();
         }
@@ -929,6 +994,12 @@ int main(int argc, char **argv)
         WHBLogPrintf("shutdown: final H264DEC cleanup");
         video_exit();
         video_alive = 0;
+    }
+
+    if (input_alive) {
+        WHBLogPrintf("shutdown: final input cleanup");
+        input_exit();
+        input_alive = 0;
     }
 
     if (ui_alive) {

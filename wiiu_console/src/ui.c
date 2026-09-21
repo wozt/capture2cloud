@@ -351,7 +351,11 @@ void ui_poll(UiInput *in)
             in->pressed |= (1u << e.cbutton.button);
             break;
         case SDL_CONTROLLERDEVICEADDED:
-            SDL_GameControllerOpen(e.cdevice.which);
+            /*
+             * input.c owns the Wii U GamePad handle. Opening another
+             * controller here would only add a second reference to the
+             * same VPAD device.
+             */
             break;
         default:
             break;

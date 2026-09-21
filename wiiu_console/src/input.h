@@ -1,35 +1,17 @@
 #ifndef CAPTURE2WIIU_INPUT_H
 #define CAPTURE2WIIU_INPUT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "c2s_protocol.h"
 
 /*
- * The controller state, in exactly the layout the host already speaks.
+ * Exact 21-slot layout expected by capture2cloud/gamepad_bridge.
  *
- * Only the layout lives here so far: reading the GamePad is step two in
- * SPEC.md, and net.h needs the type before then. The slot count comes
- * from the shared protocol header rather than being repeated, so the two
- * cannot disagree.
- *
- *
- * TWO THINGS THAT ARE WRONG BY DEFAULT, AND WERE WRONG ON THE LAST
- * CLIENT TOO. Read these before writing the mapping in step two.
- *
- * The vertical axes are inverted. The host wants up positive. The
- * previous client's handover document said libdrc already reported it
- * that way and not to negate it -- and on the bench, pushing up moved
- * the character down until it was negated. Whatever VPAD turns out to
- * report, check it against the console before believing a document, and
- * make it a setting so it can be flipped without a rebuild.
- *
- * The face buttons do not mean what they say. This is a Nintendo pad
- * and the adapter on the other end pretends to be an Xbox 360, whose
- * four letters sit in different places: Nintendo's A is on the right
- * where Xbox's B is, and Nintendo's X is on top where Xbox's Y is. Map
- * by POSITION, not by letter, or every on-screen prompt lands on the
- * wrong button. Also a setting.
+ * Values:
+ *   buttons/triggers: 0 or 100
+ *   sticks:          -100 .. +100
  */
 #define PAD_SLOT_COUNT C2S_PAD_SLOTS
 
@@ -59,4 +41,32 @@ enum {
 
 typedef int8_t PadState21[PAD_SLOT_COUNT];
 
-#endif /* CAPTURE2WIIU_INPUT_H */
+/*
+ * SDL owns VPAD in this client already.
+ *
+ * We open the raw Wii U GamePad joystick so the mapping is unambiguous:
+ * physical Nintendo buttons are then converted by POSITION to the
+ * Xbox-style 21-slot wire format.
+ */
+int  input_init(char *why, size_t why_size);
+void input_exit(void);
+
+/*
+ * Samples the GamePad once.
+ *
+ * forward != 0:
+ *     forward the sampled state to the host.
+ *
+ * forward == 0:
+ *     keep sampling for diagnostics but send a neutral pad. This is used
+ *     while the local menu is open so menu interaction cannot affect the
+ *     remote game.
+ */
+void input_update(int forward);
+
+int  input_available(void);
+
+/* Last physical state sampled, even when forwarding is disabled. */
+void input_snapshot(PadState21 out);
+
+#endif
