@@ -58,6 +58,28 @@
  */
 #define C2S_WIIU_PORT 5083
 
+/*
+ * Wii U console audio deliberately does NOT share the video TCP stream.
+ *
+ * One packet is normally 5 ms of S16LE stereo PCM:
+ *
+ *   240 frames * 2 channels * 2 bytes = 960 bytes
+ *
+ * plus the 12-byte header below. That stays comfortably below the
+ * Ethernet MTU and avoids TCP head-of-line blocking behind H.264
+ * keyframes.
+ */
+#define C2S_WIIU_AUDIO_PORT 5084
+#define C2S_PCM_UDP_MAGIC 0x314d4350u /* "PCM1" little-endian */
+#define C2S_PCM_UDP_MAX_FRAMES 320
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t sequence;
+    uint16_t frames;
+    uint16_t reserved;
+} C2sPcmUdpHeader;
+
 /* Sizes are u32 and the sender never exceeds this, so a receiver can
  * reject a malformed length instead of trying to allocate it. A 720p
  * VP8 keyframe is far below this; the margin is for a scene change on a
