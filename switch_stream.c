@@ -215,7 +215,18 @@ struct SwitchStream {
     WebStream *web;
     int listen_fd;
     int drc_listen_fd;   /* the GamePad's own port */
-    int wiiu_listen_fd;  /* the Wii U console's own port */
+    int wiiu_listen_fd;  /* the Wii U console's own TCP port */
+
+    /*
+     * Connectionless PCM output to Wii U consoles.
+     *
+     * The TCP connection already authenticates/identifies the console
+     * and gives us its peer IPv4 address; audio itself does not need
+     * another handshake.
+     */
+    int audio_udp_fd;
+    uint32_t pcm_sequence;
+
     uint16_t port;
     uint16_t width, height;
 
@@ -832,17 +843,122 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
                                   const uint8_t *data,
                                   uint32_t size)
 {
+    if (!s ||
+        s->audio_udp_fd < 0 ||
+        !data ||
+        !size ||
+        (size & 3u) != 0) {
+        return;
+    }
+
+    const uint32_t frames =
+        size / 4u;
+
+    if (!frames ||
+        frames > C2S_PCM_UDP_MAX_FRAMES) {
+        return;
+    }
+
     /*
-     * Raw PCM is intentionally specific to the Wii U console stream.
+     * Take a snapshot of the destinations under the client lock, then
+     * perform the UDP sends without holding it.
      */
-    broadcast_filtered(
-        s,
-        SS_STREAM_WIIU,
-        C2S_MSG_AUDIO,
-        0,
+    uint32_t peers[SS_MAX_CLIENTS];
+    int peer_count = 0;
+    uint32_t sequence = 0;
+
+    SDL_LockMutex(s->mutex);
+
+    for (int i = 0;
+         i < SS_MAX_CLIENTS;
+         ++i) {
+
+        const SsClient *c =
+            &s->clients[i];
+
+        if (c->in_use &&
+            c->handshake_done &&
+            c->on_wiiu_port &&
+            c->pcm_audio &&
+            c->peer_ipv4 != 0) {
+
+            peers[peer_count++] =
+                c->peer_ipv4;
+        }
+    }
+
+    if (peer_count) {
+        sequence =
+            s->pcm_sequence++;
+    }
+
+    SDL_UnlockMutex(s->mutex);
+
+    if (!peer_count) {
+        return;
+    }
+
+    uint8_t packet[
+        sizeof(C2sPcmUdpHeader) +
+        C2S_PCM_UDP_MAX_FRAMES * 4u];
+
+    C2sPcmUdpHeader header;
+
+    header.magic =
+        c2s_le32(C2S_PCM_UDP_MAGIC);
+
+    header.sequence =
+        c2s_le32(sequence);
+
+    header.frames =
+        c2s_le16((uint16_t)frames);
+
+    header.reserved =
+        c2s_le16(0);
+
+    memcpy(
+        packet,
+        &header,
+        sizeof(header));
+
+    memcpy(
+        packet + sizeof(header),
         data,
-        size,
-        1);
+        size);
+
+    const size_t packet_size =
+        sizeof(header) +
+        size;
+
+    for (int i = 0;
+         i < peer_count;
+         ++i) {
+
+        struct sockaddr_in dst;
+        memset(&dst, 0, sizeof(dst));
+
+        dst.sin_family =
+            AF_INET;
+
+        dst.sin_addr.s_addr =
+            peers[i];
+
+        dst.sin_port =
+            htons(C2S_WIIU_AUDIO_PORT);
+
+        /*
+         * UDP live audio: if the kernel cannot accept one datagram now,
+         * dropping that 5 ms packet is better than making later audio
+         * wait behind it.
+         */
+        sendto(
+            s->audio_udp_fd,
+            packet,
+            packet_size,
+            MSG_DONTWAIT | MSG_NOSIGNAL,
+            (struct sockaddr *)&dst,
+            sizeof(dst));
+    }
 }
 
 
@@ -989,6 +1105,7 @@ static void handle_hello(SwitchStream *s, int index) {
      */
     c->pcm_audio =
         c->on_wiiu_port &&
+        s->audio_udp_fd >= 0 &&
         ((c2s_le16(hello.reserved) &
           C2S_HELLO_CAP_PCM_S16LE) != 0);
 
@@ -1622,9 +1739,50 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         }
     }
 
+    /*
+     * UDP needs no listen/bind on the host: sendto() will choose the
+     * correct local interface according to the Wii U peer address.
+     */
+    s->audio_udp_fd =
+        socket(
+            AF_INET,
+            SOCK_DGRAM | SOCK_CLOEXEC,
+            0);
+
+    if (s->audio_udp_fd >= 0) {
+        fcntl(
+            s->audio_udp_fd,
+            F_SETFL,
+            fcntl(
+                s->audio_udp_fd,
+                F_GETFL,
+                0) |
+                O_NONBLOCK);
+
+        int sndbuf = 64 * 1024;
+
+        setsockopt(
+            s->audio_udp_fd,
+            SOL_SOCKET,
+            SO_SNDBUF,
+            &sndbuf,
+            sizeof(sndbuf));
+
+    } else {
+        fprintf(
+            stderr,
+            "switch_stream: Wii U PCM UDP unavailable: %s\n",
+            strerror(errno));
+    }
+
     s->running = 1;
     s->thread = SDL_CreateThread(accept_thread, "switch-stream", s);
     if (!s->thread) {
+        if (s->audio_udp_fd >= 0) {
+            close(s->audio_udp_fd);
+            s->audio_udp_fd = -1;
+        }
+
         close(s->listen_fd);
         SDL_DestroyMutex(s->mutex);
         free(s);
@@ -1648,6 +1806,12 @@ void switch_stream_stop(SwitchStream *s) {
         }
     }
     close(s->listen_fd);
+
+    if (s->audio_udp_fd >= 0) {
+        close(s->audio_udp_fd);
+        s->audio_udp_fd = -1;
+    }
+
     if (s->wiiu_listen_fd >= 0) {
         close(s->wiiu_listen_fd);
         s->wiiu_listen_fd = -1;

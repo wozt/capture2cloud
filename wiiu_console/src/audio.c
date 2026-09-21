@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "c2s_protocol.h"
 
 #include <stdio.h>
 #include <string.h>
