@@ -60,11 +60,6 @@ void ui_poll(UiInput *in);
 void ui_begin(void);
 void ui_present(void);
 
-/* Saves the composed frame to the app directory on SD for UI debugging. */
-int ui_debug_capture(unsigned index,
-                     char *path,
-                     size_t path_size);
-
 const char *ui_video_renderer_name(void);
 
 void ui_present_stats(uint32_t *avg_us,
@@ -103,6 +98,9 @@ void ui_video_draw(void);
  * fails. Which it did, and said so on screen.
  */
 void ui_flush(void);
+
+/* Rebinds SDL's GX2 state after code that draws directly with GX2. */
+void ui_restore_after_external_gx2(void);
 
 void ui_fill(int x, int y, int w, int h, UiColour c);
 /* A filled rectangle with a one-pixel border, for a field or a button. */

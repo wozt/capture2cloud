@@ -287,6 +287,7 @@ int main(int argc, char **argv)
 
     Settings settings;
     settings_load(&settings);
+    input_set_config(&settings.input);
 
     char decoder_why[128] = { 0 };
 
@@ -541,6 +542,72 @@ int main(int argc, char **argv)
                 &in,
                 state == STATE_STREAMING);
 
+        if (menu_action == MENU_ACTION_RESOLUTION ||
+            menu_action == MENU_ACTION_FRAME_RATE ||
+            menu_action == MENU_ACTION_BITRATE) {
+
+            unsigned width, height, fps, bitrate;
+            if (menu_change_stream(
+                    &menu,
+                    menu_action,
+                    &width,
+                    &height,
+                    &fps,
+                    &bitrate)) {
+
+                if (net_info()->state == NET_CONNECTED) {
+                    net_send_profile(width, height, fps, bitrate);
+                    (void)menu_take_profile_dirty(
+                        &menu, NULL, NULL, NULL, NULL);
+                    snprintf(note, sizeof(note),
+                             "%ux%u %u fps %u kbps requested",
+                             width, height, fps, bitrate);
+                } else {
+                    snprintf(note, sizeof(note),
+                             "profile selected; it will be sent after connect");
+                }
+            }
+        }
+
+        if (menu_action == MENU_ACTION_LEFT_DEADZONE ||
+            menu_action == MENU_ACTION_LEFT_RANGE ||
+            menu_action == MENU_ACTION_RIGHT_DEADZONE ||
+            menu_action == MENU_ACTION_RIGHT_RANGE ||
+            menu_action == MENU_ACTION_INVERT_Y ||
+            menu_action == MENU_ACTION_FACE_MAPPING) {
+
+            if (menu_action == MENU_ACTION_LEFT_DEADZONE ||
+                menu_action == MENU_ACTION_RIGHT_DEADZONE) {
+                const int stick =
+                    menu_action == MENU_ACTION_LEFT_DEADZONE ? 0 : 1;
+                unsigned value = settings.input.deadzone[stick] + 2;
+                settings.input.deadzone[stick] = value > 25 ? 0 : value;
+            } else if (menu_action == MENU_ACTION_LEFT_RANGE ||
+                       menu_action == MENU_ACTION_RIGHT_RANGE) {
+                const int stick =
+                    menu_action == MENU_ACTION_LEFT_RANGE ? 0 : 1;
+                unsigned value = settings.input.range[stick];
+                settings.input.range[stick] = value <= 45 ? 100 : value - 5;
+            } else if (menu_action == MENU_ACTION_INVERT_Y) {
+                settings.input.invert_y = !settings.input.invert_y;
+            } else {
+                settings.input.face_by_position =
+                    !settings.input.face_by_position;
+            }
+
+            input_set_config(&settings.input);
+
+            char save_why[96];
+            if (settings_save(
+                    &settings,
+                    save_why,
+                    sizeof(save_why)) != 0) {
+                snprintf(note, sizeof(note), "not saved: %s", save_why);
+            } else {
+                snprintf(note, sizeof(note), "controller setting saved");
+            }
+        }
+
         if (state == STATE_SETTINGS) {
             if (menu_action == MENU_ACTION_HOST) {
 
@@ -790,6 +857,21 @@ int main(int argc, char **argv)
 
             net_poll();
 
+            if (net_info()->state == NET_CONNECTED) {
+                unsigned width, height, fps, bitrate;
+                if (menu_take_profile_dirty(
+                        &menu,
+                        &width,
+                        &height,
+                        &fps,
+                        &bitrate)) {
+                    net_send_profile(width, height, fps, bitrate);
+                    snprintf(note, sizeof(note),
+                             "%ux%u %u fps %u kbps requested",
+                             width, height, fps, bitrate);
+                }
+            }
+
             /*
              * Every frame that has arrived, not just one. The decoder is
              * faster than this loop, and a queue drained one frame per
@@ -801,6 +883,38 @@ int main(int argc, char **argv)
             uint8_t flags;
             int kind;
             while ((kind = net_take_frame(&payload, &size, &flags)) != 0) {
+                if (kind == C2S_MSG_SHARED &&
+                    size == sizeof(C2sShared)) {
+
+                    C2sShared shared;
+                    memcpy(&shared, payload, sizeof(shared));
+
+                    menu_adopt_stream(
+                        &menu,
+                        c2s_le16(shared.width),
+                        c2s_le16(shared.height),
+                        c2s_le16(shared.fps),
+                        c2s_le16(shared.bitrate_kbps));
+
+                    continue;
+                }
+
+                if (kind == C2S_MSG_STREAM_INFO &&
+                    size == sizeof(C2sStreamInfo)) {
+
+                    C2sStreamInfo stream;
+                    memcpy(&stream, payload, sizeof(stream));
+
+                    net_set_stream_info(
+                        c2s_le16(stream.width),
+                        c2s_le16(stream.height),
+                        stream.video_codec);
+
+                    video_synced = 0;
+                    keyframe_requested = 0;
+                    continue;
+                }
+
                 if (kind == C2S_MSG_AUDIO) {
                     /*
                      * TCP PCM is only the compatibility fallback.
@@ -1083,25 +1197,6 @@ int main(int argc, char **argv)
         };
 
         menu_draw(&menu, &menu_view);
-
-        unsigned capture_index;
-        if (menu_is_open(&menu) &&
-            menu_take_capture(&menu, &capture_index)) {
-
-            char capture_path[256];
-            if (ui_debug_capture(
-                    capture_index,
-                    capture_path,
-                    sizeof(capture_path)) == 0) {
-                WHBLogPrintf(
-                    "menu: debug capture saved %s",
-                    capture_path);
-            } else {
-                WHBLogPrintf(
-                    "menu: debug capture failed: %s",
-                    capture_path);
-            }
-        }
 
         ui_present();
 

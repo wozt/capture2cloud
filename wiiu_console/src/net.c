@@ -326,6 +326,14 @@ const NetInfo *net_info(void) {
     return &g_info;
 }
 
+void net_set_stream_info(uint16_t width,
+                         uint16_t height,
+                         uint8_t video_codec) {
+    g_info.width = width;
+    g_info.height = height;
+    g_info.video_codec = video_codec;
+}
+
 static void fail(const char *step, int err, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

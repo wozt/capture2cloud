@@ -25,8 +25,7 @@ extern "C" {
  * cancelled, and -1 when the keyboard could not be opened at all, with
  * the reason in `why`.
  *
- * Whatever happens, the caller must restart its own display afterwards:
- * this leaves GX2 shut down and OSScreen untouched.
+ * The implementation restores SDL's cached GX2 state before returning.
  */
 int keyboard_prompt(const char *hint, const char *initial, int numeric,
                     char *out, size_t out_size, char *why, size_t why_size);

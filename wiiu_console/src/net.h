@@ -54,6 +54,11 @@ void net_poll(void);
 
 const NetInfo *net_info(void);
 
+/* Applies a server-announced stream shape after a profile change. */
+void net_set_stream_info(uint16_t width,
+                         uint16_t height,
+                         uint8_t video_codec);
+
 /* This console's own IPv4 address, host byte order, or 0 when it has
  * none. Shown on screen because "cannot reach the host" and "this
  * console is not on a network" look identical otherwise. */
