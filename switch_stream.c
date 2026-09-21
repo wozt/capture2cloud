@@ -267,14 +267,6 @@ struct SwitchStream {
     uint32_t skipped_frames;
     uint32_t last_skip_report_ms;
 
-    /* Wii U console stream diagnostics, one-second windows. */
-    uint32_t wiiu_diag_at;
-    uint32_t wiiu_diag_produced;
-    uint32_t wiiu_diag_queued;
-    uint32_t wiiu_diag_skip_outq;
-    uint32_t wiiu_diag_skip_pending;
-    uint32_t wiiu_diag_max_outq;
-
     /* Set while the client lock is held, acted on once it is released:
      * the callback reaches into the pipeline, and the pipeline's own
      * thread takes this lock to deliver frames. */
@@ -456,15 +448,7 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
     const uint32_t total = (uint32_t)sizeof(h) + size;
     int skipped = 0;
 
-    const int wiiu_video =
-        type == C2S_MSG_VIDEO &&
-        slot_filter == SS_STREAM_WIIU;
-
     SDL_LockMutex(s->mutex);
-
-    if (wiiu_video) {
-        s->wiiu_diag_produced++;
-    }
 
     /* Decays by a sixteenth per frame -- about a second at 60 fps -- so
      * the allowance follows a change of profile within a keyframe
@@ -506,30 +490,14 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
         if (type == C2S_MSG_VIDEO) {
             int unsent = 0;
 
-            if (ioctl(c->fd, TIOCOUTQ, &unsent) == 0) {
-                if (wiiu_video &&
-                    unsent > (int)s->wiiu_diag_max_outq) {
-                    s->wiiu_diag_max_outq =
-                        (uint32_t)unsent;
-                }
-
-                if (unsent > (int)allowance) {
-                    skipped = 1;
-
-                    if (wiiu_video) {
-                        s->wiiu_diag_skip_outq++;
-                    }
-
-                    continue;
-                }
+            if (ioctl(c->fd, TIOCOUTQ, &unsent) == 0 &&
+                unsent > (int)allowance) {
+                skipped = 1;
+                continue;
             }
         }
 
         if (c->pending_len) {
-            if (wiiu_video) {
-                s->wiiu_diag_skip_pending++;
-            }
-
             /* Still catching up on the previous frame, so this one is
              * skipped -- but VP8 is predictive, and a gap leaves every
              * frame after it decoding against something the client never
@@ -569,70 +537,11 @@ static void broadcast(SwitchStream *s, int slot_filter, uint8_t type, uint8_t fl
         c->pending_len = on_wire;
         c->pending_sent = 0;
 
-        if (wiiu_video) {
-            s->wiiu_diag_queued++;
-        }
-
         if (flush_pending(c) != 0) {
             drop_client(s, i, "connection gone");
         }
     }
-    uint32_t diag_produced = 0;
-    uint32_t diag_queued = 0;
-    uint32_t diag_outq = 0;
-    uint32_t diag_pending = 0;
-    uint32_t diag_max_outq = 0;
-    int diag_print = 0;
-
-    if (wiiu_video) {
-        const uint32_t t = now_ms();
-
-        if (!s->wiiu_diag_at) {
-            s->wiiu_diag_at = t;
-        }
-
-        if (t - s->wiiu_diag_at >= 1000) {
-            diag_produced =
-                s->wiiu_diag_produced;
-
-            diag_queued =
-                s->wiiu_diag_queued;
-
-            diag_outq =
-                s->wiiu_diag_skip_outq;
-
-            diag_pending =
-                s->wiiu_diag_skip_pending;
-
-            diag_max_outq =
-                s->wiiu_diag_max_outq;
-
-            s->wiiu_diag_produced = 0;
-            s->wiiu_diag_queued = 0;
-            s->wiiu_diag_skip_outq = 0;
-            s->wiiu_diag_skip_pending = 0;
-            s->wiiu_diag_max_outq = 0;
-            s->wiiu_diag_at = t;
-
-            diag_print = 1;
-        }
-    }
-
     SDL_UnlockMutex(s->mutex);
-
-    if (diag_print) {
-        fprintf(
-            stderr,
-            "WIIU TX: produced=%u queued=%u "
-            "outq_drop=%u pending_drop=%u "
-            "max_outq=%u allowance=%u\n",
-            diag_produced,
-            diag_queued,
-            diag_outq,
-            diag_pending,
-            diag_max_outq,
-            allowance);
-    }
 
     /* Outside the lock: the callback reaches into the pipeline, and
      * holding the client mutex across that would invite a deadlock with
