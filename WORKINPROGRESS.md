@@ -12,10 +12,10 @@ is and how to install it, see [README.md](README.md).
 
 Low-latency HDMI/USB capture: V4L2 + SDL2 + PulseAudio in a native
 window, streamed to a browser, and a gamepad bridge relaying input to a
-real console through a ConsoleTuner adapter (Titan One). Three clients
-read the stream: the browser (WebRTC **or** WebSocket, a live setting),
-an Android app, and a Switch homebrew — the last two over the binary
-protocol in `c2s_protocol.h`.
+real console through a ConsoleTuner adapter (Titan One). Four client types read the stream: the browser (WebRTC **or**
+WebSocket), Android, the Switch homebrew and a homebrew running directly
+on a Wii U. The native clients use the binary protocol in
+`c2s_protocol.h`.
 
 ---
 
@@ -85,6 +85,60 @@ host could only ever see a viewer. Frames are dropped when the decoder
 falls more than four behind, with a keyframe asked for at most once a
 second: `decode()` queues rather than blocks, so a browser that cannot
 keep up at 1080p60 grows a queue that never drains.
+
+---
+
+## Wii U console client — measured on hardware
+
+`wiiu_console/` is now functional on real Wii U hardware.
+
+### Video
+
+- Dedicated TCP port **5083**.
+- Tested path: **1280×720 at 60 fps H.264**.
+- Hardware decode through **H264DEC**.
+- NV12 decode buffers are displayed directly through a custom
+  **GX2 zero-copy** renderer.
+- H264 decode was measured around **8.7 ms/frame** during bring-up.
+- The working GX2 path displays roughly **59–60 fps**.
+- Forcing the SDL NV12 fallback with the same stream dropped display
+  performance to roughly **16 fps**, so the custom GX2 path is required.
+- Raw GX2 rendering initially desynchronised SDL's cached shader state;
+  forcing an SDL texture-shader -> colour-shader transition after the
+  GX2 pass fixed the menu rectangle artefact.
+
+### Audio
+
+- Wii U does not use Opus on its normal path.
+- Host sends raw **S16LE 48 kHz stereo PCM**.
+- Audio uses dedicated **UDP 5084** to avoid TCP head-of-line blocking
+  behind H.264 frames.
+- SDL2's Wii U audio backend produced queue growth/crackling.
+- Direct **AX** playback currently gives approximately **48 ms AQ,
+  zero drops and no crackling** in the hardware test.
+
+### Input and authentication
+
+- Wii U GamePad input is forwarded to the host using the common
+  21-slot controller format.
+- Face buttons are mapped by physical position rather than Nintendo
+  letters.
+- Opening the local menu neutralises remote input.
+- The menu has **REMOTE HOME**, sent as `C2S_MSG_HOME`.
+- Password entry uses `nn::swkbd`.
+- `/login` runs on `WEB_PORT` (5080 by default).
+- The password remains RAM-only; the returned session token may be
+  stored on SD.
+- A token gives `CONTROL`; otherwise the connection remains a viewer and
+  input is rejected server-side.
+
+### ProcUI lifecycle
+
+HOME/menu transitions require teardown in this order:
+
+`network/audio -> H264DEC -> SDL/GX2 -> ProcUIDrawDoneRelease`
+
+On resume SDL/GX2, GamePad input and H264DEC are rebuilt.
 
 ---
 
