@@ -183,20 +183,19 @@ static void edit_password(
 
 
 /*
- * swkbd owns and modifies raw GX2 state while it is visible.  The Wii U
- * SDL renderer caches that state internally and has no public way to
- * invalidate it afterwards.  Recreate the display and controller just as
- * we already do after the HOME overlay; otherwise cached glyph textures
- * are drawn with swkbd's colour shader and become solid rectangles.
+ * Recreate SDL/GX2 and controller state after a subsystem changed the
+ * renderer configuration. swkbd requires this because it modifies GX2
+ * behind SDL's cache; changing Wii U scan targets requires new window flags.
  */
-static int rebuild_ui_after_keyboard(
+static int rebuild_ui(
     int *ui_alive,
     int *input_alive,
     const Settings *settings,
+    const char *reason,
     char *why,
     size_t why_size)
 {
-    WHBLogPrintf("swkbd: rebuilding SDL/GX2 renderer");
+    WHBLogPrintf("%s: rebuilding SDL/GX2 renderer", reason);
 
     if (*input_alive) {
         input_exit();
@@ -208,9 +207,12 @@ static int rebuild_ui_after_keyboard(
         *ui_alive = 0;
     }
 
+    ui_set_output_mode(
+        settings->output_mode == OUTPUT_GAMEPAD_ONLY);
+
     why[0] = '\0';
     if (ui_init(why, why_size) != 0) {
-        WHBLogPrintf("swkbd: UI rebuild failed -- %s", why);
+        WHBLogPrintf("%s: UI rebuild failed -- %s", reason, why);
         return -1;
     }
     *ui_alive = 1;
@@ -224,7 +226,8 @@ static int rebuild_ui_after_keyboard(
     }
 
     WHBLogPrintf(
-        "swkbd: renderer rebuilt, input %s",
+        "%s: renderer rebuilt, input %s",
+        reason,
         *input_alive ? "ready" : input_why);
 
     return 0;
@@ -312,6 +315,11 @@ int main(int argc, char **argv)
     WHBLogPrintf("capture2cloud: starting");
     proc_init();
 
+    Settings settings;
+    settings_load(&settings);
+    ui_set_output_mode(
+        settings.output_mode == OUTPUT_GAMEPAD_ONLY);
+
     char why[128] = { 0 };
     if (ui_init(why, sizeof(why)) != 0) {
         WHBLogPrintf("capture2cloud: no interface -- %s", why);
@@ -334,8 +342,6 @@ int main(int argc, char **argv)
             ? "Wii U GamePad ready"
             : input_why);
 
-    Settings settings;
-    settings_load(&settings);
     input_set_config(&settings.input);
 
     char decoder_why[128] = { 0 };
@@ -657,6 +663,39 @@ int main(int argc, char **argv)
             }
         }
 
+        if (menu_action == MENU_ACTION_OUTPUT) {
+            settings.output_mode =
+                settings.output_mode == OUTPUT_GAMEPAD_ONLY
+                    ? OUTPUT_TV_AND_GAMEPAD
+                    : OUTPUT_GAMEPAD_ONLY;
+
+            char save_why[96];
+            if (settings_save(
+                    &settings,
+                    save_why,
+                    sizeof(save_why)) != 0) {
+                snprintf(note, sizeof(note), "not saved: %s", save_why);
+            } else {
+                snprintf(
+                    note,
+                    sizeof(note),
+                    "display: %s",
+                    settings.output_mode == OUTPUT_GAMEPAD_ONLY
+                        ? "GamePad only"
+                        : "TV + GamePad");
+            }
+
+            if (rebuild_ui(
+                    &ui_alive, &input_alive, &settings,
+                    "display", why, sizeof(why)) != 0) {
+                proc_stop();
+            }
+
+            have_frame = 0;
+            memset(&in, 0, sizeof(in));
+            continue;
+        }
+
         if (state == STATE_SETTINGS) {
             if (menu_action == MENU_ACTION_HOST) {
 
@@ -676,9 +715,9 @@ int main(int argc, char **argv)
                         parse_host,
                         &settings);
 
-                    if (rebuild_ui_after_keyboard(
+                    if (rebuild_ui(
                             &ui_alive, &input_alive, &settings,
-                            why, sizeof(why)) != 0) {
+                            "swkbd", why, sizeof(why)) != 0) {
                         proc_stop();
                         continue;
                     }
@@ -703,9 +742,9 @@ int main(int argc, char **argv)
                         parse_port,
                         &settings.port);
 
-                    if (rebuild_ui_after_keyboard(
+                    if (rebuild_ui(
                             &ui_alive, &input_alive, &settings,
-                            why, sizeof(why)) != 0) {
+                            "swkbd", why, sizeof(why)) != 0) {
                         proc_stop();
                         continue;
                     }
@@ -730,9 +769,9 @@ int main(int argc, char **argv)
                         parse_port,
                         &settings.web_port);
 
-                    if (rebuild_ui_after_keyboard(
+                    if (rebuild_ui(
                             &ui_alive, &input_alive, &settings,
-                            why, sizeof(why)) != 0) {
+                            "swkbd", why, sizeof(why)) != 0) {
                         proc_stop();
                         continue;
                     }
@@ -745,9 +784,9 @@ int main(int argc, char **argv)
                         note,
                         sizeof(note));
 
-                    if (rebuild_ui_after_keyboard(
+                    if (rebuild_ui(
                             &ui_alive, &input_alive, &settings,
-                            why, sizeof(why)) != 0) {
+                            "swkbd", why, sizeof(why)) != 0) {
                         proc_stop();
                         continue;
                     }
@@ -1093,9 +1132,9 @@ int main(int argc, char **argv)
                             parse_host,
                             &settings);
 
-                        if (rebuild_ui_after_keyboard(
+                        if (rebuild_ui(
                                 &ui_alive, &input_alive, &settings,
-                                why, sizeof(why)) != 0) {
+                                "swkbd", why, sizeof(why)) != 0) {
                             proc_stop();
                             continue;
                         }
@@ -1120,9 +1159,9 @@ int main(int argc, char **argv)
                             parse_port,
                             &settings.port);
 
-                        if (rebuild_ui_after_keyboard(
+                        if (rebuild_ui(
                                 &ui_alive, &input_alive, &settings,
-                                why, sizeof(why)) != 0) {
+                                "swkbd", why, sizeof(why)) != 0) {
                             proc_stop();
                             continue;
                         }
@@ -1147,9 +1186,9 @@ int main(int argc, char **argv)
                             parse_port,
                             &settings.web_port);
 
-                        if (rebuild_ui_after_keyboard(
+                        if (rebuild_ui(
                                 &ui_alive, &input_alive, &settings,
-                                why, sizeof(why)) != 0) {
+                                "swkbd", why, sizeof(why)) != 0) {
                             proc_stop();
                             continue;
                         }
@@ -1162,9 +1201,9 @@ int main(int argc, char **argv)
                             note,
                             sizeof(note));
 
-                        if (rebuild_ui_after_keyboard(
+                        if (rebuild_ui(
                                 &ui_alive, &input_alive, &settings,
-                                why, sizeof(why)) != 0) {
+                                "swkbd", why, sizeof(why)) != 0) {
                             proc_stop();
                             continue;
                         }

@@ -17,6 +17,10 @@ but a network.
 > are folded in. They are kept at the end as decisions, with what each
 > one costs.
 
+Current output selection is TV + GamePad or GamePad only. A separate TV-only
+touch menu is intentionally omitted because it would leave the controls
+invisible on the GamePad.
+
 ---
 
 ## What it does

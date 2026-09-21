@@ -311,7 +311,8 @@ static void add_connection(MenuCanvas *canvas,
 }
 
 static void add_stream(MenuCanvas *canvas,
-                       const MenuState *menu)
+                       const MenuState *menu,
+                       const MenuView *view)
 {
     char fps[24];
     char bitrate[24];
@@ -330,14 +331,18 @@ static void add_stream(MenuCanvas *canvas,
           RESOLUTIONS[menu->resolution_index].label, UI_TEXT);
     field(canvas, R_FRAME_RATE, "Frame rate", fps, UI_TEXT);
     field(canvas, R_BITRATE, "Bitrate", bitrate, UI_TEXT);
-    field(canvas, R_OUTPUT, "Display", "TV + GamePad", UI_DIM);
+    field(canvas, R_OUTPUT, "Display",
+          view->settings->output_mode == OUTPUT_GAMEPAD_ONLY
+              ? "GamePad only"
+              : "TV + GamePad",
+          UI_TEXT);
 
     text_at(canvas, 348, 326, UI_SIZE_BODY, MENU_GREEN,
             "720p60 is the validated path");
     text_at(canvas, 348, 362, UI_SIZE_BODY, UI_DIM,
             "1080p stays hidden until the decoder is allocated and tested for it");
     text_at(canvas, 348, 398, UI_SIZE_BODY, UI_DIM,
-            "Separate TV / GamePad output needs a dual GX2 scan-target renderer");
+            "GamePad-only disables TV output and is saved on SD");
 }
 
 static void add_controls(MenuCanvas *canvas,
@@ -625,6 +630,8 @@ MenuAction menu_input(MenuState *menu,
             return MENU_ACTION_FRAME_RATE;
         if (hit(&R_BITRATE, input->touch_x, input->touch_y))
             return MENU_ACTION_BITRATE;
+        if (hit(&R_OUTPUT, input->touch_x, input->touch_y))
+            return MENU_ACTION_OUTPUT;
     } else if (menu->page == MENU_PAGE_CONTROLS) {
         if (hit(&R_LEFT_DEAD, input->touch_x, input->touch_y))
             return MENU_ACTION_LEFT_DEADZONE;
@@ -677,7 +684,7 @@ void menu_draw(const MenuState *menu,
     if (menu->page == MENU_PAGE_CONNECTION) {
         add_connection(&canvas, view);
     } else if (menu->page == MENU_PAGE_STREAM) {
-        add_stream(&canvas, menu);
+        add_stream(&canvas, menu, view);
     } else if (menu->page == MENU_PAGE_CONTROLS) {
         add_controls(&canvas, view);
     } else {

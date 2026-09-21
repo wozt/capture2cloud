@@ -23,8 +23,8 @@ Controls and Console pages use settings the Wii U path can actually apply.
 
 Stream exposes the safe 480p/720p profiles, 30/60 fps and bitrate. Controls
 exposes per-stick deadzone/range, Y inversion and face-button mapping. ZL/ZR
-remain digital, and separate TV/GamePad output waits for a dual-target GX2
-renderer instead of presenting controls that do nothing.
+remain digital. Display switches between TV + GamePad and GamePad only using
+SDL's Wii U scan-target flag; the choice is saved on SD.
 
 ## Building
 
@@ -62,6 +62,8 @@ Host, native port, web/login port and the temporary session token are
 stored in `sd:/wiiu/apps/capture2cloud/capture2cloud.cfg`. The password
 is entered with the Wii U keyboard and is never stored. Closing that
 keyboard rebuilds SDL/GX2 because the keyboard changes raw GX2 state.
+This rebuild was validated on hardware: menu glyphs remain readable after
+password entry, reconnect and resumed video.
 
 ## How the picture gets there
 

@@ -55,6 +55,9 @@ typedef struct {
 int  ui_init(char *why, size_t why_size);
 void ui_shutdown(void);
 
+/* Applied by the next ui_init(), because SDL stores this in window flags. */
+void ui_set_output_mode(int gamepad_only);
+
 /* One frame: poll, draw, show. */
 void ui_poll(UiInput *in);
 void ui_begin(void);

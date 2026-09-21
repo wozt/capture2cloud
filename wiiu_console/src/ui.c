@@ -24,6 +24,7 @@ static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
 static TTF_Font     *g_body;
 static TTF_Font     *g_title;
+static int g_gamepad_only;
 
 /*
  * Video texture.
@@ -84,6 +85,11 @@ typedef struct {
 
 static TextEntry g_cache[CACHE_SIZE];
 static uint32_t  g_clock;
+
+void ui_set_output_mode(int gamepad_only)
+{
+    g_gamepad_only = gamepad_only ? 1 : 0;
+}
 
 void ui_restore_after_external_gx2(void)
 {
@@ -191,12 +197,19 @@ int ui_init(char *why, size_t why_size)
         return -1;
     }
 
+    Uint32 window_flags = SDL_WINDOW_SHOWN;
+    if (g_gamepad_only) {
+        window_flags |= SDL_WINDOW_WIIU_GAMEPAD_ONLY;
+    }
+
     g_window = SDL_CreateWindow("capture2cloud", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                                UI_WIDTH, UI_HEIGHT, SDL_WINDOW_SHOWN);
+                                UI_WIDTH, UI_HEIGHT, window_flags);
     if (!g_window) {
         snprintf(why, why_size, "window: %s", SDL_GetError());
         return -1;
     }
+    WHBLogPrintf("ui: output %s",
+                 g_gamepad_only ? "GamePad only" : "TV + GamePad");
     /*
      * PRESENTVSYNC, and it is not a nicety.
      *
