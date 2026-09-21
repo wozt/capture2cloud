@@ -488,6 +488,17 @@ struct GstWebrtcStream {
     uint8_t *switch_i420_buf[SS_STREAM_COUNT_LOCAL];
     size_t switch_i420_size[SS_STREAM_COUNT_LOCAL];
     uint64_t switch_frame;
+
+    /*
+     * Wii U console pacing is independent from the other native
+     * clients. The capture device can deliver slightly above 60 Hz;
+     * sending every one of those frames only creates useless decoder
+     * work and burst pressure on a 60 Hz console.
+     */
+    uint64_t wiiu_frame;
+    gint64 wiiu_pace_last_us;
+    gint64 wiiu_pace_credit_us;
+
     SwitchStream *switch_out;
     GstElement *asrc, *atee;
     GMainContext *ctx; /* private GLib context, shared with every webrtcbin created by handle_offer() -- see gst_thread_main() */
@@ -1986,6 +1997,74 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
                                                 : g->vsrc_switch;
     if (!dest) {
         return;
+    }
+
+    /*
+     * The Wii U console displays at 60 Hz.
+     *
+     * Some capture devices deliver ~63-65 callbacks per wall-clock
+     * second even though the advertised mode is 60 fps. Previously we
+     * fabricated one 1/60 timestamp for every callback, so all of those
+     * frames were encoded and sent.
+     *
+     * A small token bucket keeps ONLY this console chain at real 60 Hz.
+     * Credit is accumulated from monotonic wall time so ordinary capture
+     * jitter does not turn into an accidental 30 fps cadence.
+     */
+    if (slot == SS_STREAM_WIIU) {
+        const gint64 now =
+            g_get_monotonic_time();
+
+        const gint64 frame_us =
+            G_USEC_PER_SEC / 60;
+
+        if (!g->wiiu_pace_last_us ||
+            now - g->wiiu_pace_last_us >
+                G_USEC_PER_SEC / 2) {
+
+            g->wiiu_pace_last_us = now;
+            g->wiiu_pace_credit_us = frame_us;
+
+        } else {
+            gint64 elapsed =
+                now - g->wiiu_pace_last_us;
+
+            if (elapsed < 0) {
+                elapsed = 0;
+            }
+
+            g->wiiu_pace_last_us = now;
+            g->wiiu_pace_credit_us += elapsed;
+
+            /*
+             * Do not save an unlimited number of future frames after
+             * a stall. At most two frame periods of burst credit.
+             */
+            if (g->wiiu_pace_credit_us >
+                frame_us * 2) {
+
+                g->wiiu_pace_credit_us =
+                    frame_us * 2;
+            }
+        }
+
+        if (g->wiiu_pace_credit_us <
+            frame_us) {
+            return;
+        }
+
+        g->wiiu_pace_credit_us -=
+            frame_us;
+
+        /*
+         * Separate console timeline: exactly one 60 Hz timestamp for
+         * every console frame we actually keep.
+         */
+        pts =
+            gst_util_uint64_scale(
+                g->wiiu_frame++,
+                GST_SECOND,
+                60);
     }
 
     /* Each chain is fed at its own size: a handheld's and a monitor's

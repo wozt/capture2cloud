@@ -581,9 +581,10 @@ int main(int argc, char **argv)
                 }
 
                 const int queued =
-                    video_worker_submit(
+                    video_worker_submit_wait(
                         payload,
-                        size);
+                        size,
+                        12000);
 
                 if (queued <= 0) {
                     video_synced = 0;

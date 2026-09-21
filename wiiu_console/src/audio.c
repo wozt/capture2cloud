@@ -22,8 +22,8 @@
 
 #define AUDIO_RING_FRAMES 16384
 
-#define AUDIO_TARGET_MS 40
-#define AUDIO_START_MS  30
+#define AUDIO_TARGET_MS 35
+#define AUDIO_START_MS  25
 
 /*
  * Maximum drift correction per SDL callback.
@@ -31,7 +31,15 @@
  * At 512 output frames, +/-4 is below 0.8 %, and normally the actual
  * correction is only one frame.
  */
-#define AUDIO_MAX_SLIP 4
+/*
+ * Normal correction stays tiny, but a queue that has already wandered
+ * far from the live edge must be allowed to recover in seconds rather
+ * than minutes.
+ */
+#define AUDIO_MAX_NORMAL_SLIP   12
+#define AUDIO_MAX_MEDIUM_SLIP   24
+#define AUDIO_MAX_CATCHUP_SLIP  48
+#define AUDIO_MAX_STRETCH_SLIP   8
 
 static OpusDecoder *g_decoder;
 static SDL_AudioDeviceID g_device;
@@ -132,13 +140,17 @@ static void audio_callback(void *userdata,
     int adjust = 0;
 
     /*
-     * One correction step per ~5 ms of queue error.
+     * Proportional drift controller.
      *
-     * This gives a gradual correction rather than oscillating around
-     * the target every callback.
+     * Around the 35 ms target it changes only a handful of source
+     * frames per callback. If the queue has already reached hundreds of
+     * milliseconds it is deliberately allowed to catch up much faster.
+     *
+     * Linear interpolation below makes this a short smooth time-scale
+     * correction instead of an audible discontinuity.
      */
     const int step_frames =
-        g_rate / 200;
+        g_rate / 400;  /* about 2.5 ms */
 
     const int error =
         (int)g_count -
@@ -146,19 +158,40 @@ static void audio_callback(void *userdata,
 
     if (step_frames > 0) {
         if (error > step_frames) {
-            adjust =
-                error / step_frames;
+            int max_slip =
+                AUDIO_MAX_NORMAL_SLIP;
 
-            if (adjust > AUDIO_MAX_SLIP) {
-                adjust = AUDIO_MAX_SLIP;
+            if (error >
+                g_rate * 120 / 1000) {
+
+                max_slip =
+                    AUDIO_MAX_CATCHUP_SLIP;
+
+            } else if (error >
+                       g_rate * 60 / 1000) {
+
+                max_slip =
+                    AUDIO_MAX_MEDIUM_SLIP;
+            }
+
+            adjust =
+                error /
+                step_frames;
+
+            if (adjust > max_slip) {
+                adjust = max_slip;
             }
 
         } else if (error < -step_frames) {
             adjust =
-                -((-error) / step_frames);
+                -((-error) /
+                  step_frames);
 
-            if (adjust < -AUDIO_MAX_SLIP) {
-                adjust = -AUDIO_MAX_SLIP;
+            if (adjust <
+                -AUDIO_MAX_STRETCH_SLIP) {
+
+                adjust =
+                    -AUDIO_MAX_STRETCH_SLIP;
             }
         }
     }
