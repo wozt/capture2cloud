@@ -600,8 +600,17 @@ int main(int argc, char **argv)
              * completed picture and immediately hand its NV12 buffer to
              * GX2.
              */
+            /*
+             * SDL_RenderPresent() normally waits most of the remaining
+             * 16.7 ms VBlank interval. If H264DEC is already working on
+             * the next AU, spend at most 2 ms of that otherwise-idle
+             * time here so decode and presentation do not continually
+             * miss each other by a fraction of a millisecond.
+             */
             if (video_worker_alive &&
-                video_worker_take(&frame)) {
+                video_worker_take_wait(
+                    &frame,
+                    2000)) {
 
                 have_frame = 1;
                 new_frame = 1;

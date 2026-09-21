@@ -47,6 +47,17 @@ int video_worker_submit(const uint8_t *data, uint32_t size);
  */
 int video_worker_take(VideoFrame *out);
 
+/*
+ * Same as video_worker_take(), but if the decoder is currently working
+ * on an AU, wait briefly for it.
+ *
+ * Used to move a little of the VBlank wait before rendering instead of
+ * repeating the previous picture because the decoder finished a few
+ * hundred microseconds too late.
+ */
+int video_worker_take_wait(VideoFrame *out,
+                           uint32_t timeout_us);
+
 void video_worker_stats(VideoWorkerStats *out);
 
 #ifdef __cplusplus
