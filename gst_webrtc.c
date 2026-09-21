@@ -321,14 +321,16 @@ int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int coun
  * at once, and a handheld asking for 480p30 took the pad to 30 with it.
  */
 /*
- * Fed at the maximum and scaled inside the pipeline, exactly as the
- * browsers' chain is: the size is a setting, and renegotiating an
- * appsrc's caps while it is running is a great deal more fragile than
- * moving a capsfilter. The console's menu chooses the height; 720 is the
- * default and the tested path.
+ * Initial Wii U console feed size.
+ *
+ * Unlike the browser path, the console has its own converter and appsrc.
+ * Feed that appsrc at the resolution actually requested by the console
+ * instead of always creating a 1080p NV12 frame only to scale it again
+ * inside GStreamer. 720p is the startup/default profile; profile changes
+ * update this appsrc's caps and rebuild only its swscale context.
  */
-#define WIIU_SEND_WIDTH  1920
-#define WIIU_SEND_HEIGHT 1080
+#define WIIU_SEND_WIDTH  1280
+#define WIIU_SEND_HEIGHT 720
 #define WIIU_DEFAULT_HEIGHT 720
 #define WIIU_H264_BITRATE_KBPS 8000
 
@@ -1484,11 +1486,58 @@ void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitr
     int width = height * 16 / 9;
     width &= ~1;
 
+    /*
+     * This stream has its own appsrc and converter, so feed it directly
+     * at the requested console resolution. No other client is affected.
+     *
+     * Rebuild the swscale context on a size change; its output geometry
+     * is part of the context.
+     */
+    if (g->switch_width[SS_STREAM_WIIU] != width ||
+        g->switch_height[SS_STREAM_WIIU] != height) {
+
+        if (g->sws_switch[SS_STREAM_WIIU]) {
+            sws_freeContext(g->sws_switch[SS_STREAM_WIIU]);
+            g->sws_switch[SS_STREAM_WIIU] = NULL;
+        }
+    }
+
+    if (g->vsrc_wiiu264) {
+        GstCaps *src_caps =
+            gst_caps_new_simple(
+                "video/x-raw",
+                "format", G_TYPE_STRING,
+                    g->switch264_nv12 ? "NV12" : "I420",
+                "width", G_TYPE_INT, width,
+                "height", G_TYPE_INT, height,
+                "framerate", GST_TYPE_FRACTION, 60, 1,
+                NULL);
+
+        gst_app_src_set_caps(
+            GST_APP_SRC(g->vsrc_wiiu264),
+            src_caps);
+
+        gst_caps_unref(src_caps);
+    }
+
+    /*
+     * Kept as a negotiation guard. Since the appsrc now already carries
+     * this exact size, videoscale normally has nothing to scale.
+     */
     if (g->vscale_wiiu264_caps) {
-        GstCaps *caps = gst_caps_new_simple("video/x-raw",
-                                            "width", G_TYPE_INT, width,
-                                            "height", G_TYPE_INT, height, NULL);
-        g_object_set(g->vscale_wiiu264_caps, "caps", caps, NULL);
+        GstCaps *caps =
+            gst_caps_new_simple(
+                "video/x-raw",
+                "width", G_TYPE_INT, width,
+                "height", G_TYPE_INT, height,
+                NULL);
+
+        g_object_set(
+            g->vscale_wiiu264_caps,
+            "caps",
+            caps,
+            NULL);
+
         gst_caps_unref(caps);
     }
     if (bitrate_kbps > 0) {
@@ -1939,19 +1988,14 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
         return;
     }
 
-    const gint64 wiiu_work_start =
-        slot == SS_STREAM_WIIU
-            ? g_get_monotonic_time()
-            : 0;
-
     /* Each chain is fed at its own size: a handheld's and a monitor's
      * are not the same picture. */
     /* The pad's panel is 864x480 and nothing else, so its chain is fed
      * at exactly that: the client then has nothing left to scale. */
-    const int dw = (slot == SS_STREAM_WIIU) ? WIIU_SEND_WIDTH
+    const int dw = (slot == SS_STREAM_WIIU) ? g->switch_width[SS_STREAM_WIIU]
                  : (slot == SS_STREAM_DRC) ? DRC_ENC_WIDTH
                  : (slot == SS_STREAM_WEB) ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-    const int dh = (slot == SS_STREAM_WIIU) ? WIIU_SEND_HEIGHT
+    const int dh = (slot == SS_STREAM_WIIU) ? g->switch_height[SS_STREAM_WIIU]
                  : (slot == SS_STREAM_DRC) ? DRC_ENC_HEIGHT
                  : (slot == SS_STREAM_WEB) ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
 
@@ -2015,60 +2059,8 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
     GST_BUFFER_DTS(buffer) = pts;
     GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(1, GST_SECOND, 60);
 
-    const GstFlowReturn push_rc =
-        gst_app_src_push_buffer(
-            GST_APP_SRC(dest),
-            buffer);
+    gst_app_src_push_buffer(GST_APP_SRC(dest), buffer);
 
-    if (slot == SS_STREAM_WIIU) {
-        static gint64 diag_at = 0;
-        static guint32 feed_frames = 0;
-        static guint32 bad_push = 0;
-        static guint64 work_us_total = 0;
-        static guint32 work_us_max = 0;
-
-        const gint64 now =
-            g_get_monotonic_time();
-
-        const guint32 work_us =
-            (guint32)(now - wiiu_work_start);
-
-        feed_frames++;
-        work_us_total += work_us;
-
-        if (work_us > work_us_max) {
-            work_us_max = work_us;
-        }
-
-        if (push_rc != GST_FLOW_OK) {
-            bad_push++;
-        }
-
-        if (!diag_at) {
-            diag_at = now;
-        }
-
-        if (now - diag_at >= G_USEC_PER_SEC) {
-            fprintf(stderr,
-                    "WIIU FEED: frames=%u target=%dx%d "
-                    "work=%.2fms max=%.2fms bad_push=%u\n",
-                    feed_frames,
-                    dw,
-                    dh,
-                    feed_frames
-                        ? (double)work_us_total /
-                          (double)feed_frames / 1000.0
-                        : 0.0,
-                    (double)work_us_max / 1000.0,
-                    bad_push);
-
-            feed_frames = 0;
-            bad_push = 0;
-            work_us_total = 0;
-            work_us_max = 0;
-            diag_at = now;
-        }
-    }
 }
 
 /* Scales the captured frame to the native clients' size and pushes it.

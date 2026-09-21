@@ -263,18 +263,6 @@ static int open_device(VideoCapture *vc, const char *device, VideoFormat wanted)
 
     if (xioctl(fd, VIDIOC_S_PARM, &parm) < 0) {
         perror("VIDIOC_S_PARM");
-    } else {
-        const unsigned num =
-            parm.parm.capture.timeperframe.numerator;
-
-        const unsigned den =
-            parm.parm.capture.timeperframe.denominator;
-
-        fprintf(stderr,
-                "video_capture: V4L2 cadence %u/%u s/frame = %.2f fps\n",
-                num,
-                den,
-                num ? (double)den / (double)num : 0.0);
     }
 
     struct v4l2_requestbuffers req;
