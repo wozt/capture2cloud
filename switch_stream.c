@@ -510,12 +510,24 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
         }
 
         /*
-         * -1 = any negotiated audio format
-         *  0 = Opus clients only
-         *  1 = PCM clients only
+         * -1 = no audio-format filter
+         *  0 = Opus
+         *  1 = all PCM
+         *  2 = PCM/TCP fallback only
          */
-        if (pcm_filter >= 0 &&
-            !!c->pcm_audio != !!pcm_filter) {
+        if (pcm_filter == 0 &&
+            c->pcm_audio) {
+            continue;
+        }
+
+        if (pcm_filter == 1 &&
+            !c->pcm_audio) {
+            continue;
+        }
+
+        if (pcm_filter == 2 &&
+            (!c->pcm_audio ||
+             c->pcm_udp)) {
             continue;
         }
 
@@ -1103,11 +1115,19 @@ static void handle_hello(SwitchStream *s, int index) {
      *
      * Only the Wii U console currently advertises raw PCM support.
      */
+    const uint16_t audio_caps =
+        c2s_le16(hello.reserved);
+
     c->pcm_audio =
         c->on_wiiu_port &&
-        s->audio_udp_fd >= 0 &&
-        ((c2s_le16(hello.reserved) &
+        ((audio_caps &
           C2S_HELLO_CAP_PCM_S16LE) != 0);
+
+    c->pcm_udp =
+        c->pcm_audio &&
+        s->audio_udp_fd >= 0 &&
+        ((audio_caps &
+          C2S_HELLO_CAP_PCM_UDP) != 0);
 
     ack.video_codec = c->codec;
 
@@ -1115,6 +1135,11 @@ static void handle_hello(SwitchStream *s, int index) {
         c->pcm_audio
             ? C2S_CODEC_PCM_S16LE
             : C2S_CODEC_OPUS;
+
+    if (c->pcm_udp) {
+        ack.reserved |=
+            C2S_ACK_FLAG_PCM_UDP;
+    }
 
     ack.audio_rate = 48000;
     ack.audio_channels = 2;
@@ -1636,6 +1661,7 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         return NULL;
     }
     s->web = ws;
+    s->audio_udp_fd = -1;
     s->port = port ? port : C2S_DEFAULT_PORT;
     s->video_codec = C2S_CODEC_VP8;
     s->width = 1280;
