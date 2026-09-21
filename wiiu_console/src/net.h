@@ -29,6 +29,7 @@ typedef struct {
     uint16_t width, height;
     uint8_t  video_codec;   /* what the host is encoding right now */
     uint8_t  audio_codec;   /* negotiated audio format */
+    uint8_t  audio_udp;     /* PCM arrives on UDP/5084 */
     uint16_t audio_rate;
     uint8_t  audio_channels;
     char     status[96];    /* human-readable, for the menu */
@@ -62,6 +63,10 @@ uint32_t net_local_ip(void);
  * `*payload` points into an internal buffer valid until the next call.
  * Returns the C2sMsgType, or 0 when nothing is ready. */
 int net_take_frame(const uint8_t **payload, uint32_t *size, uint8_t *flags);
+
+/* Returns one PCM UDP packet, or zero if none is waiting. */
+int net_take_audio(const uint8_t **payload,
+                   uint32_t *size);
 
 /* Queues the controller state. Dropped silently when not connected --
  * the caller has nothing useful to do about it. */

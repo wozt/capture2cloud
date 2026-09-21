@@ -125,6 +125,10 @@ static inline uint32_t c2s_le32(uint32_t v)
  * remain wire-compatible.
  */
 #define C2S_HELLO_CAP_PCM_S16LE 0x0001u
+#define C2S_HELLO_CAP_PCM_UDP   0x0002u
+
+/* C2sHelloAck.reserved */
+#define C2S_ACK_FLAG_PCM_UDP    0x01u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;        /* C2S_MAGIC */
