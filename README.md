@@ -53,23 +53,22 @@ consoles from sleep.
 
 ## How it fits together
 
-```
-                          ┌── WebRTC ──────────────┐
-   HDMI                   │   or WebSocket         ▼
-    │                     │                     browser
-    ▼                     │
- capture card ──► Capture2Cloud ──── TCP ───►  Android app
-                          │                   Switch homebrew
-                          ▲                        │
-                          │      your buttons      │
-                          └────────────────────────┘
-                          │
-                          ▼
-                  USB adapter (Titan One)
-                          │
-                          ▼
-                       console
-```
+Video paths:
+
+- HDMI capture card -> Capture2Cloud host
+- Browser -> WebRTC or WebSocket
+- Android and Nintendo Switch -> native H.264 transport
+- Wii U console -> dedicated H.264 video and PCM audio path
+- Wii U GamePad -> dedicated DRC path
+
+Controller input from browsers, native clients and local controllers is
+merged by the host into one controller state.
+
+The merged controller state is then sent through a selectable output backend:
+
+- Titan / ConsoleTuner USB -- current backend
+- Joy-Con 2 Bluetooth through pcble2joycon2 -- planned
+- JOCP / Raspberry Pi Pico 2 W -- planned
 
 The host-side controller path now ends in a pluggable output-backend
 interface. Titan/ConsoleTuner is the first implementation; future
@@ -185,6 +184,14 @@ replacement.
 Each of these is its own encode, made only while somebody is watching
 it. A path nobody is on costs nothing.
 
+The same rule extends to the native clients. Switch/Android share their native
+H.264 chain, while Wii U console and Wii U GamePad each have dedicated paths
+for their very different hardware.
+
+The development setup has been tested with **four different client families
+connected simultaneously**, without forcing them onto one common resolution,
+bitrate or decoder profile.
+
 ---
 
 ## Native clients
@@ -197,11 +204,19 @@ engine, with controller and touch input.
 **`android/`** — hardware H.264, Bluetooth/USB controllers, touch
 controls and automatic bitrate.
 
-**`wiiu_console/`** — homebrew running directly on a Wii U. The tested
-path is 720p60 H.264 decoded by **H264DEC** and displayed from the NV12
-decode buffers through a custom **GX2 zero-copy** renderer. Raw 48 kHz
-stereo PCM arrives separately over UDP and is played directly through
-**AX**.
+**`wiiu_console/`** — a full native client running directly on a Wii U.
+The validated path is 720p60 H.264 decoded by the console's **H264DEC**
+hardware decoder and displayed from its NV12 decode buffers through a custom
+**GX2 zero-copy** renderer. Raw 48 kHz stereo PCM arrives separately over UDP
+and is played directly through **AX**.
+
+It has GamePad controls, remappable bindings, 480p/720p and 30/60 fps stream
+profiles, password login through the Wii U software keyboard, saved session
+tokens, diagnostics, display-target settings and remote HOME. Normal Wii U
+HOME-menu suspend/resume/exit has been validated on hardware.
+
+Build and installation instructions live in
+[`wiiu_console/README.md`](wiiu_console/README.md).
 
 The Wii U GamePad sends the same 21-slot controller state as the other
 clients, mapped by physical button position. The menu supports host and
