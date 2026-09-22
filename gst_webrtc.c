@@ -324,10 +324,9 @@ int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int coun
  * Initial Wii U console feed size.
  *
  * Unlike the browser path, the console has its own converter and appsrc.
- * Feed that appsrc at the resolution actually requested by the console
- * instead of always creating a 1080p NV12 frame only to scale it again
- * inside GStreamer. 720p is the startup/default profile; profile changes
- * update this appsrc's caps and rebuild only its swscale context.
+ * Its staging geometry stays fixed while a client is connected; profile
+ * changes are negotiated after videorate/videoscale. This avoids mixing a
+ * new-size buffer with old appsrc caps during a live VAAPI encode.
  */
 #define WIIU_SEND_WIDTH  1280
 #define WIIU_SEND_HEIGHT 720
@@ -475,6 +474,9 @@ struct GstWebrtcStream {
     /* Kept, not merely applied: a client that connects later has to be
      * told the rate everyone on ITS codec is already on. */
     int switch_bitrate_kbps[SS_STREAM_COUNT_LOCAL];
+    /* Wii U appsrc geometry stays stable while clients are connected.
+     * videoscale/videorate renegotiate the requested output below it. */
+    int wiiu_source_width, wiiu_source_height;
     /* The capture card's format, shared with the browsers too. Mirrored
      * here so the native announcement can carry it. */
     int capture_mjpeg;
@@ -727,6 +729,8 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     g->audio_rate = audio_rate;
     g->audio_channels = audio_channels;
     g->video_bitrate_kbps = 12000;
+    g->wiiu_source_width = WIIU_SEND_WIDTH;
+    g->wiiu_source_height = WIIU_SEND_HEIGHT;
     /* Runtime client limit, clamped to what the slot array can hold. */
     g->max_clients = (int)config_get_int("MAX_CLIENTS", DEFAULT_MAX_CLIENTS, 1, MAX_CLIENTS_CEILING);
     g->clients_mutex = SDL_CreateMutex();
@@ -1344,13 +1348,25 @@ static void announce_shared(GstWebrtcStream *g) {
  * The other chain is left exactly as it was, which is the whole point:
  * somebody on VP8 dropping to 480p30 must not shrink the picture of
  * the people watching H.264, who are not even receiving that encode. */
-static void on_switch_profile_request(void *ctx, int codec, int w, int h, int fps,
+static void set_wiiu_profile_full(GstWebrtcStream *g, int w, int h, int fps,
+                                  int bitrate_kbps);
+
+static void on_switch_profile_request(void *ctx, int slot, int w, int h, int fps,
                                       int bitrate_kbps) {
     GstWebrtcStream *g = ctx;
     if (!g || w <= 0 || h <= 0) {
         return;
     }
-    const int slot = (codec == C2S_CODEC_H264) ? SS_STREAM_H264 : SS_STREAM_VP8;
+
+    if (slot == SS_STREAM_WIIU) {
+        set_wiiu_profile_full(g, w, h, fps, bitrate_kbps);
+        return;
+    }
+
+    if (slot != SS_STREAM_H264 && slot != SS_STREAM_VP8) {
+        return;
+    }
+
     GstElement *caps_filter = (slot == SS_STREAM_H264) ? g->vscale_switch264_caps
                                                        : g->vscale_switch_caps;
     if (!caps_filter) {
@@ -1486,61 +1502,65 @@ void gst_webrtc_stream_set_wiiu_enabled(GstWebrtcStream *g, int enabled) {
  * is on a television. 720 is the tested path; 1080 is offered because
  * the hardware sometimes manages it, and the menu says as much.
  */
-void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitrate_kbps) {
+static void set_wiiu_profile_full(GstWebrtcStream *g, int width, int height, int fps,
+                                  int bitrate_kbps) {
     if (!g) {
         return;
     }
+
     if (height != 480 && height != 720 && height != 1080) {
         height = WIIU_DEFAULT_HEIGHT;
     }
-    /* 16:9, and even in both axes: H.264 has no half chroma pixel. */
-    int width = height * 16 / 9;
-    width &= ~1;
+
+    /* The client uses 848 rather than 854 at 480p: mod-16 width keeps the
+     * hardware encoder and H264DEC on a complete macroblock grid. */
+    width = height == 480 ? 848 : height == 1080 ? 1920 : 1280;
+    fps = fps <= 30 ? 30 : 60;
 
     /*
-     * This stream has its own appsrc and converter, so feed it directly
-     * at the requested console resolution. No other client is affected.
-     *
-     * Rebuild the swscale context on a size change; its output geometry
-     * is part of the context.
+     * Do not rewrite appsrc caps while buffers are in flight. VAAPI can
+     * otherwise receive a new-size buffer under the old-size contract and
+     * reject the frame. Keep a stable 720p (or configured 1080p) staging
+     * image and let videorate/videoscale perform live renegotiation.
      */
-    if (g->switch_width[SS_STREAM_WIIU] != width ||
-        g->switch_height[SS_STREAM_WIIU] != height) {
+    const int source_width = height == 1080 ? 1920 : WIIU_SEND_WIDTH;
+    const int source_height = height == 1080 ? 1080 : WIIU_SEND_HEIGHT;
+
+    if (!g->switch_wanted[SS_STREAM_WIIU] &&
+        (g->wiiu_source_width != source_width ||
+         g->wiiu_source_height != source_height)) {
+        g->wiiu_source_width = source_width;
+        g->wiiu_source_height = source_height;
 
         if (g->sws_switch[SS_STREAM_WIIU]) {
             sws_freeContext(g->sws_switch[SS_STREAM_WIIU]);
             g->sws_switch[SS_STREAM_WIIU] = NULL;
         }
-    }
 
-    if (g->vsrc_wiiu264) {
         GstCaps *src_caps =
             gst_caps_new_simple(
                 "video/x-raw",
                 "format", G_TYPE_STRING,
                     g->switch264_nv12 ? "NV12" : "I420",
-                "width", G_TYPE_INT, width,
-                "height", G_TYPE_INT, height,
+                "width", G_TYPE_INT, source_width,
+                "height", G_TYPE_INT, source_height,
                 "framerate", GST_TYPE_FRACTION, 60, 1,
                 NULL);
 
-        gst_app_src_set_caps(
-            GST_APP_SRC(g->vsrc_wiiu264),
-            src_caps);
+        if (g->vsrc_wiiu264) {
+            gst_app_src_set_caps(GST_APP_SRC(g->vsrc_wiiu264), src_caps);
+        }
 
         gst_caps_unref(src_caps);
     }
 
-    /*
-     * Kept as a negotiation guard. Since the appsrc now already carries
-     * this exact size, videoscale normally has nothing to scale.
-     */
     if (g->vscale_wiiu264_caps) {
         GstCaps *caps =
             gst_caps_new_simple(
                 "video/x-raw",
                 "width", G_TYPE_INT, width,
                 "height", G_TYPE_INT, height,
+                "framerate", GST_TYPE_FRACTION, fps, 1,
                 NULL);
 
         g_object_set(
@@ -1561,6 +1581,7 @@ void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitr
     }
     g->switch_width[SS_STREAM_WIIU] = width;
     g->switch_height[SS_STREAM_WIIU] = height;
+    g->switch_fps[SS_STREAM_WIIU] = fps;
 
     /* Told, not left to be discovered: a decoder re-initialised on the
      * old size shows the tail of the old stream as garbage. */
@@ -1570,6 +1591,10 @@ void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitr
         announce_shared_slot(g, SS_STREAM_WIIU);
     }
     on_switch_keyframe_request(g);
+}
+
+void gst_webrtc_stream_set_wiiu_profile(GstWebrtcStream *g, int height, int bitrate_kbps) {
+    set_wiiu_profile_full(g, 0, height, 60, bitrate_kbps);
 }
 
 /* The GamePad chain's bitrate. Its size is the pad's panel and is not a
@@ -2071,10 +2096,10 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
      * are not the same picture. */
     /* The pad's panel is 864x480 and nothing else, so its chain is fed
      * at exactly that: the client then has nothing left to scale. */
-    const int dw = (slot == SS_STREAM_WIIU) ? g->switch_width[SS_STREAM_WIIU]
+    const int dw = (slot == SS_STREAM_WIIU) ? g->wiiu_source_width
                  : (slot == SS_STREAM_DRC) ? DRC_ENC_WIDTH
                  : (slot == SS_STREAM_WEB) ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-    const int dh = (slot == SS_STREAM_WIIU) ? g->switch_height[SS_STREAM_WIIU]
+    const int dh = (slot == SS_STREAM_WIIU) ? g->wiiu_source_height
                  : (slot == SS_STREAM_DRC) ? DRC_ENC_HEIGHT
                  : (slot == SS_STREAM_WEB) ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
 

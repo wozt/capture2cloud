@@ -74,6 +74,12 @@ int switch_stream_stream_codec(SwitchStream *s, int slot) { (void)s; (void)slot;
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *d, uint32_t n) {
     (void)s; (void)d; (void)n;
 }
+void switch_stream_send_audio_pcm(SwitchStream *s, const uint8_t *d, uint32_t n) {
+    (void)s; (void)d; (void)n;
+}
+int switch_stream_opus_audio_client_count(SwitchStream *s) {
+    (void)s; return 0;
+}
 void switch_stream_set_video_size(SwitchStream *s, uint16_t w, uint16_t h) {
     (void)s; (void)w; (void)h;
 }
@@ -81,7 +87,7 @@ void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest c
     (void)s; (void)cb; (void)ctx;
 }
 void switch_stream_set_profile_request(SwitchStream *s,
-                                       void (*cb)(void *ctx, int codec, int w, int h, int fps,
+                                       void (*cb)(void *ctx, int slot, int w, int h, int fps,
                                                   int kbps),
                                        void *ctx) {
     (void)s; (void)cb; (void)ctx;

@@ -34,13 +34,11 @@ on a Wii U. The native clients use the binary protocol in
 | Config | `app_config.c` | everything from `scripts/.env` |
 | Front end | `page.html` + `web/` | eleven scripts, served from disk |
 
-**Three encodes, each fed only while watched**: the console's 720p
-H.264, the native VP8, the browser's 1080p H.264. A path with no
-audience costs nothing — 4% of a core idle against 18.5% with one
-WebSocket client. The routing key inside the native transport is the
-*stream*, not the codec, because two codecs cannot describe three
-audiences: the browser's H.264 and the console's are the same codec at
-different sizes.
+**Five main encodes, each fed only while watched**: browser WebRTC VP8,
+browser WebSocket H.264, common Switch/Android H.264, Wii U GamePad H.264
+and Wii U console H.264. Native VP8 remains as a compatibility path. The
+routing key is the *stream slot*, not the codec: four audiences use H.264
+without sharing their size, frame rate or bitrate.
 
 **WebRTC serves VP8 only.** A hardware-H.264 chain used to sit beside it
 behind `use_h264 = (vp8_pt < 0 && h264_pt >= 0)` — it ran only when a
@@ -96,6 +94,13 @@ keep up at 1080p60 grows a queue that never drains.
 
 - Dedicated TCP port **5083**.
 - Tested path: **1280×720 at 60 fps H.264**.
+- The server routes profile requests by stream slot. Wii U 480p/30 and
+  720p/60 therefore change only port 5083's encoder, even though the
+  common Switch/Android path also uses H.264.
+- Live profile changes keep the Wii U appsrc staging size stable and
+  renegotiate after `videorate/videoscale`. The VAAPI path was exercised
+  through 720p60 -> 480p30 -> 720p60 and produced a fresh SPS/PPS/IDR at
+  each size.
 - Hardware decode through **H264DEC**.
 - NV12 decode buffers are displayed directly through a custom
   **GX2 zero-copy** renderer.

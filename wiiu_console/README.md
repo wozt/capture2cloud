@@ -26,6 +26,11 @@ exposes per-stick deadzone/range, Y inversion and face-button mapping. ZL/ZR
 remain digital. Display switches between TV + GamePad and GamePad only using
 SDL's Wii U scan-target flag; the choice is saved on SD.
 
+Profile messages are routed by the dedicated Wii U stream slot on the host.
+Live 480p/720p and 30/60 fps changes renegotiate after `videorate/videoscale`
+while the encoder input geometry stays stable; they do not alter the common
+Switch/Android H.264 stream.
+
 ## Building
 
 Needs devkitPPC and wut, which are not installed by default:
