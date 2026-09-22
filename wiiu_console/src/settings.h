@@ -47,6 +47,8 @@ typedef struct {
     uint8_t output_mode; /* TV + GamePad, or GamePad only */
     uint8_t marker_corner;
     uint8_t marker_colour;
+    uint8_t vsync;
+    uint8_t async_receive;
 
     char token[C2S_MAX_TOKEN_LEN + 1];
 } Settings;

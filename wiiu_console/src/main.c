@@ -244,6 +244,7 @@ static int rebuild_ui(
 
     ui_set_output_mode(
         settings->output_mode == OUTPUT_GAMEPAD_ONLY);
+    ui_set_vsync(settings->vsync);
 
     why[0] = '\0';
     if (ui_init(why, why_size) != 0) {
@@ -354,6 +355,7 @@ int main(int argc, char **argv)
     settings_load(&settings);
     ui_set_output_mode(
         settings.output_mode == OUTPUT_GAMEPAD_ONLY);
+    ui_set_vsync(settings.vsync);
 
     char why[128] = { 0 };
     if (ui_init(why, sizeof(why)) != 0) {
@@ -812,6 +814,49 @@ int main(int argc, char **argv)
             continue;
         }
 
+        if (menu_action == MENU_ACTION_VSYNC) {
+            settings.vsync = !settings.vsync;
+            ui_set_vsync(settings.vsync);
+
+            char save_why[96];
+            if (settings_save(&settings, save_why, sizeof(save_why)) != 0) {
+                snprintf(note, sizeof(note), "not saved: %s", save_why);
+            } else {
+                snprintf(note, sizeof(note), "VSync %s", settings.vsync ? "on" : "off");
+            }
+
+            if (rebuild_ui(&ui_alive, &input_alive, &settings,
+                           "vsync", why, sizeof(why)) != 0) {
+                proc_stop();
+            }
+
+            have_frame = 0;
+            memset(&in, 0, sizeof(in));
+            continue;
+        }
+
+        if (menu_action == MENU_ACTION_ASYNC_RECEIVE) {
+            settings.async_receive = !settings.async_receive;
+
+            if (state == STATE_STREAMING &&
+                net_set_async_receive(settings.async_receive) != 0) {
+                settings.async_receive = 0;
+                (void)net_set_async_receive(0);
+                snprintf(note, sizeof(note), "asynchronous receiver failed to start");
+            } else {
+                snprintf(note, sizeof(note), "network receive: %s",
+                         settings.async_receive ? "asynchronous" : "VBlank loop");
+            }
+
+            video_synced = 0;
+            keyframe_requested = 0;
+
+            char save_why[96];
+            if (settings_save(&settings, save_why, sizeof(save_why)) != 0) {
+                snprintf(note, sizeof(note), "not saved: %s", save_why);
+            }
+        }
+
         if (state == STATE_SETTINGS) {
             if (menu_action == MENU_ACTION_HOST) {
 
@@ -994,6 +1039,12 @@ int main(int argc, char **argv)
                             host,
                             sizeof(host));
 
+                        if (net_set_async_receive(settings.async_receive) != 0) {
+                            settings.async_receive = 0;
+                            snprintf(note, sizeof(note),
+                                     "async receive unavailable; using VBlank loop");
+                        }
+
                         if (!audio_alive) {
                             audio_why[0] = '\0';
 
@@ -1092,6 +1143,7 @@ int main(int argc, char **argv)
             }
 
             net_poll();
+            rx_count += net_take_async_video_count();
 
             if (net_info()->state == NET_CONNECTED) {
                 unsigned width, height, fps, bitrate;
@@ -1195,6 +1247,10 @@ int main(int argc, char **argv)
 
                     video_synced = 0;
                     keyframe_requested = 0;
+
+                    if (settings.async_receive && decoder_ok) {
+                        net_async_video_resume();
+                    }
                     continue;
                 }
 

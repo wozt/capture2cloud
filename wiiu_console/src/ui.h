@@ -57,6 +57,7 @@ void ui_shutdown(void);
 
 /* Applied by the next ui_init(), because SDL stores this in window flags. */
 void ui_set_output_mode(int gamepad_only);
+void ui_set_vsync(int enabled);
 
 /* One frame: poll, draw, show. */
 void ui_poll(UiInput *in);

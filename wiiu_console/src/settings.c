@@ -28,6 +28,8 @@ static const Settings DEFAULTS = {
     .output_mode = OUTPUT_TV_AND_GAMEPAD,
     .marker_corner = MARKER_TOP_RIGHT,
     .marker_colour = MARKER_FUCHSIA,
+    .vsync = 1,
+    .async_receive = 0,
     .token = ""
 };
 
@@ -148,6 +150,10 @@ void settings_load(Settings *out)
                 value < MARKER_COLOUR_COUNT
                     ? (uint8_t)value
                     : MARKER_FUCHSIA;
+        } else if (sscanf(line, " vsync = %u", &value) == 1) {
+            out->vsync = value != 0;
+        } else if (sscanf(line, " async_receive = %u", &value) == 1) {
+            out->async_receive = value != 0;
         } else if (sscanf(line, " button_%u = %u", &button, &value) == 2 &&
                    button < INPUT_BUTTON_COUNT &&
                    value < PAD_SLOT_COUNT) {
@@ -237,6 +243,8 @@ int settings_save(const Settings *s,
         "output_mode = %u\n"
         "marker_corner = %u\n"
         "marker_colour = %u\n"
+        "vsync = %u\n"
+        "async_receive = %u\n"
         "token = %s\n",
         s->host[0],
         s->host[1],
@@ -253,6 +261,8 @@ int settings_save(const Settings *s,
         s->output_mode,
         s->marker_corner,
         s->marker_colour,
+        s->vsync,
+        s->async_receive,
         s->token);
 
     for (unsigned i = 0;
