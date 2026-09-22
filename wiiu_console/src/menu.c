@@ -119,7 +119,7 @@ static int hit(const MenuRect *r, int x, int y)
 static MenuRect marker_rect(const Settings *settings,
                             int hit_area)
 {
-    const int size = hit_area ? 10 : 5;
+    const int size = hit_area ? 20 : 10;
     const int corner = settings &&
                        settings->marker_corner < MARKER_CORNER_COUNT
         ? settings->marker_corner
@@ -535,15 +535,15 @@ static void add_interface(MenuCanvas *canvas,
           marker_colour(view->settings));
 
     text_at(canvas, 348, 248, UI_SIZE_BODY, UI_DIM,
-            "Visible marker: 5 x 5 pixels at the exact screen edge");
+            "Visible marker: 10 x 10 pixels at the exact screen edge");
     text_at(canvas, 348, 284, UI_SIZE_BODY, UI_DIM,
-            "Touch target: invisible 10 x 10 pixels in the selected corner");
+            "Touch target: invisible 20 x 20 pixels in the selected corner");
 
     box(canvas, (MenuRect){ 348, 336, 822, 82 },
         MENU_CARD, UI_PANEL);
     text_at(canvas, 372, 352, UI_SIZE_BODY, UI_DIM,
             "Preview");
-    box(canvas, (MenuRect){ 1100, 366, 5, 5 },
+    box(canvas, (MenuRect){ 1095, 361, 10, 10 },
         marker_colour(view->settings), marker_colour(view->settings));
 }
 

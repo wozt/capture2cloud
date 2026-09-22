@@ -145,8 +145,8 @@ keep up at 1080p60 grows a queue that never drains.
 - The touch menu has Connection, Stream, Controls, Bindings, Interface and
   Console pages. Console exposes HOME, wake, adapter reset and host restart
   with CONTROL gating.
-- Its opener is a configurable 5x5 coloured pixel marker at one of the four
-  corners, backed by an invisible 10x10 touch target.
+- Its opener is a configurable 10x10 coloured pixel marker at one of the four
+  corners, backed by an invisible 20x20 touch target.
 - Wii U menu drawing uses a reusable `menu.c/.h` component. Backgrounds
   and text are flushed as separate layers after GX2 video. Stream and
   controller pages apply their settings immediately.

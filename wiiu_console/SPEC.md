@@ -78,7 +78,7 @@ software surface.
 ## The menu
 
 The same idea as the GamePad client's: it lives on the pad's screen,
-opens from a **5x5 corner marker** with a 10x10 touch target, and everything in it is something
+opens from a **10x10 corner marker** with a 20x20 touch target, and everything in it is something
 you only notice while playing.
 
 In **TV mode** the menu is on the GamePad and can simply stay open — the

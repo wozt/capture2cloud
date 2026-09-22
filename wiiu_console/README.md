@@ -29,8 +29,8 @@ can actually apply.
 Stream exposes the safe 480p/720p profiles, 30/60 fps and bitrate. Controls
 exposes per-stick deadzone/range and Y inversion. Bindings remaps all 16
 digital buttons, swaps duplicates and restores Xbox-position defaults.
-Interface places the 5x5 fuchsia menu marker in any corner and selects its
-colour; its touch target is 10x10. These choices are saved on SD. ZL/ZR remain
+Interface places the 10x10 fuchsia menu marker in any corner and selects its
+colour; its touch target is 20x20. These choices are saved on SD. ZL/ZR remain
 digital. Display switches between TV + GamePad and GamePad only using SDL's
 Wii U scan-target flag.
 
