@@ -1,7 +1,7 @@
 # Which settings are shared, and which are yours alone
 
-There is **one capture card, one encoder, one adapter**. Everything
-downstream of them is per-client. That single sentence decides every row
+There is **one capture card and one adapter, with several independent
+encoders**. Everything downstream of an encoder is per-client. That decides every row
 in the tables below, and it is the rule to apply when a new setting is
 added: *does changing this change what the host produces?* If yes it is
 shared, it belongs to whoever changed it last, and every other client has
@@ -29,9 +29,12 @@ So "shared" below means *shared by everyone on the same stream*:
 
 | Stream | Who is on it | Where its settings live |
 |---|---|---|
-| **browser** | every web page | `browser_height`, `bitrate_mbps`; read by `GET /shared`, and pushed as `C2S_MSG_SHARED` to the pages on the WebSocket |
-| **native VP8** | the native clients that asked for VP8 | `switch_*[0]`; pushed as `C2S_MSG_SHARED` to that group |
-| **native H.264** | the native clients that asked for H.264 | `switch_*[1]`; pushed as `C2S_MSG_SHARED` to that group |
+| **browser** | WebRTC VP8 and WebSocket H.264 pages; both transports deliberately follow one browser profile | `browser_height`, `bitrate_mbps`; read by `GET /shared`, and pushed as `C2S_MSG_SHARED` to WebSocket pages |
+| **native VP8** | compatibility clients that asked for VP8 | `switch_*[SS_STREAM_VP8]` |
+| **common native H.264** | Switch and Android | `switch_*[SS_STREAM_H264]` |
+| **browser WebSocket H.264** | browser WebSocket clients | `switch_*[SS_STREAM_WEB]`; follows the browser profile above |
+| **Wii U GamePad** | PC-side GamePad client | `switch_*[SS_STREAM_DRC]` |
+| **Wii U console** | homebrew on port 5083 | `switch_*[SS_STREAM_WIIU]` |
 
 **The browser row is two encoders, and that is deliberate.** WebRTC is
 served VP8 and the WebSocket is served H.264, because they are two
@@ -45,19 +48,15 @@ not silently change the picture.
 The capture format is the exception that really is global: there is one
 card, and both encoders are fed from it.
 
-**The native side is two streams, not one.** The host runs a VP8 chain
-and an H.264 chain, and a client is sent whichever it asked for. There
-are still exactly **two encoders and never more** — one per codec, each
-shared by everyone watching it; ten clients on H.264 are one H.264
-encode.
+**The native side is routed by stream slot.** Codec alone is insufficient:
+Switch/Android, browser WebSocket, GamePad and Wii U console are all H.264
+but use independent chains. A profile request carries the requesting
+client's slot through to the matching encoder.
 
-Each chain has its own size, frame rate and bitrate, and they are
-independent: somebody on VP8 dropping to 480p30 does not shrink the
-picture of the people on H.264, nor move their menus. And a chain
+Each chain has its own size, frame rate and bitrate. A Wii U console
+dropping to 480p30 does not shrink the Switch/Android picture. And a chain
 **nobody is on is not fed at all**, so it encodes nothing: the first
-client to ask for a codec starts it, the last one to leave stops it.
-Everyone on one codec therefore costs exactly what it did when there
-was only one chain.
+client to use a slot starts it, and the last one to leave stops it.
 
 The codec itself is consequently a **per-client** setting and not a
 shared one — the one row that moved out of the table below.

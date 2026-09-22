@@ -271,7 +271,7 @@ struct SwitchStream {
 
     SwitchKeyframeRequest keyframe_cb;
     void *keyframe_ctx;
-    void (*profile_cb)(void *ctx, int codec, int w, int h, int fps, int bitrate_kbps);
+    void (*profile_cb)(void *ctx, int slot, int w, int h, int fps, int bitrate_kbps);
     void *profile_ctx;
 
     /* When the last forced keyframe went out. Forcing one per skipped
@@ -400,7 +400,7 @@ void switch_stream_announce_shared(SwitchStream *s, int slot, uint16_t width, ui
 }
 
 void switch_stream_set_profile_request(SwitchStream *s,
-                                       void (*cb)(void *ctx, int codec, int w, int h, int fps,
+                                       void (*cb)(void *ctx, int slot, int w, int h, int fps,
                                                   int bitrate_kbps),
                                        void *ctx) {
     if (s) { s->profile_cb = cb; s->profile_ctx = ctx; }
@@ -1352,7 +1352,8 @@ static void handle_messages(SwitchStream *s, int index) {
                             index, c->codec == C2S_CODEC_H264 ? "h264" : "vp8",
                             p.width, p.height, p.fps, p.bitrate_kbps);
                     if (s->profile_cb) {
-                        s->profile_cb(s->profile_ctx, c->codec, p.width, p.height, p.fps,
+                        s->profile_cb(s->profile_ctx, client_slot(c),
+                                      p.width, p.height, p.fps,
                                       p.bitrate_kbps);
                     }
                 }

@@ -35,7 +35,7 @@ void switch_stream_set_keyframe_request(SwitchStream *s, SwitchKeyframeRequest c
  * what they can actually decode: a console that cannot keep up at 720p60
  * produces exactly the symptom skipping causes. */
 void switch_stream_set_profile_request(SwitchStream *s,
-                                       void (*cb)(void *ctx, int codec, int w, int h, int fps,
+                                       void (*cb)(void *ctx, int slot, int w, int h, int fps,
                                                   int bitrate_kbps),
                                        void *ctx);
 
