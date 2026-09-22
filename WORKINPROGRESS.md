@@ -118,6 +118,10 @@ keep up at 1080p60 grows a queue that never drains.
   receive. Async receive owns `recv()` after handshake, submits complete
   H.264 AUs directly to the decoder worker, and pauses at `STREAM_INFO`
   until the main thread has rebuilt H264DEC.
+- Hardware check: asynchronous receive + VSync off keeps video, input and
+  UI functional. The user reports a small latency improvement, with the
+  larger subjective gain coming from disabling VSync; no objective
+  end-to-end measurement has been made yet.
 
 ### Audio
 
