@@ -753,7 +753,6 @@ int main(int argc, char **argv)
     uint16_t port = C2S_DRC_PORT;
     bool no_pad = false;
     bool single_encode = false;
-    bool deauth = true;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -765,7 +764,6 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--hostapd-cli") && next){ cli = next; i++; }
         else if (!strcmp(a, "--no-pad"))             { no_pad = true; }
         else if (!strcmp(a, "--single-encode"))      { single_encode = true; }
-        else if (!strcmp(a, "--no-deauth"))          { deauth = false; }
         else if (!strcmp(a, "--stats"))              { setenv("DRC_STATS", "1", 1); }
         else if (!strcmp(a, "--preset") && next)     { setenv("DRC_PRESET", next, 1); i++; }
         else {
@@ -778,7 +776,6 @@ int main(int argc, char **argv)
                 "  --no-pad         decode and scale, send nothing to a pad\n"
                 "  --single-encode  take the host's drc-x264 chunks instead of\n"
                 "                   decoding and encoding again (see the source)\n"
-                "  --no-deauth      do not drop the pad's association first\n"
                 "  --iface NAME     the access point's interface\n"
                 "  --hostapd-cli P  where hostapd_cli is\n"
                 "  --preset P       libdrc's x264 preset (default fast)\n"
