@@ -52,6 +52,14 @@ void net_disconnect(void);
 /* Drives the connection. Call once per frame. */
 void net_poll(void);
 
+/* Experimental low-latency receive path. When enabled, a dedicated
+ * thread reads complete H.264 access units while the render thread is
+ * blocked in VBlank and submits them directly to video_worker. */
+int  net_set_async_receive(int enabled);
+int  net_async_receive_enabled(void);
+void net_async_video_resume(void);
+unsigned net_take_async_video_count(void);
+
 const NetInfo *net_info(void);
 
 /* Applies a server-announced stream shape after a profile change. */

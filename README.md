@@ -207,6 +207,11 @@ PCM audio. Authentication uses `/login` on `WEB_PORT` (5080 by default).
 The password itself is never stored; only the temporary session token
 may be saved to SD.
 
+Its Latency tab saves two independent A/B switches: renderer VSync and an
+asynchronous TCP receiver. The latter submits complete H.264 access units
+to H264DEC while the UI thread is waiting for VBlank; the validated defaults
+remain VSync on and frame-loop receive.
+
 ---
 
 ## Settings several people share

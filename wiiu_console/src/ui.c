@@ -25,6 +25,7 @@ static SDL_Renderer *g_renderer;
 static TTF_Font     *g_body;
 static TTF_Font     *g_title;
 static int g_gamepad_only;
+static int g_vsync = 1;
 
 /*
  * Video texture.
@@ -89,6 +90,11 @@ static uint32_t  g_clock;
 void ui_set_output_mode(int gamepad_only)
 {
     g_gamepad_only = gamepad_only ? 1 : 0;
+}
+
+void ui_set_vsync(int enabled)
+{
+    g_vsync = enabled ? 1 : 0;
 }
 
 void ui_restore_after_external_gx2(void)
@@ -210,24 +216,17 @@ int ui_init(char *why, size_t why_size)
     }
     WHBLogPrintf("ui: output %s",
                  g_gamepad_only ? "GamePad only" : "TV + GamePad");
-    /*
-     * PRESENTVSYNC, and it is not a nicety.
-     *
-     * Without it this loop runs as fast as the CPU allows, and two
-     * things break at once. The console's keyboard is driven by how
-     * often Calc() is called, so its animations race -- reported as "il
-     * tourne super vite en accéléré". And VPADRead returns a sample
-     * only sixty times a second, so nearly every iteration gets
-     * VPAD_READ_NO_SAMPLES and the keyboard is handed no input at all,
-     * which is why its touch did nothing.
-     */
-    g_renderer = SDL_CreateRenderer(g_window, -1,
-                                    SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    const Uint32 renderer_flags =
+        SDL_RENDERER_ACCELERATED |
+        (g_vsync ? SDL_RENDERER_PRESENTVSYNC : 0);
+
+    g_renderer = SDL_CreateRenderer(g_window, -1, renderer_flags);
     if (!g_renderer) {
         snprintf(why, why_size, "renderer: %s", SDL_GetError());
         return -1;
     }
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    WHBLogPrintf("ui: vsync %s", g_vsync ? "on" : "off");
 
     g_state_reset_texture =
         SDL_CreateTexture(

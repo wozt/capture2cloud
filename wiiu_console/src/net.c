@@ -15,7 +15,13 @@
 #include <sys/socket.h>
 
 #include <coreinit/mutex.h>
+#include <coreinit/core.h>
+#include <coreinit/thread.h>
 #include <coreinit/time.h>
+
+#include <whb/log.h>
+
+#include "video_worker.h"
 
 /*
  * Ported from ../switch_homebrew/src/net.c, which is the same protocol
@@ -129,6 +135,42 @@ static OSMutex g_tx_lock;
 static uint32_t g_local_ip;
 static int g_tx_lock_ready = 0;
 
+#define ASYNC_EVENT_SLOTS 32
+#define ASYNC_EVENT_PAYLOAD_MAX 2048
+#define ASYNC_THREAD_STACK_SIZE (64 * 1024)
+
+typedef struct {
+    uint8_t type;
+    uint8_t flags;
+    uint32_t size;
+    uint8_t payload[ASYNC_EVENT_PAYLOAD_MAX];
+} AsyncEvent;
+
+static OSThread g_async_thread;
+static uint8_t g_async_stack[ASYNC_THREAD_STACK_SIZE]
+    __attribute__((aligned(0x40)));
+static OSMutex g_async_lock;
+static int g_async_lock_ready;
+static volatile int g_async_stop;
+static volatile int g_async_running;
+static int g_async_requested;
+static int g_async_video_paused;
+static int g_async_video_synced;
+static int g_async_keyframe_requested;
+static unsigned g_async_video_count;
+static AsyncEvent g_async_events[ASYNC_EVENT_SLOTS];
+static unsigned g_async_read;
+static unsigned g_async_write;
+static unsigned g_async_count;
+static uint8_t g_async_payload[ASYNC_EVENT_PAYLOAD_MAX];
+
+static int async_start_internal(void);
+static void async_stop_internal(void);
+static void async_clear_events(void);
+static int take_frame_direct(const uint8_t **payload,
+                             uint32_t *size,
+                             uint8_t *flags);
+
 
 static void close_audio_socket(void)
 {
@@ -239,6 +281,11 @@ int net_init(void) {
         g_tx_lock_ready = 1;
     }
 
+    if (!g_async_lock_ready) {
+        OSInitMutex(&g_async_lock);
+        g_async_lock_ready = 1;
+    }
+
     /*
      * Failure is non-fatal: server can keep TCP PCM fallback.
      */
@@ -274,6 +321,8 @@ static void close_socket(void) {
 }
 
 void net_exit(void) {
+    g_async_requested = 0;
+    async_stop_internal();
     close_socket();
     close_audio_socket();
 
@@ -288,6 +337,8 @@ void net_exit(void) {
 }
 
 void net_disconnect(void) {
+    async_stop_internal();
+    async_clear_events();
     g_want_connection = 0;
     close_socket();
     close_audio_socket();
@@ -297,6 +348,8 @@ void net_disconnect(void) {
 }
 
 void net_connect(const char *host, uint16_t port, const char *token) {
+    async_stop_internal();
+    async_clear_events();
     snprintf(g_host, sizeof(g_host), "%s", host ? host : "");
     g_port = port;
     snprintf(g_token, sizeof(g_token), "%s", token ? token : "");
@@ -320,6 +373,10 @@ void net_connect(const char *host, uint16_t port, const char *token) {
     g_info.rx_bytes = g_info.tx_bytes = 0;
     g_info.attempts = 0;
     set_status("connecting to %s:%u", g_host, g_port);
+
+    if (g_async_requested) {
+        (void)async_start_internal();
+    }
 }
 
 const NetInfo *net_info(void) {
@@ -342,9 +399,13 @@ static void fail(const char *step, int err, const char *fmt, ...) {
     printf("net: %s (%s, errno %d: %s)\n", g_info.status, step, err,
            err ? strerror(err) : "-");
     note_step(step, err);
-    close_socket();
     g_info.state = NET_FAILED;
     g_next_retry_ms = now_ms() + RETRY_INTERVAL_MS;
+    /* Publish the retry deadline before making g_sock appear closed.
+     * The async receiver can fail between two main-loop iterations; this
+     * order prevents the main thread from reopening immediately against
+     * a stale deadline. */
+    close_socket();
 }
 
 static int send_all(const void *data, size_t len) {
@@ -702,6 +763,16 @@ void net_poll(void) {
     if (!g_want_connection) {
         return;
     }
+
+    /* The background thread owns recv() once the handshake is complete.
+     * The main loop still sends the quiet-connection keepalive. */
+    if (g_async_running && g_stage == LINK_UP) {
+        if (t - g_last_ping_ms >= PING_INTERVAL_MS) {
+            g_last_ping_ms = t;
+            send_message(C2S_MSG_PING, 0, NULL, 0);
+        }
+        return;
+    }
     if (g_sock < 0) {
         if (t >= g_next_retry_ms) {
             begin_connect();
@@ -738,9 +809,9 @@ void net_poll(void) {
     }
 }
 
-int net_take_frame(const uint8_t **payload,
-                   uint32_t *size,
-                   uint8_t *flags)
+static int take_frame_direct(const uint8_t **payload,
+                             uint32_t *size,
+                             uint8_t *flags)
 {
     if (g_stage != LINK_UP ||
         g_rx_len < sizeof(C2sFrameHeader)) {
@@ -792,6 +863,344 @@ int net_take_frame(const uint8_t **payload,
     consume(total);
 
     return h.type;
+}
+
+static void async_queue_event(int type,
+                              uint8_t flags,
+                              const uint8_t *payload,
+                              uint32_t size)
+{
+    if (size > ASYNC_EVENT_PAYLOAD_MAX) {
+        return;
+    }
+
+    OSLockMutex(&g_async_lock);
+
+    if (g_async_count >= ASYNC_EVENT_SLOTS) {
+        /* PCM fallback is expendable; stream geometry is not. */
+        if (type == C2S_MSG_AUDIO) {
+            OSUnlockMutex(&g_async_lock);
+            return;
+        }
+
+        g_async_read = (g_async_read + 1) % ASYNC_EVENT_SLOTS;
+        g_async_count--;
+    }
+
+    AsyncEvent *event = &g_async_events[g_async_write];
+    event->type = (uint8_t)type;
+    event->flags = flags;
+    event->size = size;
+    if (size) {
+        memcpy(event->payload, payload, size);
+    }
+
+    g_async_write = (g_async_write + 1) % ASYNC_EVENT_SLOTS;
+    g_async_count++;
+
+    OSUnlockMutex(&g_async_lock);
+}
+
+static void async_clear_events(void)
+{
+    if (!g_async_lock_ready) {
+        return;
+    }
+
+    OSLockMutex(&g_async_lock);
+    g_async_read = 0;
+    g_async_write = 0;
+    g_async_count = 0;
+    g_async_video_count = 0;
+    OSUnlockMutex(&g_async_lock);
+}
+
+static int async_pop_event(const uint8_t **payload,
+                           uint32_t *size,
+                           uint8_t *flags)
+{
+    if (!g_async_lock_ready) {
+        return 0;
+    }
+
+    OSLockMutex(&g_async_lock);
+
+    if (!g_async_count) {
+        OSUnlockMutex(&g_async_lock);
+        return 0;
+    }
+
+    const AsyncEvent *event = &g_async_events[g_async_read];
+    const int type = event->type;
+    *flags = event->flags;
+    *size = event->size;
+    if (event->size) {
+        memcpy(g_async_payload, event->payload, event->size);
+    }
+    *payload = g_async_payload;
+
+    g_async_read = (g_async_read + 1) % ASYNC_EVENT_SLOTS;
+    g_async_count--;
+
+    OSUnlockMutex(&g_async_lock);
+    return type;
+}
+
+static void async_handle_video(const uint8_t *payload,
+                               uint32_t size,
+                               uint8_t flags)
+{
+    int paused;
+    int synced;
+
+    OSLockMutex(&g_async_lock);
+    g_async_video_count++;
+    paused = g_async_video_paused;
+    synced = g_async_video_synced;
+    OSUnlockMutex(&g_async_lock);
+
+    if (paused) {
+        return;
+    }
+
+    if (!synced) {
+        if (!(flags & C2S_FLAG_KEYFRAME)) {
+            int request = 0;
+            OSLockMutex(&g_async_lock);
+            if (!g_async_keyframe_requested) {
+                g_async_keyframe_requested = 1;
+                request = 1;
+            }
+            OSUnlockMutex(&g_async_lock);
+            if (request) {
+                net_send_keyframe_request();
+            }
+            return;
+        }
+
+        OSLockMutex(&g_async_lock);
+        g_async_video_synced = 1;
+        g_async_keyframe_requested = 0;
+        OSUnlockMutex(&g_async_lock);
+    }
+
+    if (video_worker_submit_wait(payload, size, 12000) <= 0) {
+        OSLockMutex(&g_async_lock);
+        g_async_video_synced = 0;
+        g_async_keyframe_requested = 1;
+        OSUnlockMutex(&g_async_lock);
+        net_send_keyframe_request();
+    }
+}
+
+/* Drains complete messages already copied from the socket. A stream-info
+ * boundary stops the drain immediately: bytes following it normally begin
+ * the new profile's IDR and must remain untouched until main rebuilt
+ * H264DEC and calls net_async_video_resume(). */
+static int async_drain_rx(void)
+{
+    const uint8_t *payload;
+    uint32_t size;
+    uint8_t flags;
+    int type;
+
+    while ((type = take_frame_direct(&payload, &size, &flags)) != 0) {
+        if (type == C2S_MSG_VIDEO) {
+            async_handle_video(payload, size, flags);
+            continue;
+        }
+
+        if (type == C2S_MSG_STREAM_INFO) {
+            OSLockMutex(&g_async_lock);
+            g_async_video_paused = 1;
+            g_async_video_synced = 0;
+            g_async_keyframe_requested = 0;
+            OSUnlockMutex(&g_async_lock);
+
+            async_queue_event(type, flags, payload, size);
+            return 1;
+        }
+
+        async_queue_event(type, flags, payload, size);
+    }
+
+    return 0;
+}
+
+static int async_thread_entry(int argc, const char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    WHBLogPrintf("net: asynchronous receiver started");
+
+    while (!g_async_stop) {
+        if (g_stage != LINK_UP || g_sock < 0) {
+            OSSleepTicks(OSMillisecondsToTicks(1));
+            continue;
+        }
+
+        OSLockMutex(&g_async_lock);
+        const int paused = g_async_video_paused;
+        OSUnlockMutex(&g_async_lock);
+
+        if (paused) {
+            OSSleepTicks(OSMillisecondsToTicks(1));
+            continue;
+        }
+
+        if (async_drain_rx()) {
+            continue;
+        }
+
+        struct pollfd pfd = {
+            .fd = g_sock,
+            .events = POLLIN,
+            .revents = 0
+        };
+
+        const int ready = poll(&pfd, 1, 5);
+        if (g_async_stop) {
+            break;
+        }
+        if (ready < 0) {
+            if (errno != EINTR) {
+                fail("async poll", errno, "receive failed");
+            }
+            continue;
+        }
+        if (ready == 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+            continue;
+        }
+
+        if (fill_rx() != 0) {
+            const int e = errno;
+            fail(e ? "async recv" : "peer closed", e,
+                 e ? "receive failed" : "the host closed the connection");
+            continue;
+        }
+
+        (void)async_drain_rx();
+    }
+
+    WHBLogPrintf("net: asynchronous receiver stopped");
+    return 0;
+}
+
+static int async_start_internal(void)
+{
+    if (g_async_running) {
+        return 0;
+    }
+    if (!g_async_lock_ready) {
+        return -1;
+    }
+
+    OSLockMutex(&g_async_lock);
+    g_async_video_paused = 0;
+    g_async_video_synced = 0;
+    g_async_keyframe_requested = 0;
+    OSUnlockMutex(&g_async_lock);
+
+    g_async_stop = 0;
+
+    const uint32_t main_core = OSGetCoreId();
+    const uint16_t affinity =
+        main_core == 0
+            ? OS_THREAD_ATTRIB_AFFINITY_CPU0
+            : OS_THREAD_ATTRIB_AFFINITY_CPU1;
+
+    if (!OSCreateThread(&g_async_thread,
+                        async_thread_entry,
+                        0,
+                        NULL,
+                        g_async_stack + sizeof(g_async_stack),
+                        sizeof(g_async_stack),
+                        15,
+                        affinity)) {
+        return -1;
+    }
+
+    g_async_running = 1;
+    OSSetThreadName(&g_async_thread, "Capture2Cloud RX");
+    OSResumeThread(&g_async_thread);
+    return 0;
+}
+
+static void async_stop_internal(void)
+{
+    if (!g_async_running) {
+        return;
+    }
+
+    g_async_stop = 1;
+    int result = 0;
+    OSJoinThread(&g_async_thread, &result);
+    g_async_running = 0;
+}
+
+int net_set_async_receive(int enabled)
+{
+    g_async_requested = enabled ? 1 : 0;
+
+    if (!g_async_requested) {
+        async_stop_internal();
+        return 0;
+    }
+
+    return async_start_internal();
+}
+
+int net_async_receive_enabled(void)
+{
+    return g_async_requested && g_async_running;
+}
+
+void net_async_video_resume(void)
+{
+    if (!g_async_running) {
+        return;
+    }
+
+    OSLockMutex(&g_async_lock);
+    g_async_video_paused = 0;
+    g_async_video_synced = 0;
+    g_async_keyframe_requested = 1;
+    OSUnlockMutex(&g_async_lock);
+
+    net_send_keyframe_request();
+}
+
+unsigned net_take_async_video_count(void)
+{
+    unsigned count = 0;
+
+    if (!g_async_lock_ready) {
+        return 0;
+    }
+
+    OSLockMutex(&g_async_lock);
+    count = g_async_video_count;
+    g_async_video_count = 0;
+    OSUnlockMutex(&g_async_lock);
+
+    return count;
+}
+
+int net_take_frame(const uint8_t **payload,
+                   uint32_t *size,
+                   uint8_t *flags)
+{
+    const int queued = async_pop_event(payload, size, flags);
+    if (queued) {
+        return queued;
+    }
+
+    if (g_async_running && g_stage == LINK_UP) {
+        return 0;
+    }
+
+    return take_frame_direct(payload, size, flags);
 }
 
 int net_take_audio(const uint8_t **payload,

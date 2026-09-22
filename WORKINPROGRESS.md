@@ -114,6 +114,10 @@ keep up at 1080p60 grows a queue that never drains.
 - Raw GX2 rendering initially desynchronised SDL's cached shader state;
   forcing an SDL texture-shader -> colour-shader transition after the
   GX2 pass fixed the menu rectangle artefact.
+- The Latency tab exposes saved A/B switches for VSync and asynchronous
+  receive. Async receive owns `recv()` after handshake, submits complete
+  H.264 AUs directly to the decoder worker, and pauses at `STREAM_INFO`
+  until the main thread has rebuilt H264DEC.
 
 ### Audio
 

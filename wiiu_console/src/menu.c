@@ -51,7 +51,8 @@ static const MenuRect R_STREAM = { 100, 208, 186, 40 };
 static const MenuRect R_CONTROLS = { 100, 256, 186, 40 };
 static const MenuRect R_BINDINGS = { 100, 304, 186, 40 };
 static const MenuRect R_INTERFACE = { 100, 352, 186, 40 };
-static const MenuRect R_CONSOLE = { 100, 400, 186, 40 };
+static const MenuRect R_LATENCY = { 100, 400, 186, 40 };
+static const MenuRect R_CONSOLE = { 100, 448, 186, 40 };
 
 static const MenuRect R_HOST = { 348, 148, 520, 60 };
 static const MenuRect R_PASSWORD = { 348, 220, 520, 60 };
@@ -78,6 +79,8 @@ static const MenuRect R_RIGHT_RANGE = { 756, 218, 414, 58 };
 static const MenuRect R_INVERT_Y = { 348, 288, 390, 58 };
 static const MenuRect R_MARKER_CORNER = { 348, 148, 390, 64 };
 static const MenuRect R_MARKER_COLOUR = { 756, 148, 414, 64 };
+static const MenuRect R_VSYNC = { 348, 148, 390, 64 };
+static const MenuRect R_ASYNC_RECEIVE = { 756, 148, 414, 64 };
 static const MenuRect R_BIND_RESET = { 348, 532, 822, 50 };
 
 static const int BINDING_TARGETS[INPUT_BUTTON_COUNT] = {
@@ -337,6 +340,10 @@ static void add_shell(MenuCanvas *canvas,
            menu->page == MENU_PAGE_INTERFACE
                ? UI_ACCENT : UI_PANEL,
            UI_TEXT);
+    button(canvas, R_LATENCY, "Latency",
+           menu->page == MENU_PAGE_LATENCY
+               ? UI_ACCENT : UI_PANEL,
+           UI_TEXT);
     button(canvas, R_CONSOLE, "Console",
            menu->page == MENU_PAGE_CONSOLE
                ? UI_ACCENT : UI_PANEL,
@@ -351,6 +358,29 @@ static void add_shell(MenuCanvas *canvas,
             net->state == NET_CONNECTED ? "Connected" :
             net->state == NET_CONNECTING ? "Connecting" :
             net->state == NET_FAILED ? "Retrying" : "Offline");
+}
+
+static void add_latency(MenuCanvas *canvas,
+                        const MenuView *view)
+{
+    text_at(canvas, 348, 74, UI_SIZE_TITLE,
+            UI_TEXT, "Latency experiments");
+    text_at(canvas, 348, 112, UI_SIZE_BODY,
+            UI_DIM, "Independent A/B switches, saved on SD");
+
+    field(canvas, R_VSYNC, "VSync",
+          view->settings->vsync ? "On" : "Off",
+          view->settings->vsync ? UI_TEXT : MENU_GREEN);
+    field(canvas, R_ASYNC_RECEIVE, "Network receive",
+          view->settings->async_receive ? "Asynchronous" : "VBlank loop",
+          view->settings->async_receive ? MENU_GREEN : UI_TEXT);
+
+    text_at(canvas, 348, 248, UI_SIZE_BODY, UI_DIM,
+            "Asynchronous starts H264DEC as soon as a complete AU arrives");
+    text_at(canvas, 348, 284, UI_SIZE_BODY, UI_DIM,
+            "VBlank loop is the original, validated receive path");
+    text_at(canvas, 348, 334, UI_SIZE_BODY, MENU_RED,
+            "VSync off is experimental and can tear or run the UI too fast");
 }
 
 static void add_connection(MenuCanvas *canvas,
@@ -807,6 +837,12 @@ MenuAction menu_input(MenuState *menu,
         return MENU_ACTION_NONE;
     }
 
+    if (hit(&R_LATENCY, input->touch_x, input->touch_y)) {
+        menu->page = MENU_PAGE_LATENCY;
+        menu->binding_target_slot = -1;
+        return MENU_ACTION_NONE;
+    }
+
     if (hit(&R_CONSOLE, input->touch_x, input->touch_y)) {
         menu->page = MENU_PAGE_CONSOLE;
         menu->binding_target_slot = -1;
@@ -863,6 +899,11 @@ MenuAction menu_input(MenuState *menu,
             return MENU_ACTION_MARKER_CORNER;
         if (hit(&R_MARKER_COLOUR, input->touch_x, input->touch_y))
             return MENU_ACTION_MARKER_COLOUR;
+    } else if (menu->page == MENU_PAGE_LATENCY) {
+        if (hit(&R_VSYNC, input->touch_x, input->touch_y))
+            return MENU_ACTION_VSYNC;
+        if (hit(&R_ASYNC_RECEIVE, input->touch_x, input->touch_y))
+            return MENU_ACTION_ASYNC_RECEIVE;
     } else if (menu->page == MENU_PAGE_CONSOLE) {
         if (hit(&R_WAKE, input->touch_x, input->touch_y))
             return MENU_ACTION_WAKE;
@@ -912,6 +953,8 @@ void menu_draw(const MenuState *menu,
         add_bindings(&canvas, menu, view);
     } else if (menu->page == MENU_PAGE_INTERFACE) {
         add_interface(&canvas, view);
+    } else if (menu->page == MENU_PAGE_LATENCY) {
+        add_latency(&canvas, view);
     } else {
         add_console(&canvas, view);
     }
