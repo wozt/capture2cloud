@@ -29,7 +29,9 @@ SDL's Wii U scan-target flag; the choice is saved on SD.
 Profile messages are routed by the dedicated Wii U stream slot on the host.
 Live 480p/720p and 30/60 fps changes renegotiate after `videorate/videoscale`
 while the encoder input geometry stays stable; they do not alter the common
-Switch/Android H.264 stream.
+Switch/Android H.264 stream. A dimension change rebuilds H264DEC and clears
+its worker queue before accepting the new IDR; a frame-rate-only change keeps
+the decoder running.
 
 ## Building
 
