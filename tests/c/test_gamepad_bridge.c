@@ -4,7 +4,7 @@
  * The .c file is #included directly so its `static` functions are
  * reachable -- the usual way to unit test internals in C. Nothing here
  * opens a device: libusb/SDL are linked but never asked to do anything
- * (no gamepad_bridge_init(), so g_handle stays NULL and no transfer is
+ * (no output_titan_init(), so g_handle stays NULL and no transfer is
  * ever attempted).
  *
  * Why this file exists: the wire format below is exactly where the
@@ -13,7 +13,8 @@
  * every field by one). That was expensive to find; these tests pin the
  * layout down so it can't silently regress. */
 #include "../../app_config.c"
-#include "../../gamepad_bridge.c"
+#include "../../gamepad_bridge.h"
+#include "../../output_titan.c"
 
 #include "test_util.h"
 
@@ -38,8 +39,8 @@ static void test_two_players(void) {
 
     int8_t idle[GAMEPAD_BRIDGE_STATE_COUNT] = {0};
 
-    gamepad_bridge_update(GAMEPAD_SOURCE_NATIVE(0), playing);
-    gamepad_bridge_update(GAMEPAD_SOURCE_BROWSER(0), idle);
+    output_titan_update(GAMEPAD_SOURCE_NATIVE(0), playing);
+    output_titan_update(GAMEPAD_SOURCE_BROWSER(0), idle);
 
     t_eq_int("an idle second player does not release A",
              g_latest_state[GAMEPAD_XB360_A], 100);
@@ -48,7 +49,7 @@ static void test_two_players(void) {
 
     /* The same press from both is one press, not two: a button is held
      * or it is not, and an axis has one position. */
-    gamepad_bridge_update(GAMEPAD_SOURCE_BROWSER(0), playing);
+    output_titan_update(GAMEPAD_SOURCE_BROWSER(0), playing);
     t_eq_int("the same button from both is still one press",
              g_latest_state[GAMEPAD_XB360_A], 100);
     t_eq_int("the same stick from both is still one deflection",
@@ -59,13 +60,13 @@ static void test_two_players(void) {
      * inside the range a real stick produces. */
     int8_t other_way[GAMEPAD_BRIDGE_STATE_COUNT] = {0};
     other_way[GAMEPAD_XB360_LX] = 40;
-    gamepad_bridge_update(GAMEPAD_SOURCE_BROWSER(0), other_way);
+    output_titan_update(GAMEPAD_SOURCE_BROWSER(0), other_way);
     t_eq_int("opposing sticks: the larger deflection wins",
              g_latest_state[GAMEPAD_XB360_LX], -80);
 
     /* Leaving must release what you were holding, or the console is left
      * with a button pressed by someone who is no longer there. */
-    gamepad_bridge_forget(GAMEPAD_SOURCE_NATIVE(0));
+    output_titan_forget(GAMEPAD_SOURCE_NATIVE(0));
     t_eq_int("a departing player releases their button",
              g_latest_state[GAMEPAD_XB360_A], 0);
     t_eq_int("a departing player releases their stick",
@@ -73,23 +74,23 @@ static void test_two_players(void) {
 
     /* Cut off mid-press rather than disconnected cleanly: nothing
      * announces the departure, so the press has to expire. */
-    gamepad_bridge_update(GAMEPAD_SOURCE_NATIVE(1), playing);
+    output_titan_update(GAMEPAD_SOURCE_NATIVE(1), playing);
     t_eq_int("a fresh source is applied", g_latest_state[GAMEPAD_XB360_A], 100);
     for (int i = 0; i < GAMEPAD_MAX_SOURCES; i++) {
         if (g_sources[i].in_use && g_sources[i].key == GAMEPAD_SOURCE_NATIVE(1)) {
             g_sources[i].last_ms -= GAMEPAD_SOURCE_TIMEOUT_MS + 1;
         }
     }
-    gamepad_bridge_update(GAMEPAD_SOURCE_BROWSER(0), idle);
+    output_titan_update(GAMEPAD_SOURCE_BROWSER(0), idle);
     t_eq_int("a source gone silent stops holding the button down",
              g_latest_state[GAMEPAD_XB360_A], 0);
 
     /* More clients than slots must not corrupt anything: the extras are
      * ignored, and the ones already playing keep working. */
     for (int i = 0; i < GAMEPAD_MAX_SOURCES + 4; i++) {
-        gamepad_bridge_update(GAMEPAD_SOURCE_BROWSER(i), idle);
+        output_titan_update(GAMEPAD_SOURCE_BROWSER(i), idle);
     }
-    gamepad_bridge_update(GAMEPAD_SOURCE_BROWSER(0), playing);
+    output_titan_update(GAMEPAD_SOURCE_BROWSER(0), playing);
     t_eq_int("a full source table still tracks the players in it",
              g_latest_state[GAMEPAD_XB360_A], 100);
 
@@ -240,11 +241,11 @@ int main(void) {
      * that thread is using the same handle continuously. */
     g_connected = 0;
     g_reset_requested = 0;
-    gamepad_bridge_reset();
+    output_titan_reset();
     t_ok("no adapter: reset is ignored", g_reset_requested == 0);
 
     g_connected = 1;
-    gamepad_bridge_reset();
+    output_titan_reset();
     t_ok("adapter present: reset is queued for the send thread", g_reset_requested == 1);
     g_connected = 0;
 

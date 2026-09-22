@@ -69,6 +69,11 @@ consoles from sleep.
                        console
 ```
 
+The host-side controller path now ends in a pluggable output-backend
+interface. Titan/ConsoleTuner is the first implementation; future
+pcble2joycon2 and JOCP/Pico 2 W backends can consume the same merged
+controller state without changing the browser or native-client protocols.
+
 The console is driven by a real adapter pretending to be a controller,
 which is why nothing has to change on the console. Which controller it
 pretends to be — Switch Pro, Xbox pad, DualShock — is a setting; it is
@@ -245,6 +250,7 @@ these are the ones worth knowing about.
 | `WEB_TRANSPORT` | `webrtc` or `ws` — which one the page starts on |
 | `WEB_PORT`, `WEB_AUTOSTART` | The page's port, and whether it starts on launch |
 | `SWITCH_PORT`, `SWITCH_AUTOSTART` | The same, for the Android and Switch clients |
+| `GAMEPAD_OUTPUT_BACKEND` | Console output backend. Currently `titan`; Joy-Con 2 BLE and JOCP/Pico are planned behind the same interface. |
 | `TITAN_OUTPUT_PROTOCOL` | What the adapter pretends to be: `auto`, `switch`, `xb360`, `ps4`… |
 | `LOCAL_SINK` | Play the sound on this output rather than the system default — worth setting where the default is a virtual device, since sound that vanishes into one looks exactly like sound this program failed to produce |
 | `HA_URL`, `HA_TOKEN`, `HA_PLUG_ENTITY` | Home Assistant, for waking the console |
