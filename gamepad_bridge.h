@@ -35,6 +35,8 @@ const char *gamepad_bridge_backend_name(void);
 int gamepad_bridge_backend_count(void);
 const char *gamepad_bridge_backend_name_at(int index);
 const char *gamepad_bridge_backend_label(int index);
+const char *gamepad_bridge_backend_maintenance_label(int index);
+const char *gamepad_bridge_backend_maintenance_help(int index);
 int gamepad_bridge_backend_available(int index);
 int gamepad_bridge_backend_from_name(const char *name);
 int gamepad_bridge_backend_configured_index(void);

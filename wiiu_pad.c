@@ -23,6 +23,12 @@ struct WiiuPad {
     time_t asked_to_stop;  /* 0 while it has not been asked */
     /* When to start it again after it exited on its own. 0 = do not. */
     time_t restart_after;
+
+    /*
+     * A manual restart is asynchronous: ask the current child to stop,
+     * then spawn its replacement when poll() observes that it is gone.
+     */
+    int restart_on_stop;
     /* Kept so a session can be started again without the caller.
      * The client exits every time a pad goes away, which is normal. */
     char binary[1024];
@@ -160,6 +166,84 @@ static void drain(WiiuPad *pad)
     }
 }
 
+void wiiu_pad_request_start(WiiuPad *pad)
+{
+    if (!pad)
+        return;
+
+    /* A handle returned for a missing binary cannot become runnable
+     * without a server restart/build; keep its useful error status. */
+    if (!pad->binary[0])
+        return;
+
+    pad->restart_after = 0;
+
+    if (pad->pid > 0) {
+        /*
+         * It may still be completing a previous asynchronous stop. In
+         * that case "start" means start again as soon as it is gone.
+         */
+        if (pad->asked_to_stop) {
+            pad->restart_on_stop = 1;
+            set_status(pad, "stopping; will start again");
+        }
+        return;
+    }
+
+    pad->asked_to_stop = 0;
+    pad->restart_on_stop = 0;
+    spawn(pad);
+
+    if (pad->pid > 0)
+        set_status(pad, "starting…");
+}
+
+void wiiu_pad_request_stop(WiiuPad *pad)
+{
+    if (!pad)
+        return;
+
+    pad->restart_after = 0;
+    pad->restart_on_stop = 0;
+
+    if (pad->pid <= 0) {
+        set_status(pad, "stopped");
+        return;
+    }
+
+    if (!pad->asked_to_stop) {
+        kill(pad->pid, SIGTERM);
+        pad->asked_to_stop = time(NULL);
+    }
+
+    set_status(pad, "stopping…");
+}
+
+void wiiu_pad_request_restart(WiiuPad *pad)
+{
+    if (!pad)
+        return;
+
+    if (!pad->binary[0])
+        return;
+
+    pad->restart_after = 0;
+
+    if (pad->pid <= 0) {
+        wiiu_pad_request_start(pad);
+        return;
+    }
+
+    pad->restart_on_stop = 1;
+
+    if (!pad->asked_to_stop) {
+        kill(pad->pid, SIGTERM);
+        pad->asked_to_stop = time(NULL);
+    }
+
+    set_status(pad, "restarting…");
+}
+
 void wiiu_pad_poll(WiiuPad *pad)
 {
     if (!pad)
@@ -180,7 +264,19 @@ void wiiu_pad_poll(WiiuPad *pad)
             pad->pid = 0;
             drain(pad);     /* its last words arrive after it has gone */
             if (pad->asked_to_stop) {
-                set_status(pad, "stopped");
+                const int restart = pad->restart_on_stop;
+
+                pad->asked_to_stop = 0;
+                pad->restart_on_stop = 0;
+
+                if (restart) {
+                    spawn(pad);
+                    if (pad->pid > 0) {
+                        set_status(pad, "starting…");
+                    }
+                } else {
+                    set_status(pad, "stopped");
+                }
             } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
                 set_status(pad, "could not be run");
             } else {
@@ -217,7 +313,6 @@ void wiiu_pad_poll(WiiuPad *pad)
                 }
                 pad->restart_after = time(NULL) + 1;
             }
-            pad->asked_to_stop = 0;
         } else if (pad->asked_to_stop &&
                    time(NULL) - pad->asked_to_stop >= WIIU_PAD_GRACE_SECONDS) {
             /*
@@ -240,8 +335,7 @@ void wiiu_pad_stop(WiiuPad *pad)
         return;
 
     if (pad->pid > 0) {
-        kill(pad->pid, SIGTERM);
-        pad->asked_to_stop = time(NULL);
+        wiiu_pad_request_stop(pad);
 
         /*
          * Waited for here rather than across later polls, so that the

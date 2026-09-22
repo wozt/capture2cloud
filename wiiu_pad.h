@@ -57,6 +57,17 @@ WiiuPad *wiiu_pad_start(const char *project_dir, uint16_t port);
  */
 void wiiu_pad_stop(WiiuPad *pad);
 
+/*
+ * Runtime control used by the GTK server UI.
+ *
+ * These never wait for the child. The main loop keeps polling the
+ * supervisor and the ordinary five-second SIGTERM/SIGKILL protection
+ * still applies there, without freezing GTK or the capture loop.
+ */
+void wiiu_pad_request_start(WiiuPad *pad);
+void wiiu_pad_request_stop(WiiuPad *pad);
+void wiiu_pad_request_restart(WiiuPad *pad);
+
 /* Reaps the child if it has exited and takes in whatever it has said.
  * Call it from the loop that already runs; it never blocks. */
 void wiiu_pad_poll(WiiuPad *pad);

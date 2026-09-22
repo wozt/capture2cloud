@@ -1286,49 +1286,89 @@ static void build_settings_window(GtkShell *shell) {
 
     row = 0;
 
-    add_section_header(grid, row++, "Console");
+    add_section_header(grid, row++, "Console power");
 
     add_row(
         grid,
         row++,
-        "power",
+        "console",
         make_button(
             shell,
             "wake the console",
             GTK_SHELL_ACTION_WAKE_CONSOLE,
-            "Runs the configured wake action."));
+            "Runs the configured console wake action."));
 
-    add_row(
-        grid,
-        row++,
-        "controller output",
-        make_button(
+    /*
+     * Controller-output maintenance is backend-specific.
+     *
+     * The selected backend is a startup setting, so if it changes the
+     * server restarts and this page is rebuilt with the new backend's
+     * own maintenance operation and wording.
+     */
+    {
+        int backend;
+
+        SDL_LockMutex(shell->lock);
+        backend = shell->settings.output_backend;
+        SDL_UnlockMutex(shell->lock);
+
+        char section[160];
+        snprintf(
+            section,
+            sizeof(section),
+            "Controller output — %s",
+            gamepad_bridge_backend_label(backend));
+        add_section_header(grid, row++, section);
+
+        const char *label =
+            gamepad_bridge_backend_maintenance_label(backend);
+        const char *help =
+            gamepad_bridge_backend_maintenance_help(backend);
+
+        GtkWidget *button = make_button(
             shell,
-            "reset output backend",
-            GTK_SHELL_ACTION_RESET_DONGLE,
-            "Asks the active controller-output backend to reset/reconnect."));
+            (label && *label) ? label : "no maintenance action",
+            GTK_SHELL_ACTION_RECOVER_OUTPUT,
+            (help && *help)
+                ? help
+                : "This backend does not expose a maintenance action.");
 
-    add_section_header(grid, row++, "Server");
+        gtk_widget_set_sensitive(
+            button,
+            gamepad_bridge_backend_available(backend) &&
+            label &&
+            *label);
+
+        add_row(
+            grid,
+            row++,
+            "backend recovery",
+            button);
+
+        if (help && *help) {
+            GtkWidget *note = gtk_label_new(help);
+            gtk_widget_set_halign(note, GTK_ALIGN_START);
+            gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+            gtk_label_set_max_width_chars(GTK_LABEL(note), 72);
+            gtk_style_context_add_class(
+                gtk_widget_get_style_context(note),
+                "dim-label");
+            add_row(grid, row++, "", note);
+        }
+    }
+
+    add_section_header(grid, row++, "Server process");
 
     add_row(
         grid,
         row++,
-        "capture monitor",
-        make_button(
-            shell,
-            "show capture window",
-            GTK_SHELL_ACTION_SHOW_CAPTURE,
-            "Shows the local video monitor."));
-
-    add_row(
-        grid,
-        row++,
-        "process",
+        "server",
         make_button(
             shell,
             "restart server",
             GTK_SHELL_ACTION_RESTART,
-            "Performs the normal ordered shutdown and re-execs the server."));
+            "Performs the normal ordered shutdown and re-execs "
+            "Capture2Cloud."));
 
 
     /* ---------------------------------------------------------------
