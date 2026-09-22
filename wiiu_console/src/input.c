@@ -60,6 +60,7 @@ static PadState21 g_state;
 static PadState21 g_last_sent;
 
 static uint32_t g_last_send_ms;
+static int g_remote_home_chord_held;
 
 
 /*
@@ -340,6 +341,7 @@ int input_init(char *why,
         sizeof(g_last_sent));
 
     g_last_send_ms = 0;
+    g_remote_home_chord_held = 0;
 
     WHBLogPrintf(
         "input: Wii U GamePad ready, axes=%d buttons=%d",
@@ -368,6 +370,7 @@ void input_exit(void)
         sizeof(g_last_sent));
 
     g_last_send_ms = 0;
+    g_remote_home_chord_held = 0;
 }
 
 
@@ -433,6 +436,30 @@ void input_update(int forward)
         g_state,
         physical,
         sizeof(g_state));
+
+    /* HOME itself belongs to the local Wii U and makes ProcUI suspend
+     * this application. L3+R3 reaches the remote console while the
+     * capture stays visible. Latch it so one hold sends one HOME, and do
+     * not leak the two stick clicks into the remote game as well. */
+    const int remote_home_chord =
+        physical[PAD_LS] != 0 &&
+        physical[PAD_RS] != 0;
+
+    if (forward &&
+        remote_home_chord &&
+        !g_remote_home_chord_held) {
+
+        net_send_home();
+        WHBLogPrintf("input: L3+R3 -> remote HOME");
+    }
+
+    g_remote_home_chord_held =
+        remote_home_chord;
+
+    if (remote_home_chord) {
+        physical[PAD_LS] = 0;
+        physical[PAD_RS] = 0;
+    }
 
     if (forward) {
         memcpy(

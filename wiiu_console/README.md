@@ -17,6 +17,10 @@ Validated on Wii U hardware: H.264 video through H264DEC/GX2, PCM audio
 through AX, GamePad input, password login, saved session token and normal
 HOME-menu suspend/resume/exit.
 
+The Console page has a REMOTE HOME action. **L3 + R3** sends the same command
+without opening the local Wii U HOME overlay; the chord is sent once per hold
+and its two stick clicks are suppressed from remote input.
+
 The touch menu is implemented in `src/menu.c/.h`: layout, hit testing and
 layered drawing live outside the application loop. Its Connection, Stream,
 Controls and Console pages use settings the Wii U path can actually apply.

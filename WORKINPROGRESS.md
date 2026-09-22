@@ -133,6 +133,8 @@ keep up at 1080p60 grows a queue that never drains.
   letters.
 - Opening the local menu neutralises remote input.
 - The menu has **REMOTE HOME**, sent as `C2S_MSG_HOME`.
+- **L3 + R3** sends remote HOME directly. Physical HOME still belongs to
+  ProcUI and suspends foreground rendering, so it remains the normal exit path.
 - Password entry uses `nn::swkbd`.
 - `/login` runs on `WEB_PORT` (5080 by default).
 - The password remains RAM-only; the returned session token may be
