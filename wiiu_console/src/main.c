@@ -59,6 +59,41 @@ static unsigned video_worker_decoded_total(void)
 }
 
 
+/* H264DEC keeps SPS-dependent state and queued pictures. A new stream
+ * geometry therefore needs a clean decoder boundary; merely waiting for
+ * the next IDR leaves the old dimensions active on real hardware. */
+static int rebuild_video_decoder(int *worker_alive,
+                                 int *video_alive,
+                                 char *why,
+                                 size_t why_size)
+{
+    if (*worker_alive) {
+        video_worker_stop();
+        *worker_alive = 0;
+    }
+
+    if (*video_alive) {
+        video_exit();
+        *video_alive = 0;
+    }
+
+    if (video_init(MAX_WIDTH, MAX_HEIGHT, why, why_size) != 0) {
+        return -1;
+    }
+
+    *video_alive = 1;
+
+    if (video_worker_start(why, why_size) != 0) {
+        video_exit();
+        *video_alive = 0;
+        return -1;
+    }
+
+    *worker_alive = 1;
+    return 0;
+}
+
+
 static int parse_host(const char *text, void *target)
 {
     return settings_set_host_string((Settings *)target, text);
@@ -1025,10 +1060,57 @@ int main(int argc, char **argv)
                     C2sStreamInfo stream;
                     memcpy(&stream, payload, sizeof(stream));
 
+                    const uint16_t next_width =
+                        c2s_le16(stream.width);
+
+                    const uint16_t next_height =
+                        c2s_le16(stream.height);
+
+                    const int geometry_changed =
+                        next_width != net_info()->width ||
+                        next_height != net_info()->height;
+
                     net_set_stream_info(
-                        c2s_le16(stream.width),
-                        c2s_le16(stream.height),
+                        next_width,
+                        next_height,
                         stream.video_codec);
+
+                    if (geometry_changed) {
+                        WHBLogPrintf(
+                            "profile: rebuilding H264DEC for %ux%u",
+                            next_width,
+                            next_height);
+
+                        have_frame = 0;
+                        decoder_why[0] = '\0';
+
+                        decoder_ok =
+                            rebuild_video_decoder(
+                                &video_worker_alive,
+                                &video_alive,
+                                decoder_why,
+                                sizeof(decoder_why)) == 0;
+
+                        if (decoder_ok) {
+                            worker_decoded_at =
+                                video_worker_decoded_total();
+
+                            WHBLogPrintf(
+                                "profile: H264DEC ready for %ux%u",
+                                next_width,
+                                next_height);
+                        } else {
+                            snprintf(
+                                note,
+                                sizeof(note),
+                                "decoder rebuild failed: %s",
+                                decoder_why);
+
+                            WHBLogPrintf(
+                                "profile: H264DEC rebuild failed -- %s",
+                                decoder_why);
+                        }
+                    }
 
                     video_synced = 0;
                     keyframe_requested = 0;

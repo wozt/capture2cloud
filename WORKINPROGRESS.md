@@ -101,6 +101,9 @@ keep up at 1080p60 grows a queue that never drains.
   renegotiate after `videorate/videoscale`. The VAAPI path was exercised
   through 720p60 -> 480p30 -> 720p60 and produced a fresh SPS/PPS/IDR at
   each size.
+- A size change rebuilds H264DEC and its worker queue before accepting the
+  new IDR. Reusing the 720p decoder state made 480p freeze; frame-rate-only
+  changes need no rebuild.
 - Hardware decode through **H264DEC**.
 - NV12 decode buffers are displayed directly through a custom
   **GX2 zero-copy** renderer.
