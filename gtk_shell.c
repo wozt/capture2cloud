@@ -78,8 +78,13 @@ typedef struct {
      * apart from "something is watching and the picture is wrong"
      * without reading a terminal. Indexed by GtkShellClient. */
     GtkWidget *client_status[GTK_SHELL_CLIENT_COUNT];
+    GtkWidget *overview_client_status[GTK_SHELL_CLIENT_COUNT];
+
     GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry, *output_protocol;
+    GtkWidget *output_backend, *backend_status, *titan_settings;
     GtkWidget *adapter_sees;
+
+    GtkWidget *overview_status;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
     GtkWidget *muted, *volume, *direct_sink, *brightness, *contrast, *vsync;
@@ -308,6 +313,12 @@ static void on_combo(GtkWidget *w, gpointer user_data) {
         shell->settings.capture_mjpeg = (i == 1);
     } else if (w == g_c.gamepad_device) {
         shell->settings.gamepad_index = i - 1; /* the first row is "none" */
+    } else if (w == g_c.output_backend) {
+        if (i >= 0 &&
+            i < gamepad_bridge_backend_count() &&
+            gamepad_bridge_backend_available(i)) {
+            shell->settings.output_backend = i;
+        }
     } else if (w == g_c.output_protocol) {
         /* Deliberately NOT applied here. The rows are the protocol
          * values in order, but picking one is a request, not a setting:
@@ -393,6 +404,129 @@ static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **
     return grid;
 }
 
+
+static void add_section_header(GtkWidget *grid, int row, const char *title) {
+    char *markup = g_markup_printf_escaped(
+        "<b><span size=\"large\">%s</span></b>", title);
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(label), markup);
+    g_free(markup);
+
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(label, row == 0 ? 0 : 14);
+    gtk_widget_set_margin_bottom(label, 4);
+    gtk_grid_attach(GTK_GRID(grid), label, 0, row, 2, 1);
+}
+
+static GtkWidget *make_stack_page(
+    GtkWidget *stack,
+    const char *name,
+    const char *title,
+    const char *subtitle,
+    GtkWidget **grid_out)
+{
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(
+        GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_NEVER,
+        GTK_POLICY_AUTOMATIC);
+
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_margin_start(outer, 24);
+    gtk_widget_set_margin_end(outer, 24);
+    gtk_widget_set_margin_top(outer, 20);
+    gtk_widget_set_margin_bottom(outer, 20);
+    gtk_container_add(GTK_CONTAINER(scroll), outer);
+
+    char *markup = g_markup_printf_escaped(
+        "<span size=\"xx-large\"><b>%s</b></span>", title);
+
+    GtkWidget *heading = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(heading), markup);
+    g_free(markup);
+
+    gtk_widget_set_halign(heading, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(outer), heading, FALSE, FALSE, 0);
+
+    if (subtitle && *subtitle) {
+        GtkWidget *sub = gtk_label_new(subtitle);
+        gtk_widget_set_halign(sub, GTK_ALIGN_START);
+        gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(sub), 88);
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(sub),
+            "dim-label");
+        gtk_box_pack_start(GTK_BOX(outer), sub, FALSE, FALSE, 0);
+    }
+
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(sep, 4);
+    gtk_widget_set_margin_bottom(sep, 8);
+    gtk_box_pack_start(GTK_BOX(outer), sep, FALSE, FALSE, 0);
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 10);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 18);
+    gtk_box_pack_start(GTK_BOX(outer), grid, FALSE, FALSE, 0);
+
+    gtk_stack_add_titled(GTK_STACK(stack), scroll, name, title);
+
+    *grid_out = grid;
+    return scroll;
+}
+
+enum {
+    BACKEND_COL_LABEL = 0,
+    BACKEND_COL_SENSITIVE,
+    BACKEND_COL_COUNT
+};
+
+static GtkWidget *make_backend_combo(GtkShell *shell) {
+    GtkListStore *store = gtk_list_store_new(
+        BACKEND_COL_COUNT,
+        G_TYPE_STRING,
+        G_TYPE_BOOLEAN);
+
+    for (int i = 0; i < gamepad_bridge_backend_count(); i++) {
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(
+            store,
+            &iter,
+            BACKEND_COL_LABEL,
+            gamepad_bridge_backend_label(i),
+            BACKEND_COL_SENSITIVE,
+            gamepad_bridge_backend_available(i),
+            -1);
+    }
+
+    GtkWidget *combo = gtk_combo_box_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+
+    GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
+    gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(combo), renderer, TRUE);
+    gtk_cell_layout_add_attribute(
+        GTK_CELL_LAYOUT(combo),
+        renderer,
+        "text",
+        BACKEND_COL_LABEL);
+    gtk_cell_layout_add_attribute(
+        GTK_CELL_LAYOUT(combo),
+        renderer,
+        "sensitive",
+        BACKEND_COL_SENSITIVE);
+
+    gtk_widget_set_tooltip_text(
+        combo,
+        "Which mechanism sends the merged controller state to the real console.\n\n"
+        "Changing backend is saved to scripts/.env and restarts the server cleanly. "
+        "Backends shown grey are known to the architecture but are not implemented "
+        "in this build yet.");
+
+    g_signal_connect(combo, "changed", G_CALLBACK(on_combo), shell);
+    return combo;
+}
+
 /* Fills every control from the settings, without those changes being
  * reported back as the user having moved something. */
 static void load_controls(GtkShell *shell) {
@@ -420,6 +554,22 @@ static void load_controls(GtkShell *shell) {
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.capture_format), s.capture_mjpeg ? 1 : 0);
 
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.gamepad_enabled), s.gamepad_enabled);
+
+    if (g_c.output_backend &&
+        s.output_backend >= 0 &&
+        s.output_backend < gamepad_bridge_backend_count()) {
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.output_backend),
+            s.output_backend);
+    }
+
+    if (g_c.titan_settings) {
+        const int titan = gamepad_bridge_backend_from_name("titan");
+        gtk_widget_set_sensitive(
+            g_c.titan_settings,
+            s.output_backend == titan);
+    }
+
     if (s.output_protocol >= 0) {
         gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.output_protocol), s.output_protocol);
     }
@@ -459,384 +609,779 @@ static void set_window_icon(GtkWidget *win) {
 }
 
 static void build_settings_window(GtkShell *shell) {
-    /* Zero is a real protocol value ("automatic"), so "none pending" has
-     * to be set rather than left to the static initialiser. */
     g_c.replug_pending = -1;
+
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    /* The version is in the title bar, where a window says what it is.
-     * Every other client shows it somewhere; this one was the one left
-     * out, and it is the window most likely to be open when the
-     * question "which build is this machine running" comes up. */
+
     {
-        char title[64];
-        snprintf(title, sizeof(title), "Capture2Cloud settings — v%s", C2C_VERSION);
+        char title[96];
+        snprintf(
+            title,
+            sizeof(title),
+            "Capture2Cloud Server — v%s",
+            C2C_VERSION);
         gtk_window_set_title(GTK_WINDOW(win), title);
     }
-    gtk_window_set_default_size(GTK_WINDOW(win), 520, 520);
-    g_signal_connect(win, "delete-event", G_CALLBACK(on_settings_delete), shell);
 
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(win), box);
+    /*
+     * This is a server control panel now, not a tiny preferences dialog.
+     * 1000x700 still fits comfortably on a 1280x720 display while
+     * leaving enough room for meaningful labels and status lines.
+     */
+    gtk_window_set_default_size(GTK_WINDOW(win), 1000, 700);
+    g_signal_connect(
+        win,
+        "delete-event",
+        G_CALLBACK(on_settings_delete),
+        shell);
 
-    GtkWidget *notebook = gtk_notebook_new();
-    /* Eight tabs do not fit the window's width, and a tab that is off
-     * the edge with no way to reach it is a setting that does not
-     * exist. */
-    gtk_notebook_set_scrollable(GTK_NOTEBOOK(notebook), TRUE);
-    gtk_box_pack_start(GTK_BOX(box), notebook, TRUE, TRUE, 0);
+    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(win), root);
+
+    /* ---------------------------------------------------------------
+     * Header
+     * --------------------------------------------------------------- */
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_margin_start(header, 18);
+    gtk_widget_set_margin_end(header, 18);
+    gtk_widget_set_margin_top(header, 14);
+    gtk_widget_set_margin_bottom(header, 12);
+
+    GtkWidget *header_title = gtk_label_new(NULL);
+    gtk_label_set_markup(
+        GTK_LABEL(header_title),
+        "<span size=\"x-large\"><b>Capture2Cloud server</b></span>");
+    gtk_widget_set_halign(header_title, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(header), header_title, FALSE, FALSE, 0);
+
+    GtkWidget *header_sub = gtk_label_new(
+        "Streaming clients, capture hardware and controller output.");
+    gtk_widget_set_halign(header_sub, GTK_ALIGN_START);
+    gtk_style_context_add_class(
+        gtk_widget_get_style_context(header_sub),
+        "dim-label");
+    gtk_box_pack_start(GTK_BOX(header), header_sub, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(root), header, FALSE, FALSE, 0);
+    gtk_box_pack_start(
+        GTK_BOX(root),
+        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+        FALSE,
+        FALSE,
+        0);
+
+    /* ---------------------------------------------------------------
+     * Sidebar + pages
+     * --------------------------------------------------------------- */
+    GtkWidget *body = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
+
+    GtkWidget *stack = gtk_stack_new();
+    gtk_stack_set_transition_type(
+        GTK_STACK(stack),
+        GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(stack), 120);
+
+    GtkWidget *sidebar = gtk_stack_sidebar_new();
+    gtk_stack_sidebar_set_stack(
+        GTK_STACK_SIDEBAR(sidebar),
+        GTK_STACK(stack));
+    gtk_widget_set_size_request(sidebar, 205, -1);
+
+    gtk_paned_pack1(GTK_PANED(body), sidebar, FALSE, FALSE);
+    gtk_paned_pack2(GTK_PANED(body), stack, TRUE, FALSE);
+    gtk_paned_set_position(GTK_PANED(body), 205);
 
     GtkWidget *grid;
     int row;
 
-    /*
-     * One page per client family, and a line of statistics on each.
-     *
-     * They used to share one "stream" page, which put the browsers'
-     * resolution three rows above the GamePad's access point with
-     * nothing to say they were unrelated. They are genuinely separate
-     * servers: four encodes, four ports, four audiences. Whose picture
-     * a control changes is now the page it is on.
-     */
+    /* ===============================================================
+     * OVERVIEW
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "overview",
+        "Overview",
+        "The things worth seeing first: server state, console output and "
+        "who is connected.",
+        &grid);
 
-    /* --- browsers ---------------------------------------------------- */
-    make_page("browsers", notebook, &grid);
     row = 0;
-    g_c.stream_enabled = add_row(grid, row++, "serve to browsers",
-                                 make_check(shell, "on"));
-    g_c.port = add_row(grid, row++, "port",
-                       gtk_spin_button_new_with_range(1, 65535, 1));
-    g_signal_connect(g_c.port, "value-changed", G_CALLBACK(on_spin), shell);
+
+    add_section_header(grid, row++, "Server");
+
+    g_c.overview_status = gtk_label_new("starting...");
+    gtk_widget_set_halign(g_c.overview_status, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(g_c.overview_status), TRUE);
+    add_row(grid, row++, "status", g_c.overview_status);
+
+    g_c.backend_status = gtk_label_new("");
+    gtk_widget_set_halign(g_c.backend_status, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(g_c.backend_status), TRUE);
+    gtk_label_set_line_wrap(GTK_LABEL(g_c.backend_status), TRUE);
+    add_row(grid, row++, "controller output", g_c.backend_status);
+
+    add_section_header(grid, row++, "Connected clients");
+
+    g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] =
+        add_client_status(grid, row++, "Browser");
+
+    g_c.overview_client_status[GTK_SHELL_CLIENT_NATIVE] =
+        add_client_status(grid, row++, "Switch / Android");
+
+    g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_PAD] =
+        add_client_status(grid, row++, "Wii U GamePad");
+
+    g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
+        add_client_status(grid, row++, "Wii U Console");
+
+    add_section_header(grid, row++, "Quick actions");
+
+    {
+        GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+        gtk_box_pack_start(
+            GTK_BOX(actions),
+            make_button(
+                shell,
+                "show capture window",
+                GTK_SHELL_ACTION_SHOW_CAPTURE,
+                "Shows the local capture monitor."),
+            FALSE, FALSE, 0);
+
+        gtk_box_pack_start(
+            GTK_BOX(actions),
+            make_button(
+                shell,
+                "wake console",
+                GTK_SHELL_ACTION_WAKE_CONSOLE,
+                "Runs the configured wake action."),
+            FALSE, FALSE, 0);
+
+        add_row(grid, row++, "", actions);
+    }
+
+    /* ===============================================================
+     * CLIENTS
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "clients",
+        "Clients",
+        "Everything on this page changes what a remote client receives. "
+        "The sub-tabs are deliberately named Client · ... so these controls "
+        "cannot be confused with server hardware settings.",
+        &grid);
+
+    GtkWidget *clients = gtk_notebook_new();
+    gtk_notebook_set_scrollable(GTK_NOTEBOOK(clients), TRUE);
+    gtk_widget_set_hexpand(clients, TRUE);
+    gtk_widget_set_vexpand(clients, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), clients, 0, 0, 2, 1);
+
+    /* --- Client · Browser ------------------------------------------ */
+    make_page("Client · Browser", clients, &grid);
+    row = 0;
+
+    g_c.stream_enabled = add_row(
+        grid,
+        row++,
+        "serve to browsers",
+        make_check(shell, "on"));
+
+    g_c.port = add_row(
+        grid,
+        row++,
+        "port",
+        gtk_spin_button_new_with_range(1, 65535, 1));
+    g_signal_connect(
+        g_c.port,
+        "value-changed",
+        G_CALLBACK(on_spin),
+        shell);
 
     g_c.resolution = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "1080p60");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "720p60");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.resolution), "480p60");
-    gtk_widget_set_tooltip_text(g_c.resolution,
-        "What the browser stream is encoded at. Shared: one encoder feeds every "
-        "browser, so this changes what everyone watching in a browser sees. The "
-        "other three clients have their own sizes and are not affected.");
-    g_signal_connect(g_c.resolution, "changed", G_CALLBACK(on_combo), shell);
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.resolution), "1080p60");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.resolution), "720p60");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.resolution), "480p60");
+    gtk_widget_set_tooltip_text(
+        g_c.resolution,
+        "What the browser encoder produces. This affects browsers only.");
+    g_signal_connect(
+        g_c.resolution,
+        "changed",
+        G_CALLBACK(on_combo),
+        shell);
     add_row(grid, row++, "resolution", g_c.resolution);
 
-    g_c.bitrate = add_row(grid, row++, "bitrate (Mbps)", make_scale(shell, 2, 50, 1, ""));
+    g_c.bitrate = add_row(
+        grid,
+        row++,
+        "bitrate (Mbps)",
+        make_scale(shell, 2, 50, 1, ""));
 
     g_c.client_status[GTK_SHELL_CLIENT_BROWSER] =
         add_client_status(grid, row++, "watching now");
 
-    /* --- switch and phone -------------------------------------------- */
-    make_page("switch / phone", notebook, &grid);
+
+    /* --- Client · Switch / Android -------------------------------- */
+    make_page("Client · Switch / Android", clients, &grid);
     row = 0;
-    g_c.switch_enabled = add_row(grid, row++, "serve to switch",
-                                 make_check(shell, "on"));
-    gtk_widget_set_tooltip_text(g_c.switch_enabled,
-        "Whether the native client's server is listening -- the Switch homebrew "
-        "and the Android app both use it. Separate from the web one because they "
-        "are separate servers, and a session with nobody on a Switch has no "
-        "reason to hold a port open.");
-    g_c.switch_port = add_row(grid, row++, "port",
-                              gtk_spin_button_new_with_range(1, 65535, 1));
-    gtk_widget_set_tooltip_text(g_c.switch_port,
-        "Where the native clients connect. Its own port, because the two streams "
-        "are two servers -- the browser's is HTTP, this one is a small binary "
-        "protocol -- and moving one has no reason to move the other. Changing it "
-        "disconnects whatever is connected: it has to be changed on the console "
-        "as well.");
-    g_signal_connect(g_c.switch_port, "value-changed", G_CALLBACK(on_spin), shell);
+
+    g_c.switch_enabled = add_row(
+        grid,
+        row++,
+        "native client server",
+        make_check(shell, "on"));
+
+    gtk_widget_set_tooltip_text(
+        g_c.switch_enabled,
+        "The Nintendo Switch homebrew and Android application use this "
+        "native protocol server.");
+
+    g_c.switch_port = add_row(
+        grid,
+        row++,
+        "port",
+        gtk_spin_button_new_with_range(1, 65535, 1));
+
+    g_signal_connect(
+        g_c.switch_port,
+        "value-changed",
+        G_CALLBACK(on_spin),
+        shell);
 
     g_c.client_status[GTK_SHELL_CLIENT_NATIVE] =
         add_client_status(grid, row++, "connected now");
+
     {
         GtkWidget *note = gtk_label_new(
-            "These clients choose their own size, frame rate and bitrate, and "
-            "they share one stream: what one asks for, the others get. See "
-            "SHARED_SETTINGS.md.");
+            "Switch and Android clients negotiate their own profile and "
+            "share the native stream. These settings are unrelated to the "
+            "browser encoder.");
+
         gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
-        gtk_label_set_max_width_chars(GTK_LABEL(note), 52);
+        gtk_label_set_max_width_chars(GTK_LABEL(note), 70);
         gtk_widget_set_halign(note, GTK_ALIGN_START);
         add_row(grid, row++, "", note);
     }
 
-    /* --- a real Wii U GamePad ---------------------------------------- */
-    make_page("wii u pad", notebook, &grid);
+
+    /* --- Client · Wii U GamePad ----------------------------------- */
+    make_page("Client · Wii U GamePad", clients, &grid);
     row = 0;
-    g_c.wiiu_pad_enabled = add_row(grid, row++, "serve to wii u gamepad",
-                                   make_check(shell, "on"));
-    gtk_widget_set_tooltip_text(g_c.wiiu_pad_enabled,
-        "Sends the picture and sound to a real Wii U GamePad over the air, with "
-        "its buttons, sticks and touch coming back.\n\n"
-        "It needs a Realtek adapter running an access point and a pad already "
-        "paired to this machine, and it is a separate program that has to be "
-        "built first -- see wiiu_gamepad/README.md. Without those this only "
-        "reports why it could not start.");
 
-    g_c.wiiu_pad_bitrate = add_row(grid, row++, "bitrate (Mbps)",
-                                   make_scale(shell, 2, 20, 1, ""));
-    gtk_widget_set_tooltip_text(g_c.wiiu_pad_bitrate,
-        "What this chain is encoded at before the client re-encodes it for the "
-        "pad's own decoder.\n\n"
-        "Modest on purpose: that second pass runs at a quantiser pinned to 32, "
-        "so bits spent here beyond what it keeps are bits thrown away. The pad's "
-        "SIZE is its panel's and is not a setting.");
+    g_c.wiiu_pad_enabled = add_row(
+        grid,
+        row++,
+        "serve to GamePad",
+        make_check(shell, "on"));
 
-    /*
-     * What the pad is doing, and a handle on it.
-     *
-     * The bridge waits for a pad, serves it, and stops when it goes --
-     * all of which happens in another process, out of sight. Without
-     * this line the only way to tell "no pad has ever associated" from
-     * "streaming perfectly to a panel you are not looking at" is to
-     * read a terminal.
-     */
+    gtk_widget_set_tooltip_text(
+        g_c.wiiu_pad_enabled,
+        "Feeds a real Wii U GamePad over its dedicated radio path.");
+
+    g_c.wiiu_pad_bitrate = add_row(
+        grid,
+        row++,
+        "bitrate (Mbps)",
+        make_scale(shell, 2, 20, 1, ""));
+
     g_c.wiiu_status = gtk_label_new("");
     gtk_widget_set_halign(g_c.wiiu_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.wiiu_status), TRUE);
     gtk_label_set_line_wrap(GTK_LABEL(g_c.wiiu_status), TRUE);
-    gtk_label_set_max_width_chars(GTK_LABEL(g_c.wiiu_status), 52);
     add_row(grid, row++, "bridge status", g_c.wiiu_status);
 
     g_c.client_status[GTK_SHELL_CLIENT_WIIU_PAD] =
         add_client_status(grid, row++, "stream");
 
     {
-        GtkWidget *pad_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_box_pack_start(GTK_BOX(pad_buttons),
-            make_button(shell, "start stream", GTK_SHELL_ACTION_WIIU_START,
-                "Starts the bridge now.\n\n"
-                "It waits for a pad to associate, settles for four seconds, and "
-                "only then connects and encodes -- so pressing this with no pad "
-                "switched on leaves it waiting rather than failing."),
-            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(pad_buttons),
-            make_button(shell, "stop stream", GTK_SHELL_ACTION_WIIU_STOP,
-                "Stops it, and with it the fourth encoder: that chain is fed "
-                "only while something is watching it, so nothing is encoded for "
-                "the pad once this connection is gone."),
-            FALSE, FALSE, 0);
-        add_row(grid, row++, "", pad_buttons);
+        GtkWidget *pad_buttons =
+            gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 
-        GtkWidget *ap_buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_box_pack_start(GTK_BOX(ap_buttons),
-            make_button(shell, "start ap", GTK_SHELL_ACTION_WIIU_AP_START,
-                "Brings up the access point the pad associates to.\n\n"
-                "It runs a forked hostapd and needs root, so this asks for it "
-                "the way the terminal would. Nothing here works until this is "
-                "up -- see wiiu_gamepad/docs/WIIU_GAMEPAD.md."),
+        gtk_box_pack_start(
+            GTK_BOX(pad_buttons),
+            make_button(
+                shell,
+                "start stream",
+                GTK_SHELL_ACTION_WIIU_START,
+                "Starts the Wii U GamePad bridge."),
             FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(ap_buttons),
-            make_button(shell, "stop ap", GTK_SHELL_ACTION_WIIU_AP_STOP,
-                "Takes it down. Every pad on it drops with it."),
-            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(ap_buttons),
-            make_button(shell, "deauth pad", GTK_SHELL_ACTION_WIIU_DEAUTH,
-                "Asks the pad to associate again.\n\n"
-                "Worth trying when the picture has stopped and will not come "
-                "back: the pad reassociates in about 0.8s and the session "
-                "starts over. It does NOT need root."),
-            FALSE, FALSE, 0);
-        GtkWidget *pair = gtk_button_new_with_label("pair a gamepad...");
-        gtk_widget_set_tooltip_text(pair,
-            "Runs the WPS exchange that introduces a pad to this machine.\n\n"
-            "Only needed once per pad. You choose four symbols here and enter "
-            "the same four on the GamePad's own sync screen; the last four "
-            "digits are always the same and are filled in for you.");
-        g_signal_connect(pair, "clicked", G_CALLBACK(on_pair_clicked), shell);
-        gtk_box_pack_start(GTK_BOX(ap_buttons), pair, FALSE, FALSE, 0);
 
-        add_row(grid, row++, "", ap_buttons);
+        gtk_box_pack_start(
+            GTK_BOX(pad_buttons),
+            make_button(
+                shell,
+                "stop stream",
+                GTK_SHELL_ACTION_WIIU_STOP,
+                "Stops the Wii U GamePad bridge."),
+            FALSE, FALSE, 0);
+
+        add_row(grid, row++, "stream control", pad_buttons);
+
+        GtkWidget *ap_buttons =
+            gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+        gtk_box_pack_start(
+            GTK_BOX(ap_buttons),
+            make_button(
+                shell,
+                "start AP",
+                GTK_SHELL_ACTION_WIIU_AP_START,
+                "Starts the Wii U GamePad access point."),
+            FALSE, FALSE, 0);
+
+        gtk_box_pack_start(
+            GTK_BOX(ap_buttons),
+            make_button(
+                shell,
+                "stop AP",
+                GTK_SHELL_ACTION_WIIU_AP_STOP,
+                "Stops the Wii U GamePad access point."),
+            FALSE, FALSE, 0);
+
+        gtk_box_pack_start(
+            GTK_BOX(ap_buttons),
+            make_button(
+                shell,
+                "deauth pad",
+                GTK_SHELL_ACTION_WIIU_DEAUTH,
+                "Forces the GamePad to associate again."),
+            FALSE, FALSE, 0);
+
+        GtkWidget *pair = gtk_button_new_with_label("pair GamePad...");
+        g_signal_connect(
+            pair,
+            "clicked",
+            G_CALLBACK(on_pair_clicked),
+            shell);
+
+        gtk_box_pack_start(
+            GTK_BOX(ap_buttons),
+            pair,
+            FALSE, FALSE, 0);
+
+        add_row(grid, row++, "radio", ap_buttons);
     }
 
-    /* --- a homebrew running ON a Wii U -------------------------------- */
-    make_page("wii u console", notebook, &grid);
+
+    /* --- Client · Wii U Console ----------------------------------- */
+    make_page("Client · Wii U Console", clients, &grid);
     row = 0;
-    g_c.wiiu_console_enabled = add_row(grid, row++, "serve to wii u console",
-                                       make_check(shell, "on"));
-    gtk_widget_set_tooltip_text(g_c.wiiu_console_enabled,
-        "Serves a homebrew running on the Wii U itself, which decodes in the "
-        "console's own hardware and draws on the television.\n\n"
-        "Nothing to do with the GamePad page: that one talks to a pad over a "
-        "radio with no Wii U involved. This one needs a network and nothing "
-        "else. Off means the chain is never fed, whatever connects.");
+
+    g_c.wiiu_console_enabled = add_row(
+        grid,
+        row++,
+        "serve to Wii U console",
+        make_check(shell, "on"));
 
     g_c.wiiu_console_resolution = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution),
-                                   "1080p60 (not supported)");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution), "720p60");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution), "480p60");
-    gtk_widget_set_tooltip_text(g_c.wiiu_console_resolution,
-        "What that console is sent. Its own size: it does not share this with "
-        "the Switch or the phone, so a handheld asking for 480p cannot drag a "
-        "television down with it.\n\n"
-        "720p60 is the tested path. 1080p is offered because some consoles "
-        "manage it and is not supported: the reports are blocky video and "
-        "colour errors, and the console's own single-band Wi-Fi gives out "
-        "first. A USB Ethernet adapter is what makes the difference.");
-    g_signal_connect(g_c.wiiu_console_resolution, "changed", G_CALLBACK(on_combo), shell);
-    add_row(grid, row++, "resolution", g_c.wiiu_console_resolution);
 
-    g_c.wiiu_console_bitrate = add_row(grid, row++, "bitrate (Mbps)",
-                                       make_scale(shell, 2, 30, 1, ""));
-    gtk_widget_set_tooltip_text(g_c.wiiu_console_bitrate,
-        "Its own, like its size. Start low if it is on the console's built-in "
-        "Wi-Fi -- roughly 20 to 30 Mbit in practice, and the radio is the first "
-        "thing to give out.");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution),
+        "1080p60 (not supported)");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution),
+        "720p60");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.wiiu_console_resolution),
+        "480p60");
+
+    g_signal_connect(
+        g_c.wiiu_console_resolution,
+        "changed",
+        G_CALLBACK(on_combo),
+        shell);
+
+    add_row(
+        grid,
+        row++,
+        "resolution",
+        g_c.wiiu_console_resolution);
+
+    g_c.wiiu_console_bitrate = add_row(
+        grid,
+        row++,
+        "bitrate (Mbps)",
+        make_scale(shell, 2, 30, 1, ""));
 
     g_c.client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
         add_client_status(grid, row++, "connected now");
 
     {
-        /* In a box so it keeps its own width, like the pad page's
-         * buttons: a control handed to add_row alone is stretched to
-         * the column, and a full-width button reads as a banner. */
-        GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_box_pack_start(GTK_BOX(row_box),
-            make_button(shell, "force a keyframe", GTK_SHELL_ACTION_WIIU_CONSOLE_KEYFRAME,
-                "Sends a recovery point now.\n\n"
-                "For a console that has joined mid-stream, or one whose picture "
-                "has frozen while the connection is plainly still up."),
+        GtkWidget *buttons =
+            gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+        gtk_box_pack_start(
+            GTK_BOX(buttons),
+            make_button(
+                shell,
+                "force keyframe",
+                GTK_SHELL_ACTION_WIIU_CONSOLE_KEYFRAME,
+                "Requests an H.264 recovery point now."),
             FALSE, FALSE, 0);
-        add_row(grid, row++, "", row_box);
+
+        add_row(grid, row++, "", buttons);
     }
 
-    /* --- capture: the one thing genuinely shared by all four --------- */
-    make_page("capture", notebook, &grid);
-    row = 0;
-    g_c.capture_format = gtk_combo_box_text_new();
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.capture_format), "YUYV (raw)");
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.capture_format), "MJPEG (decoded)");
-    gtk_widget_set_tooltip_text(g_c.capture_format,
-        "How the card delivers frames. YUYV costs no decode at all and is the "
-        "default; MJPEG moves a fraction of the bytes over USB, which matters if "
-        "the USB3 path is shared.\n\n"
-        "This one really is shared: it is the card, upstream of all four "
-        "encoders.");
-    g_signal_connect(g_c.capture_format, "changed", G_CALLBACK(on_combo), shell);
-    add_row(grid, row++, "capture format", g_c.capture_format);
 
-    /* --- controller: this machine's, driving the console --- */
-    make_page("controller", notebook, &grid);
+    /* ===============================================================
+     * CONTROLLER OUTPUT
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "controller-output",
+        "Controller output",
+        "Inputs from browsers, native clients and the local controller are "
+        "merged first. This page chooses how that final state reaches the "
+        "real console.",
+        &grid);
+
     row = 0;
-    g_c.gamepad_enabled = add_row(grid, row++, "send input",
-                                  make_check(shell, "a controller here drives the console"));
+
+    add_section_header(grid, row++, "Console output backend");
+
+    g_c.output_backend = make_backend_combo(shell);
+    add_row(grid, row++, "backend", g_c.output_backend);
+
+    {
+        GtkWidget *note = gtk_label_new(
+            "Changing backend is persistent and restarts the server cleanly. "
+            "Grey entries are part of the planned architecture but have no "
+            "implementation in this build yet.");
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(note), 72);
+        gtk_widget_set_halign(note, GTK_ALIGN_START);
+        add_row(grid, row++, "", note);
+    }
+
+    /* backend_status is created on Overview; it is intentionally not
+     * packed twice. The overview is the dashboard, this page contains
+     * the controls. */
+
+    add_section_header(grid, row++, "Local controller input");
+
+    g_c.gamepad_enabled = add_row(
+        grid,
+        row++,
+        "local controller",
+        make_check(shell, "send input from this machine"));
+
     g_c.gamepad_device = gtk_combo_box_text_new();
-    g_signal_connect(g_c.gamepad_device, "changed", G_CALLBACK(on_combo), shell);
-    add_row(grid, row++, "controller", g_c.gamepad_device);
-    g_c.output_protocol = gtk_combo_box_text_new();
-    for (int i = 0; i < gamepad_protocol_count(); i++) {
-        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.output_protocol),
-                                       gamepad_protocol_label(i));
-    }
-    g_signal_connect(g_c.output_protocol, "changed", G_CALLBACK(on_combo), shell);
-    add_row(grid, row++, "adapter emulates", g_c.output_protocol);
-    /* What the adapter FOUND on its output port, which is the half that
-     * makes a mistake visible: set to a Switch pad with nothing
-     * answering reads very differently from set to an Xbox pad with a
-     * Switch in front of it. It also says when the change has not landed
-     * yet -- after one, the adapter has to be replugged into the console
-     * and until then this reads "nothing". */
-    g_c.adapter_sees = gtk_label_new("");
-    gtk_widget_set_halign(g_c.adapter_sees, GTK_ALIGN_START);
-    add_row(grid, row++, "adapter sees", g_c.adapter_sees);
-    gtk_widget_set_tooltip_text(g_c.output_protocol,
-        "Which controller the adapter pretends to be to the console. Its own "
-        "guess is not always right -- plugged straight into a Switch dock it "
-        "guessed Xbox 360 and every button was ignored. Stored in the adapter, "
-        "so it survives unplugging.\n\nAfter changing it, unplug the adapter from "
-        "the console and plug it back in: the change ends its conversation with the "
-        "console and nothing this machine can send reaches that side of it.");
+    g_signal_connect(
+        g_c.gamepad_device,
+        "changed",
+        G_CALLBACK(on_combo),
+        shell);
+    add_row(grid, row++, "device", g_c.gamepad_device);
 
-    g_c.invert_ry = add_row(grid, row++, "right stick",
-                            make_check(shell, "invert up/down"));
-    g_c.lt_threshold = add_row(grid, row++, "LT threshold (%)", make_scale(shell, 0, 100, 5, "%"));
-    g_c.rt_threshold = add_row(grid, row++, "RT threshold (%)", make_scale(shell, 0, 100, 5, "%"));
+    add_section_header(grid, row++, "Input shaping");
+
+    g_c.invert_ry = add_row(
+        grid,
+        row++,
+        "right stick",
+        make_check(shell, "invert up/down"));
+
+    g_c.lt_threshold = add_row(
+        grid,
+        row++,
+        "LT threshold (%)",
+        make_scale(shell, 0, 100, 5, "%"));
+
+    g_c.rt_threshold = add_row(
+        grid,
+        row++,
+        "RT threshold (%)",
+        make_scale(shell, 0, 100, 5, "%"));
 
     static const char *SIDE[2] = {"left", "right"};
+
     for (int i = 0; i < 2; i++) {
         char label[48];
-        snprintf(label, sizeof(label), "%s stick deadzone (%%)", SIDE[i]);
-        g_c.deadzone[i] = add_row(grid, row++, label, make_scale(shell, 0, 40, 1, "%"));
-        snprintf(label, sizeof(label), "%s stick range (%%)", SIDE[i]);
-        g_c.range[i] = add_row(grid, row++, label, make_scale(shell, 45, 100, 1, "%"));
-        gtk_widget_set_tooltip_text(g_c.range[i],
-            "How far the stick has to go to count as fully pushed. Lower it if "
-            "pushing all the way reads as a gentle push.");
-        snprintf(label, sizeof(label), "%s stick diagonals (%%)", SIDE[i]);
-        g_c.diagonal[i] = add_row(grid, row++, label, make_scale(shell, 45, 100, 1, "%"));
-        gtk_widget_set_tooltip_text(g_c.diagonal[i],
-            "The same, for the corners. A stick reaches less far diagonally than "
-            "along an axis, and by how much differs from one stick to the next.");
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick deadzone (%%)",
+            SIDE[i]);
+        g_c.deadzone[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(shell, 0, 40, 1, "%"));
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick range (%%)",
+            SIDE[i]);
+        g_c.range[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(shell, 45, 100, 1, "%"));
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick diagonals (%%)",
+            SIDE[i]);
+        g_c.diagonal[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(shell, 45, 100, 1, "%"));
     }
 
-    /* --- this window only --- */
-    make_page("this window", notebook, &grid);
-    row = 0;
-    g_c.muted = add_row(grid, row++, "speakers here", make_check(shell, "mute"));
-    gtk_widget_set_tooltip_text(g_c.muted,
-        "The speakers on this machine only. What the browser and the console "
-        "receive is untouched.");
-    g_c.volume = add_row(grid, row++, "volume (%)", make_scale(shell, 0, 100, 5, "%"));
-    g_c.direct_sink = add_row(grid, row++, "output",
-                              make_check(shell, "straight to the card, not the default"));
-    gtk_widget_set_tooltip_text(g_c.direct_sink,
-        "Play on the device named by LOCAL_SINK in the .env instead of whatever "
-        "the system calls its default output.\n\nWorth turning on where the "
-        "default is a virtual device belonging to a routing setup: sound that "
-        "goes into one and never comes out the other side looks exactly like "
-        "sound this program failed to produce. Does nothing if LOCAL_SINK is "
-        "not set.");
-    gtk_widget_set_tooltip_text(g_c.volume,
-        "0 to 100, where about 13 is the source's own level and 100 is eight times it -- "
-        "the same scale as the page and the console client.");
-    g_c.brightness = add_row(grid, row++, "brightness (%)", make_scale(shell, 50, 150, 5, "%"));
-    g_c.contrast = add_row(grid, row++, "contrast (%)", make_scale(shell, 50, 150, 5, "%"));
-    gtk_widget_set_tooltip_text(g_c.brightness,
-        "This window's picture only, done by the graphics card. Saturation and hue "
-        "are not here: they would mean rewriting the captured frame, which is the "
-        "same frame being sent to everyone else.");
-    g_c.vsync = add_row(grid, row++, "drawing", make_check(shell, "wait for the display (vsync)"));
+    add_section_header(grid, row++, "Titan / ConsoleTuner backend");
 
-    /* --- console --- */
-    /* The console being CAPTURED -- its power, its adapter, this
-     * program. Named "hardware" since a page called "wii u console"
-     * appeared above it and two pages called console is one too many. */
-    make_page("hardware", notebook, &grid);
-    row = 0;
-    add_row(grid, row++, "power",
-            make_button(shell, "wake the console", GTK_SHELL_ACTION_WAKE_CONSOLE,
-                        "Runs the wake script and waits for the picture to come back "
-                        "before re-enumerating the adapter."));
-    add_row(grid, row++, "adapter",
-            make_button(shell, "reset the adapter", GTK_SHELL_ACTION_RESET_DONGLE,
-                        "Releases the gamepad adapter and re-runs its handshake with "
-                        "the console. The same thing as unplugging and replugging it."));
-    add_row(grid, row++, "program",
-            make_button(shell, "restart the server", GTK_SHELL_ACTION_RESTART,
-                        "Stops and starts this program, keeping its pid and its log. "
-                        "The one thing that has always brought the sound back when it "
-                        "stopped arriving."));
+    g_c.titan_settings = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(g_c.titan_settings), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(g_c.titan_settings), 14);
+    gtk_grid_attach(
+        GTK_GRID(grid),
+        g_c.titan_settings,
+        0,
+        row++,
+        2,
+        1);
 
-    /* And again in the window, in small print beside the status: a title
-     * bar can be hidden by a tiling window manager, and then the number
-     * would be nowhere. */
     {
-        char ver[96];
-        snprintf(ver, sizeof(ver), "<small><span foreground=\"#888888\">version %s</span></small>",
-                 C2C_VERSION);
-        GtkWidget *label = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(label), ver);
-        gtk_widget_set_halign(label, GTK_ALIGN_START);
-        gtk_widget_set_margin_start(label, 14);
-        gtk_widget_set_margin_bottom(label, 2);
-        gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+        int tr = 0;
+
+        g_c.output_protocol = gtk_combo_box_text_new();
+
+        for (int i = 0; i < gamepad_protocol_count(); i++) {
+            gtk_combo_box_text_append_text(
+                GTK_COMBO_BOX_TEXT(g_c.output_protocol),
+                gamepad_protocol_label(i));
+        }
+
+        g_signal_connect(
+            g_c.output_protocol,
+            "changed",
+            G_CALLBACK(on_combo),
+            shell);
+
+        add_row(
+            g_c.titan_settings,
+            tr++,
+            "adapter emulates",
+            g_c.output_protocol);
+
+        g_c.adapter_sees = gtk_label_new("");
+        gtk_widget_set_halign(g_c.adapter_sees, GTK_ALIGN_START);
+        add_row(
+            g_c.titan_settings,
+            tr++,
+            "adapter sees",
+            g_c.adapter_sees);
+
+        gtk_widget_set_tooltip_text(
+            g_c.output_protocol,
+            "Titan/ConsoleTuner only. Which controller protocol the adapter "
+            "presents to the console.");
     }
+
+
+    /* ===============================================================
+     * CAPTURE
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "capture",
+        "Capture",
+        "Settings for the HDMI capture source itself. These sit upstream of "
+        "every client and therefore affect the whole server.",
+        &grid);
+
+    row = 0;
+
+    g_c.capture_format = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.capture_format),
+        "YUYV (raw)");
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.capture_format),
+        "MJPEG (decoded)");
+
+    g_signal_connect(
+        g_c.capture_format,
+        "changed",
+        G_CALLBACK(on_combo),
+        shell);
+
+    add_row(
+        grid,
+        row++,
+        "capture format",
+        g_c.capture_format);
+
+
+    /* ===============================================================
+     * LOCAL MONITOR
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "local-monitor",
+        "Local monitor",
+        "These controls affect only this PC's preview window and speakers. "
+        "They do not alter what remote clients receive.",
+        &grid);
+
+    row = 0;
+
+    g_c.muted = add_row(
+        grid,
+        row++,
+        "speakers",
+        make_check(shell, "mute"));
+
+    g_c.volume = add_row(
+        grid,
+        row++,
+        "volume (%)",
+        make_scale(shell, 0, 100, 5, "%"));
+
+    g_c.direct_sink = add_row(
+        grid,
+        row++,
+        "audio output",
+        make_check(shell, "use LOCAL_SINK directly"));
+
+    g_c.brightness = add_row(
+        grid,
+        row++,
+        "brightness (%)",
+        make_scale(shell, 50, 150, 5, "%"));
+
+    g_c.contrast = add_row(
+        grid,
+        row++,
+        "contrast (%)",
+        make_scale(shell, 50, 150, 5, "%"));
+
+    g_c.vsync = add_row(
+        grid,
+        row++,
+        "drawing",
+        make_check(shell, "wait for display (vsync)"));
+
+
+    /* ===============================================================
+     * MAINTENANCE
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "maintenance",
+        "Maintenance",
+        "One-shot server and hardware actions. These are operations, not "
+        "client preferences.",
+        &grid);
+
+    row = 0;
+
+    add_section_header(grid, row++, "Console");
+
+    add_row(
+        grid,
+        row++,
+        "power",
+        make_button(
+            shell,
+            "wake the console",
+            GTK_SHELL_ACTION_WAKE_CONSOLE,
+            "Runs the configured wake action."));
+
+    add_row(
+        grid,
+        row++,
+        "controller output",
+        make_button(
+            shell,
+            "reset output backend",
+            GTK_SHELL_ACTION_RESET_DONGLE,
+            "Asks the active controller-output backend to reset/reconnect."));
+
+    add_section_header(grid, row++, "Server");
+
+    add_row(
+        grid,
+        row++,
+        "capture monitor",
+        make_button(
+            shell,
+            "show capture window",
+            GTK_SHELL_ACTION_SHOW_CAPTURE,
+            "Shows the local video monitor."));
+
+    add_row(
+        grid,
+        row++,
+        "process",
+        make_button(
+            shell,
+            "restart server",
+            GTK_SHELL_ACTION_RESTART,
+            "Performs the normal ordered shutdown and re-execs the server."));
+
+
+    /* ---------------------------------------------------------------
+     * Footer
+     * --------------------------------------------------------------- */
+    gtk_box_pack_start(
+        GTK_BOX(root),
+        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+        FALSE,
+        FALSE,
+        0);
+
+    GtkWidget *footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_set_margin_start(footer, 14);
+    gtk_widget_set_margin_end(footer, 14);
+    gtk_widget_set_margin_top(footer, 7);
+    gtk_widget_set_margin_bottom(footer, 9);
 
     g_c.status_label = gtk_label_new("");
     gtk_widget_set_halign(g_c.status_label, GTK_ALIGN_START);
-    gtk_widget_set_margin_start(g_c.status_label, 14);
-    gtk_widget_set_margin_bottom(g_c.status_label, 10);
-    gtk_box_pack_start(GTK_BOX(box), g_c.status_label, FALSE, FALSE, 0);
+    gtk_widget_set_hexpand(g_c.status_label, TRUE);
+    gtk_box_pack_start(
+        GTK_BOX(footer),
+        g_c.status_label,
+        TRUE,
+        TRUE,
+        0);
+
+    {
+        char ver[96];
+        snprintf(
+            ver,
+            sizeof(ver),
+            "<small><span foreground=\"#888888\">v%s</span></small>",
+            C2C_VERSION);
+
+        GtkWidget *version = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(version), ver);
+        gtk_widget_set_halign(version, GTK_ALIGN_END);
+
+        gtk_box_pack_end(
+            GTK_BOX(footer),
+            version,
+            FALSE,
+            FALSE,
+            0);
+    }
+
+    gtk_box_pack_end(GTK_BOX(root), footer, FALSE, FALSE, 0);
 
     set_window_icon(win);
     shell->settings_window = win;
+
     load_controls(shell);
 }
 
@@ -1067,7 +1612,14 @@ static gboolean on_tick(gpointer user_data) {
         SDL_UnlockMutex(shell->lock);
         for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; i++) {
             if (g_c.client_status[i]) {
-                gtk_label_set_text(GTK_LABEL(g_c.client_status[i]), text[i]);
+                gtk_label_set_text(
+                    GTK_LABEL(g_c.client_status[i]),
+                    text[i]);
+            }
+            if (g_c.overview_client_status[i]) {
+                gtk_label_set_text(
+                    GTK_LABEL(g_c.overview_client_status[i]),
+                    text[i]);
             }
         }
     }
@@ -1087,7 +1639,12 @@ static gboolean on_tick(gpointer user_data) {
         SDL_LockMutex(shell->lock);
         snprintf(text, sizeof(text), "%s", shell->status);
         SDL_UnlockMutex(shell->lock);
-        gtk_label_set_text(GTK_LABEL(g_c.status_label), text);
+        if (g_c.status_label) {
+            gtk_label_set_text(GTK_LABEL(g_c.status_label), text);
+        }
+        if (g_c.overview_status) {
+            gtk_label_set_text(GTK_LABEL(g_c.overview_status), text);
+        }
         gtk_status_icon_set_tooltip_text(shell->icon, text);
     }
     /* The replug, watched rather than assumed. Each stage waits for a
@@ -1132,6 +1689,53 @@ static gboolean on_tick(gpointer user_data) {
         }
         if (text) {
             gtk_label_set_text(GTK_LABEL(g_c.replug_label), text);
+        }
+    }
+
+    if (g_c.backend_status) {
+        int configured = -1;
+
+        SDL_LockMutex(shell->lock);
+        configured = shell->settings.output_backend;
+        SDL_UnlockMutex(shell->lock);
+
+        char line[256];
+
+        if (configured < 0 ||
+            configured >= gamepad_bridge_backend_count()) {
+            snprintf(line, sizeof(line), "unknown backend");
+        } else if (!gamepad_bridge_backend_available(configured)) {
+            snprintf(
+                line,
+                sizeof(line),
+                "%s — not implemented in this build",
+                gamepad_bridge_backend_label(configured));
+        } else {
+            const char *active = gamepad_bridge_backend_name();
+
+            if (!active || !*active) {
+                snprintf(
+                    line,
+                    sizeof(line),
+                    "%s — configured, but not connected/initialised",
+                    gamepad_bridge_backend_label(configured));
+            } else {
+                snprintf(
+                    line,
+                    sizeof(line),
+                    "%s — %s — %.0f reports/s",
+                    gamepad_bridge_backend_label(configured),
+                    gamepad_bridge_link_up() ? "link up" : "link down",
+                    gamepad_bridge_report_rate());
+            }
+        }
+
+        if (strcmp(
+                gtk_label_get_text(GTK_LABEL(g_c.backend_status)),
+                line) != 0) {
+            gtk_label_set_text(
+                GTK_LABEL(g_c.backend_status),
+                line);
         }
     }
 

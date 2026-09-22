@@ -4,8 +4,8 @@
 #include "app_settings.h"
 
 /*
- * The local interface: an icon in the notification area, and a settings
- * window behind it.
+ * The local server interface: an icon in the notification area and a
+ * server control panel behind it.
  *
  * It used to be a menu bar that chased the video window around the
  * screen -- docking above it, following its moves, mirroring its
@@ -19,7 +19,7 @@
 typedef struct GtkShell GtkShell;
 
 /*
- * The client families, each with its own page in the settings window.
+ * The client families, each with its own sub-page under the Clients section.
  *
  * They are separated because they are genuinely different servers with
  * different settings, not because it looks tidier: the browsers' size

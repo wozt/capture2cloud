@@ -2,6 +2,7 @@
 
 #include "app_config.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -278,6 +279,95 @@ int config_set_int(const char *key, long value) {
         return -1;
     }
     /* The cached copy is now a generation behind its own file. */
+    app_config_invalidate();
+    return 0;
+}
+
+
+int config_set_str(const char *key, const char *value) {
+    if (!key || !*key || !value || !*value) {
+        return -1;
+    }
+
+    /*
+     * The .env is sourced by shell scripts as well as parsed here.
+     * Backend names are deliberately tokens, so refuse anything that
+     * would need shell escaping rather than trying to invent quoting.
+     */
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (!isalnum(*p) && *p != '_' && *p != '-' && *p != '.' && *p != '/') {
+            fprintf(stderr, "config: refusing unsafe string value for %s\n", key);
+            return -1;
+        }
+    }
+
+    char path[512];
+    app_config_path(path, sizeof(path));
+
+    FILE *in = fopen(path, "r");
+
+    char tmp[600];
+    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= sizeof(tmp)) {
+        if (in) {
+            fclose(in);
+        }
+        return -1;
+    }
+
+    FILE *out = fopen(tmp, "w");
+    if (!out) {
+        if (in) {
+            fclose(in);
+        }
+        fprintf(stderr, "config: cannot write %s\n", tmp);
+        return -1;
+    }
+
+    const size_t key_len = strlen(key);
+    int replaced = 0;
+
+    if (in) {
+        char line[4096];
+
+        while (fgets(line, sizeof(line), in)) {
+            const char *at = line;
+
+            while (*at == ' ' || *at == '\t') {
+                at++;
+            }
+
+            if (!replaced &&
+                strncmp(at, key, key_len) == 0 &&
+                at[key_len] == '=') {
+                fprintf(out, "%s=%s\n", key, value);
+                replaced = 1;
+                continue;
+            }
+
+            fputs(line, out);
+        }
+
+        fclose(in);
+    }
+
+    if (!replaced) {
+        fprintf(out, "%s=%s\n", key, value);
+    }
+
+    if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
+        fclose(out);
+        unlink(tmp);
+        return -1;
+    }
+
+    fclose(out);
+
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        fprintf(stderr, "config: cannot replace %s\n", path);
+        return -1;
+    }
+
     app_config_invalidate();
     return 0;
 }

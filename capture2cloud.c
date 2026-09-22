@@ -497,6 +497,49 @@ static void on_settings(void *userdata, const AppSettings *want) {
      * drawing -- so storing them is applying them. */
     have->gamepad_enabled = want->gamepad_enabled;
     have->gamepad_index = want->gamepad_index;
+
+    /*
+     * Output backend is a startup choice: each implementation owns
+     * resources with very different lifetimes (USB interfaces, BLE
+     * peripheral state, UDP sockets...). Switching those underneath
+     * active input threads would be much harder to reason about than
+     * stopping them in the shutdown order we already trust.
+     *
+     * Persist the selection, then use the ordinary in-process restart.
+     */
+    if (want->output_backend != have->output_backend) {
+        const int index = want->output_backend;
+
+        if (index < 0 ||
+            index >= gamepad_bridge_backend_count() ||
+            !gamepad_bridge_backend_available(index)) {
+            if (g_shell) {
+                gtk_shell_show_error(
+                    g_shell,
+                    "That controller output backend is not implemented "
+                    "in this build yet.");
+                gtk_shell_update(g_shell, have);
+            }
+        } else {
+            const char *name = gamepad_bridge_backend_name_at(index);
+
+            if (config_set_str("GAMEPAD_OUTPUT_BACKEND", name) != 0) {
+                if (g_shell) {
+                    gtk_shell_show_error(
+                        g_shell,
+                        "Could not save GAMEPAD_OUTPUT_BACKEND to scripts/.env.");
+                    gtk_shell_update(g_shell, have);
+                }
+            } else {
+                have->output_backend = index;
+                fprintf(stderr,
+                        "controller output: backend changed to %s; restarting\n",
+                        name);
+                app_request_restart();
+            }
+        }
+    }
+
     have->invert_ry = want->invert_ry;
     have->lt_threshold = want->lt_threshold;
     have->rt_threshold = want->rt_threshold;
@@ -787,6 +830,11 @@ int main(int argc, char **argv) {
      * is plugged in/accessible, we just carry on without it -- this is
      * not a required feature for the rest of the app. */
     gamepad_bridge_init();
+
+    {
+        const int configured = gamepad_bridge_backend_configured_index();
+        g_settings.output_backend = configured >= 0 ? configured : 0;
+    }
 
     /* What the adapter should pretend to be to the console. Asked for
      * once here; the bridge reads what the device actually holds and
