@@ -630,7 +630,8 @@ int main(int argc, char **argv)
             menu_input(
                 &menu,
                 &in,
-                state == STATE_STREAMING);
+                state == STATE_STREAMING,
+                &settings);
 
         if (menu_action == MENU_ACTION_RESOLUTION ||
             menu_action == MENU_ACTION_FRAME_RATE ||
@@ -663,8 +664,7 @@ int main(int argc, char **argv)
             menu_action == MENU_ACTION_LEFT_RANGE ||
             menu_action == MENU_ACTION_RIGHT_DEADZONE ||
             menu_action == MENU_ACTION_RIGHT_RANGE ||
-            menu_action == MENU_ACTION_INVERT_Y ||
-            menu_action == MENU_ACTION_FACE_MAPPING) {
+            menu_action == MENU_ACTION_INVERT_Y) {
 
             if (menu_action == MENU_ACTION_LEFT_DEADZONE ||
                 menu_action == MENU_ACTION_RIGHT_DEADZONE) {
@@ -678,11 +678,8 @@ int main(int argc, char **argv)
                     menu_action == MENU_ACTION_LEFT_RANGE ? 0 : 1;
                 unsigned value = settings.input.range[stick];
                 settings.input.range[stick] = value <= 45 ? 100 : value - 5;
-            } else if (menu_action == MENU_ACTION_INVERT_Y) {
-                settings.input.invert_y = !settings.input.invert_y;
             } else {
-                settings.input.face_by_position =
-                    !settings.input.face_by_position;
+                settings.input.invert_y = !settings.input.invert_y;
             }
 
             input_set_config(&settings.input);
@@ -695,6 +692,90 @@ int main(int argc, char **argv)
                 snprintf(note, sizeof(note), "not saved: %s", save_why);
             } else {
                 snprintf(note, sizeof(note), "controller setting saved");
+            }
+        }
+
+        if (menu_action == MENU_ACTION_BIND_SELECT) {
+            input_clear_physical_buttons();
+
+            snprintf(
+                note,
+                sizeof(note),
+                "Press a Wii U button for %s",
+                input_pad_slot_name(
+                    menu_binding_target(&menu)));
+        } else if (menu_action == MENU_ACTION_BIND_RESET) {
+            input_config_reset_bindings(&settings.input);
+            input_set_config(&settings.input);
+            menu_binding_finish(&menu);
+
+            char save_why[96];
+            if (settings_save(
+                    &settings,
+                    save_why,
+                    sizeof(save_why)) != 0) {
+                snprintf(note, sizeof(note), "not saved: %s", save_why);
+            } else {
+                snprintf(note, sizeof(note), "Xbox-position defaults restored");
+            }
+        }
+
+        if (menu_binding_target(&menu) >= 0 &&
+            menu_action != MENU_ACTION_BIND_SELECT) {
+
+            const int physical =
+                input_take_physical_button();
+
+            if (physical >= 0) {
+                const int target =
+                    menu_binding_target(&menu);
+
+                input_config_bind(
+                    &settings.input,
+                    physical,
+                    target);
+
+                input_set_config(&settings.input);
+                menu_binding_finish(&menu);
+
+                char save_why[96];
+                if (settings_save(
+                        &settings,
+                        save_why,
+                        sizeof(save_why)) != 0) {
+                    snprintf(note, sizeof(note), "not saved: %s", save_why);
+                } else {
+                    snprintf(
+                        note,
+                        sizeof(note),
+                        "%s output bound to Wii U %s",
+                        input_pad_slot_name(target),
+                        input_physical_button_name(physical));
+                }
+            }
+        }
+
+        if (menu_action == MENU_ACTION_MARKER_CORNER ||
+            menu_action == MENU_ACTION_MARKER_COLOUR) {
+
+            if (menu_action == MENU_ACTION_MARKER_CORNER) {
+                settings.marker_corner =
+                    (settings.marker_corner + 1) %
+                    MARKER_CORNER_COUNT;
+            } else {
+                settings.marker_colour =
+                    (settings.marker_colour + 1) %
+                    MARKER_COLOUR_COUNT;
+            }
+
+            char save_why[96];
+            if (settings_save(
+                    &settings,
+                    save_why,
+                    sizeof(save_why)) != 0) {
+                snprintf(note, sizeof(note), "not saved: %s", save_why);
+            } else {
+                snprintf(note, sizeof(note), "menu opener setting saved");
             }
         }
 

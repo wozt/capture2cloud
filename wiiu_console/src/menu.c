@@ -44,13 +44,14 @@ static const UiColour MENU_CARD_HOVER = { 0x22, 0x30, 0x3f, 0xf8 };
 static const UiColour MENU_GREEN = { 0x39, 0x9a, 0x68, 0xff };
 static const UiColour MENU_RED = { 0x9a, 0x43, 0x43, 0xff };
 
-static const MenuRect R_MARKER = { 1238, 10, 32, 32 };
 static const MenuRect R_MENU = { 64, 38, 1152, 644 };
 static const MenuRect R_SIDEBAR = { 84, 92, 218, 548 };
-static const MenuRect R_CONNECTION = { 100, 174, 186, 48 };
-static const MenuRect R_STREAM = { 100, 232, 186, 48 };
-static const MenuRect R_CONTROLS = { 100, 290, 186, 48 };
-static const MenuRect R_CONSOLE = { 100, 348, 186, 48 };
+static const MenuRect R_CONNECTION = { 100, 160, 186, 40 };
+static const MenuRect R_STREAM = { 100, 208, 186, 40 };
+static const MenuRect R_CONTROLS = { 100, 256, 186, 40 };
+static const MenuRect R_BINDINGS = { 100, 304, 186, 40 };
+static const MenuRect R_INTERFACE = { 100, 352, 186, 40 };
+static const MenuRect R_CONSOLE = { 100, 400, 186, 40 };
 
 static const MenuRect R_HOST = { 348, 148, 520, 60 };
 static const MenuRect R_PASSWORD = { 348, 220, 520, 60 };
@@ -75,7 +76,25 @@ static const MenuRect R_LEFT_RANGE = { 756, 148, 414, 58 };
 static const MenuRect R_RIGHT_DEAD = { 348, 218, 390, 58 };
 static const MenuRect R_RIGHT_RANGE = { 756, 218, 414, 58 };
 static const MenuRect R_INVERT_Y = { 348, 288, 390, 58 };
-static const MenuRect R_FACE_MAPPING = { 756, 288, 414, 58 };
+static const MenuRect R_MARKER_CORNER = { 348, 148, 390, 64 };
+static const MenuRect R_MARKER_COLOUR = { 756, 148, 414, 64 };
+static const MenuRect R_BIND_RESET = { 348, 532, 822, 50 };
+
+static const int BINDING_TARGETS[INPUT_BUTTON_COUNT] = {
+    PAD_A, PAD_B, PAD_X, PAD_Y,
+    PAD_LS, PAD_RS, PAD_LB, PAD_RB,
+    PAD_LT, PAD_RT, PAD_START, PAD_BACK,
+    PAD_LEFT, PAD_UP, PAD_RIGHT, PAD_DOWN
+};
+
+static const UiColour MARKER_COLOURS[MARKER_COLOUR_COUNT] = {
+    { 0xff, 0x00, 0xff, 0xff },
+    { 0x00, 0xf0, 0xff, 0xff },
+    { 0x6f, 0xff, 0x3f, 0xff },
+    { 0xff, 0xff, 0xff, 0xff },
+    { 0xff, 0x9f, 0x20, 0xff },
+    { 0xff, 0x30, 0x50, 0xff }
+};
 
 typedef struct {
     unsigned width;
@@ -95,6 +114,71 @@ static int hit(const MenuRect *r, int x, int y)
 {
     return x >= r->x && x < r->x + r->w &&
            y >= r->y && y < r->y + r->h;
+}
+
+static MenuRect marker_rect(const Settings *settings,
+                            int hit_area)
+{
+    const int size = hit_area ? 10 : 5;
+    const int corner = settings &&
+                       settings->marker_corner < MARKER_CORNER_COUNT
+        ? settings->marker_corner
+        : MARKER_TOP_RIGHT;
+
+    MenuRect r = { 0, 0, size, size };
+
+    if (corner == MARKER_TOP_RIGHT ||
+        corner == MARKER_BOTTOM_RIGHT) {
+        r.x = UI_WIDTH - size;
+    }
+
+    if (corner == MARKER_BOTTOM_LEFT ||
+        corner == MARKER_BOTTOM_RIGHT) {
+        r.y = UI_HEIGHT - size;
+    }
+
+    return r;
+}
+
+static UiColour marker_colour(const Settings *settings)
+{
+    const unsigned index = settings &&
+                           settings->marker_colour < MARKER_COLOUR_COUNT
+        ? settings->marker_colour
+        : MARKER_FUCHSIA;
+
+    return MARKER_COLOURS[index];
+}
+
+static const char *marker_corner_name(unsigned corner)
+{
+    static const char *const names[MARKER_CORNER_COUNT] = {
+        "Top left", "Top right", "Bottom left", "Bottom right"
+    };
+
+    return corner < MARKER_CORNER_COUNT ? names[corner] : names[MARKER_TOP_RIGHT];
+}
+
+static const char *marker_colour_name(unsigned colour)
+{
+    static const char *const names[MARKER_COLOUR_COUNT] = {
+        "Fuchsia", "Cyan", "Lime", "White", "Orange", "Red"
+    };
+
+    return colour < MARKER_COLOUR_COUNT ? names[colour] : names[MARKER_FUCHSIA];
+}
+
+static MenuRect binding_rect(unsigned index)
+{
+    const int column = index >= 8 ? 1 : 0;
+    const int row = index % 8;
+
+    return (MenuRect){
+        column ? 756 : 348,
+        142 + row * 47,
+        column ? 414 : 390,
+        40
+    };
 }
 
 static void box(MenuCanvas *canvas,
@@ -245,12 +329,20 @@ static void add_shell(MenuCanvas *canvas,
            menu->page == MENU_PAGE_CONTROLS
                ? UI_ACCENT : UI_PANEL,
            UI_TEXT);
+    button(canvas, R_BINDINGS, "Bindings",
+           menu->page == MENU_PAGE_BINDINGS
+               ? UI_ACCENT : UI_PANEL,
+           UI_TEXT);
+    button(canvas, R_INTERFACE, "Interface",
+           menu->page == MENU_PAGE_INTERFACE
+               ? UI_ACCENT : UI_PANEL,
+           UI_TEXT);
     button(canvas, R_CONSOLE, "Console",
            menu->page == MENU_PAGE_CONSOLE
                ? UI_ACCENT : UI_PANEL,
            UI_TEXT);
 
-    text_at(canvas, 100, 566, UI_SIZE_BODY, UI_DIM,
+    text_at(canvas, 100, 548, UI_SIZE_BODY, UI_DIM,
             "%s", view->streaming
                 ? "Touch the corner to close"
                 : "HOME opens the Wii U menu");
@@ -372,12 +464,87 @@ static void add_controls(MenuCanvas *canvas,
     field(canvas, R_INVERT_Y, "Invert stick Y",
           input->invert_y ? "On" : "Off",
           input->invert_y ? MENU_GREEN : UI_TEXT);
-    field(canvas, R_FACE_MAPPING, "Face buttons",
-          input->face_by_position ? "Xbox positions" : "Wii U letters",
-          UI_TEXT);
 
-    text_at(canvas, 348, 382, UI_SIZE_BODY, UI_DIM,
+    text_at(canvas, 348, 364, UI_SIZE_BODY, UI_DIM,
+            "All digital buttons can be changed in the Bindings tab");
+    text_at(canvas, 348, 400, UI_SIZE_BODY, UI_DIM,
             "ZL / ZR are digital on this SDL Wii U path; no fake threshold is shown");
+}
+
+static void add_bindings(MenuCanvas *canvas,
+                         const MenuState *menu,
+                         const MenuView *view)
+{
+    text_at(canvas, 348, 66, UI_SIZE_TITLE,
+            UI_TEXT, "Bindings");
+    text_at(canvas, 348, 108, UI_SIZE_BODY,
+            menu->binding_target_slot >= 0 ? MENU_GREEN : UI_DIM,
+            "%s",
+            menu->binding_target_slot >= 0
+                ? "Press the physical Wii U button for the highlighted output"
+                : "Tap an output, then press its physical Wii U button");
+
+    for (unsigned i = 0; i < INPUT_BUTTON_COUNT; ++i) {
+        const int slot = BINDING_TARGETS[i];
+        const int physical =
+            input_config_physical_for_slot(
+                &view->settings->input,
+                slot);
+
+        const MenuRect r = binding_rect(i);
+        const int selected =
+            menu->binding_target_slot == slot;
+
+        box(canvas, r,
+            selected ? UI_ACCENT : MENU_CARD,
+            selected ? MENU_GREEN : UI_DIM);
+
+        text_at(canvas, r.x + 14, r.y + 5,
+                UI_SIZE_BODY, UI_DIM,
+                "%s", input_pad_slot_name(slot));
+
+        text_at(canvas, r.x + 180, r.y + 5,
+                UI_SIZE_BODY, selected ? UI_TEXT : MENU_GREEN,
+                "%s", input_physical_button_name(physical));
+    }
+
+    button(canvas, R_BIND_RESET, "RESET XBOX-POSITION DEFAULTS",
+           UI_PANEL, UI_TEXT);
+
+    if (view->note && view->note[0]) {
+        text_at(canvas, 348, 594, UI_SIZE_BODY,
+                MENU_GREEN, "%s", view->note);
+    } else {
+        text_at(canvas, 348, 594, UI_SIZE_BODY,
+                UI_DIM, "Wii U HOME remains reserved for the local system menu");
+    }
+}
+
+static void add_interface(MenuCanvas *canvas,
+                          const MenuView *view)
+{
+    text_at(canvas, 348, 74, UI_SIZE_TITLE,
+            UI_TEXT, "Interface");
+    text_at(canvas, 348, 112, UI_SIZE_BODY,
+            UI_DIM, "Menu opener appearance and position");
+
+    field(canvas, R_MARKER_CORNER, "Corner",
+          marker_corner_name(view->settings->marker_corner), UI_TEXT);
+    field(canvas, R_MARKER_COLOUR, "Colour",
+          marker_colour_name(view->settings->marker_colour),
+          marker_colour(view->settings));
+
+    text_at(canvas, 348, 248, UI_SIZE_BODY, UI_DIM,
+            "Visible marker: 5 x 5 pixels at the exact screen edge");
+    text_at(canvas, 348, 284, UI_SIZE_BODY, UI_DIM,
+            "Touch target: invisible 10 x 10 pixels in the selected corner");
+
+    box(canvas, (MenuRect){ 348, 336, 822, 82 },
+        MENU_CARD, UI_PANEL);
+    text_at(canvas, 372, 352, UI_SIZE_BODY, UI_DIM,
+            "Preview");
+    box(canvas, (MenuRect){ 1100, 366, 5, 5 },
+        marker_colour(view->settings), marker_colour(view->settings));
 }
 
 static void add_console(MenuCanvas *canvas,
@@ -465,6 +632,7 @@ void menu_init(MenuState *menu)
     menu->resolution_index = 1;
     menu->fps_index = 1;
     menu->bitrate_index = 2;
+    menu->binding_target_slot = -1;
 }
 
 static void stream_values(const MenuState *menu,
@@ -574,16 +742,32 @@ int menu_is_open(const MenuState *menu)
     return menu && menu->open;
 }
 
+int menu_binding_target(const MenuState *menu)
+{
+    return menu ? menu->binding_target_slot : -1;
+}
+
+void menu_binding_finish(MenuState *menu)
+{
+    if (menu) {
+        menu->binding_target_slot = -1;
+    }
+}
+
 MenuAction menu_input(MenuState *menu,
                       const UiInput *input,
-                      int streaming)
+                      int streaming,
+                      const Settings *settings)
 {
     if (!menu || !input || !input->tapped) {
         return MENU_ACTION_NONE;
     }
 
+    const MenuRect marker_hit =
+        marker_rect(settings, 1);
+
     if (streaming &&
-        hit(&R_MARKER, input->touch_x, input->touch_y)) {
+        hit(&marker_hit, input->touch_x, input->touch_y)) {
         menu->open = !menu->open;
 
         return MENU_ACTION_NONE;
@@ -595,21 +779,37 @@ MenuAction menu_input(MenuState *menu,
 
     if (hit(&R_CONNECTION, input->touch_x, input->touch_y)) {
         menu->page = MENU_PAGE_CONNECTION;
+        menu->binding_target_slot = -1;
         return MENU_ACTION_NONE;
     }
 
     if (hit(&R_STREAM, input->touch_x, input->touch_y)) {
         menu->page = MENU_PAGE_STREAM;
+        menu->binding_target_slot = -1;
         return MENU_ACTION_NONE;
     }
 
     if (hit(&R_CONTROLS, input->touch_x, input->touch_y)) {
         menu->page = MENU_PAGE_CONTROLS;
+        menu->binding_target_slot = -1;
+        return MENU_ACTION_NONE;
+    }
+
+    if (hit(&R_BINDINGS, input->touch_x, input->touch_y)) {
+        menu->page = MENU_PAGE_BINDINGS;
+        menu->binding_target_slot = -1;
+        return MENU_ACTION_NONE;
+    }
+
+    if (hit(&R_INTERFACE, input->touch_x, input->touch_y)) {
+        menu->page = MENU_PAGE_INTERFACE;
+        menu->binding_target_slot = -1;
         return MENU_ACTION_NONE;
     }
 
     if (hit(&R_CONSOLE, input->touch_x, input->touch_y)) {
         menu->page = MENU_PAGE_CONSOLE;
+        menu->binding_target_slot = -1;
         return MENU_ACTION_NONE;
     }
 
@@ -646,9 +846,24 @@ MenuAction menu_input(MenuState *menu,
             return MENU_ACTION_RIGHT_RANGE;
         if (hit(&R_INVERT_Y, input->touch_x, input->touch_y))
             return MENU_ACTION_INVERT_Y;
-        if (hit(&R_FACE_MAPPING, input->touch_x, input->touch_y))
-            return MENU_ACTION_FACE_MAPPING;
-    } else {
+    } else if (menu->page == MENU_PAGE_BINDINGS) {
+        for (unsigned i = 0; i < INPUT_BUTTON_COUNT; ++i) {
+            const MenuRect r = binding_rect(i);
+
+            if (hit(&r, input->touch_x, input->touch_y)) {
+                menu->binding_target_slot = BINDING_TARGETS[i];
+                return MENU_ACTION_BIND_SELECT;
+            }
+        }
+
+        if (hit(&R_BIND_RESET, input->touch_x, input->touch_y))
+            return MENU_ACTION_BIND_RESET;
+    } else if (menu->page == MENU_PAGE_INTERFACE) {
+        if (hit(&R_MARKER_CORNER, input->touch_x, input->touch_y))
+            return MENU_ACTION_MARKER_CORNER;
+        if (hit(&R_MARKER_COLOUR, input->touch_x, input->touch_y))
+            return MENU_ACTION_MARKER_COLOUR;
+    } else if (menu->page == MENU_PAGE_CONSOLE) {
         if (hit(&R_WAKE, input->touch_x, input->touch_y))
             return MENU_ACTION_WAKE;
         if (hit(&R_REMOTE_HOME, input->touch_x, input->touch_y))
@@ -672,9 +887,12 @@ void menu_draw(const MenuState *menu,
     }
 
     if (view->streaming && !menu->open) {
-        ui_box(R_MARKER.x, R_MARKER.y,
-               R_MARKER.w, R_MARKER.h,
-               UI_PANEL, UI_DIM);
+        const MenuRect marker =
+            marker_rect(view->settings, 0);
+
+        ui_fill(marker.x, marker.y,
+                marker.w, marker.h,
+                marker_colour(view->settings));
         ui_flush();
         return;
     }
@@ -690,17 +908,27 @@ void menu_draw(const MenuState *menu,
         add_stream(&canvas, menu, view);
     } else if (menu->page == MENU_PAGE_CONTROLS) {
         add_controls(&canvas, view);
+    } else if (menu->page == MENU_PAGE_BINDINGS) {
+        add_bindings(&canvas, menu, view);
+    } else if (menu->page == MENU_PAGE_INTERFACE) {
+        add_interface(&canvas, view);
     } else {
         add_console(&canvas, view);
     }
 
-    add_diagnostics(&canvas, view);
+    if (menu->page != MENU_PAGE_BINDINGS &&
+        menu->page != MENU_PAGE_INTERFACE) {
+        add_diagnostics(&canvas, view);
+    }
     render_canvas(&canvas);
 
     if (view->streaming) {
-        ui_box(R_MARKER.x, R_MARKER.y,
-               R_MARKER.w, R_MARKER.h,
-               UI_ACCENT, UI_DIM);
+        const MenuRect marker =
+            marker_rect(view->settings, 0);
+
+        ui_fill(marker.x, marker.y,
+                marker.w, marker.h,
+                marker_colour(view->settings));
         ui_flush();
     }
 }

@@ -23,12 +23,16 @@ and its two stick clicks are suppressed from remote input.
 
 The touch menu is implemented in `src/menu.c/.h`: layout, hit testing and
 layered drawing live outside the application loop. Its Connection, Stream,
-Controls and Console pages use settings the Wii U path can actually apply.
+Controls, Bindings, Interface and Console pages use settings the Wii U path
+can actually apply.
 
 Stream exposes the safe 480p/720p profiles, 30/60 fps and bitrate. Controls
-exposes per-stick deadzone/range, Y inversion and face-button mapping. ZL/ZR
-remain digital. Display switches between TV + GamePad and GamePad only using
-SDL's Wii U scan-target flag; the choice is saved on SD.
+exposes per-stick deadzone/range and Y inversion. Bindings remaps all 16
+digital buttons, swaps duplicates and restores Xbox-position defaults.
+Interface places the 5x5 fuchsia menu marker in any corner and selects its
+colour; its touch target is 10x10. These choices are saved on SD. ZL/ZR remain
+digital. Display switches between TV + GamePad and GamePad only using SDL's
+Wii U scan-target flag.
 
 Profile messages are routed by the dedicated Wii U stream slot on the host.
 Live 480p/720p and 30/60 fps changes renegotiate after `videorate/videoscale`

@@ -17,9 +17,17 @@ static const Settings DEFAULTS = {
         .deadzone = { 3, 3 },
         .range = { 100, 100 },
         .invert_y = 0,
-        .face_by_position = 1
+        .face_by_position = 1,
+        .button_map = {
+            PAD_B, PAD_A, PAD_Y, PAD_X,
+            PAD_LS, PAD_RS, PAD_LB, PAD_RB,
+            PAD_LT, PAD_RT, PAD_START, PAD_BACK,
+            PAD_LEFT, PAD_UP, PAD_RIGHT, PAD_DOWN
+        }
     },
     .output_mode = OUTPUT_TV_AND_GAMEPAD,
+    .marker_corner = MARKER_TOP_RIGHT,
+    .marker_colour = MARKER_FUCHSIA,
     .token = ""
 };
 
@@ -67,6 +75,7 @@ void settings_load(Settings *out)
     }
 
     char line[192];
+    uint32_t button_map_seen = 0;
 
     while (fgets(
                line,
@@ -76,6 +85,7 @@ void settings_load(Settings *out)
         unsigned a, b, c, d;
         unsigned port;
         unsigned value;
+        unsigned button;
 
         if (sscanf(
                 line,
@@ -128,6 +138,21 @@ void settings_load(Settings *out)
                 value < OUTPUT_MODE_COUNT
                     ? (uint8_t)value
                     : OUTPUT_TV_AND_GAMEPAD;
+        } else if (sscanf(line, " marker_corner = %u", &value) == 1) {
+            out->marker_corner =
+                value < MARKER_CORNER_COUNT
+                    ? (uint8_t)value
+                    : MARKER_TOP_RIGHT;
+        } else if (sscanf(line, " marker_colour = %u", &value) == 1) {
+            out->marker_colour =
+                value < MARKER_COLOUR_COUNT
+                    ? (uint8_t)value
+                    : MARKER_FUCHSIA;
+        } else if (sscanf(line, " button_%u = %u", &button, &value) == 2 &&
+                   button < INPUT_BUTTON_COUNT &&
+                   value < PAD_SLOT_COUNT) {
+            out->input.button_map[button] = (uint8_t)value;
+            button_map_seen |= 1u << button;
         } else {
             char token[
                 C2S_MAX_TOKEN_LEN + 1];
@@ -147,6 +172,21 @@ void settings_load(Settings *out)
     }
 
     fclose(f);
+
+    if (button_map_seen == 0 &&
+        !out->input.face_by_position) {
+
+        out->input.button_map[0] = PAD_A;
+        out->input.button_map[1] = PAD_B;
+        out->input.button_map[2] = PAD_X;
+        out->input.button_map[3] = PAD_Y;
+    } else if (button_map_seen !=
+               ((1u << INPUT_BUTTON_COUNT) - 1u)) {
+
+        input_config_reset_bindings(&out->input);
+    }
+
+    input_config_sanitize(&out->input);
 }
 
 
@@ -195,6 +235,8 @@ int settings_save(const Settings *s,
         "invert_y = %u\n"
         "face_by_position = %u\n"
         "output_mode = %u\n"
+        "marker_corner = %u\n"
+        "marker_colour = %u\n"
         "token = %s\n",
         s->host[0],
         s->host[1],
@@ -209,7 +251,20 @@ int settings_save(const Settings *s,
         s->input.invert_y,
         s->input.face_by_position,
         s->output_mode,
+        s->marker_corner,
+        s->marker_colour,
         s->token);
+
+    for (unsigned i = 0;
+         i < INPUT_BUTTON_COUNT;
+         ++i) {
+
+        fprintf(
+            f,
+            "button_%u = %u\n",
+            i,
+            s->input.button_map[i]);
+    }
 
     fclose(f);
 

@@ -8,6 +8,8 @@ typedef enum {
     MENU_PAGE_CONNECTION,
     MENU_PAGE_STREAM,
     MENU_PAGE_CONTROLS,
+    MENU_PAGE_BINDINGS,
+    MENU_PAGE_INTERFACE,
     MENU_PAGE_CONSOLE
 } MenuPage;
 
@@ -27,7 +29,10 @@ typedef enum {
     MENU_ACTION_RIGHT_DEADZONE,
     MENU_ACTION_RIGHT_RANGE,
     MENU_ACTION_INVERT_Y,
-    MENU_ACTION_FACE_MAPPING,
+    MENU_ACTION_BIND_SELECT,
+    MENU_ACTION_BIND_RESET,
+    MENU_ACTION_MARKER_CORNER,
+    MENU_ACTION_MARKER_COLOUR,
     MENU_ACTION_REMOTE_HOME,
     MENU_ACTION_WAKE,
     MENU_ACTION_RESET_DONGLE,
@@ -52,6 +57,7 @@ typedef struct {
     unsigned fps_index;
     unsigned bitrate_index;
     int profile_dirty;
+    int binding_target_slot;
 } MenuState;
 
 typedef struct {
@@ -71,7 +77,8 @@ int menu_is_open(const MenuState *menu);
 /* Handles one released touch and returns the requested application action. */
 MenuAction menu_input(MenuState *menu,
                       const UiInput *input,
-                      int streaming);
+                      int streaming,
+                      const Settings *settings);
 
 /* Draws either the menu or its small persistent corner marker. */
 void menu_draw(const MenuState *menu,
@@ -95,5 +102,8 @@ int menu_take_profile_dirty(MenuState *menu,
                             unsigned *height,
                             unsigned *fps,
                             unsigned *bitrate_kbps);
+
+int  menu_binding_target(const MenuState *menu);
+void menu_binding_finish(MenuState *menu);
 
 #endif
