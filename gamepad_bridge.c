@@ -69,6 +69,18 @@ typedef const GamepadOutputBackend *(*BackendFactory)(void);
 typedef struct {
     const char *name;
     const char *label;
+
+    /*
+     * Maintenance is deliberately backend-specific.
+     *
+     * "Reset backend" means nothing useful to a person: a Titan needs
+     * USB re-enumeration, a BLE implementation will need a BLE-specific
+     * recovery operation, and a JOCP/Pico backend may need something
+     * different again.
+     */
+    const char *maintenance_label;
+    const char *maintenance_help;
+
     BackendFactory factory;
 } BackendEntry;
 
@@ -83,16 +95,24 @@ static const BackendEntry BACKENDS[] = {
     {
         "titan",
         "Titan / ConsoleTuner USB",
+        "re-enumerate Titan adapter",
+        "Drops and reopens the Titan USB connection so it handshakes with "
+        "the console again. This is the software equivalent of the "
+        "unplug/replug recovery used by this backend.",
         output_titan_backend,
     },
     {
         "pcble2joycon2",
         "Joy-Con 2 Bluetooth (pcble2joycon2)",
         NULL,
+        NULL,
+        NULL,
     },
     {
         "jocp",
         "JOCP / Pico 2 W",
+        NULL,
+        NULL,
         NULL,
     },
 };
@@ -118,6 +138,22 @@ const char *gamepad_bridge_backend_label(int index)
     return (index >= 0 && index < BACKEND_COUNT)
         ? BACKENDS[index].label
         : "Unknown backend";
+}
+
+const char *gamepad_bridge_backend_maintenance_label(int index)
+{
+    return (index >= 0 && index < BACKEND_COUNT &&
+            BACKENDS[index].maintenance_label)
+        ? BACKENDS[index].maintenance_label
+        : "";
+}
+
+const char *gamepad_bridge_backend_maintenance_help(int index)
+{
+    return (index >= 0 && index < BACKEND_COUNT &&
+            BACKENDS[index].maintenance_help)
+        ? BACKENDS[index].maintenance_help
+        : "";
 }
 
 int gamepad_bridge_backend_available(int index)

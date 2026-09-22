@@ -39,7 +39,7 @@ typedef enum {
 typedef enum {
     GTK_SHELL_ACTION_SHOW_CAPTURE,
     GTK_SHELL_ACTION_WAKE_CONSOLE,
-    GTK_SHELL_ACTION_RESET_DONGLE,
+    GTK_SHELL_ACTION_RECOVER_OUTPUT,
     GTK_SHELL_ACTION_RESTART,
     /* The GamePad bridge, started and stopped by hand. It normally
      * starts itself with the host and waits for a pad, but a thing that

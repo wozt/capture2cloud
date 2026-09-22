@@ -77,6 +77,12 @@ const char *gamepad_bridge_backend_label(int i) {
     };
     return (i >= 0 && i < 3) ? L[i] : "?";
 }
+const char *gamepad_bridge_backend_maintenance_label(int i) {
+    return i == 0 ? "re-enumerate Titan adapter" : "";
+}
+const char *gamepad_bridge_backend_maintenance_help(int i) {
+    return i == 0 ? "test recovery help" : "";
+}
 int gamepad_bridge_backend_available(int i) { return i == 0; }
 int gamepad_bridge_backend_from_name(const char *name) {
     return name && strcmp(name, "titan") == 0 ? 0 : -1;
@@ -112,12 +118,22 @@ int main(void) {
         gtk_shell_set_client_status(sh, i, "2 connected — 1280x720@60, 8000 kbps");
     }
     gtk_shell_set_wiiu_status(sh, "waiting for a pad");
+    gtk_shell_set_status(
+        sh,
+        "running — capture online — browser server listening — native server listening");
 
     /* And every control, from settings, which is what load_controls
      * walks: a control that was never created shows up here. */
     gtk_shell_update(sh, &s);
     gtk_shell_debug_show_settings(sh);
     sleep(2);
+
+    t_ok(
+        "overview receives the live server status",
+        g_c.overview_status &&
+        strcmp(
+            gtk_label_get_text(GTK_LABEL(g_c.overview_status)),
+            "starting...") != 0);
 
     /* A second pass with different values, because a combo box with no
      * matching row and a scale outside its range both warn. */
