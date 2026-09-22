@@ -413,6 +413,9 @@ static void add_console(MenuCanvas *canvas,
                     ? "Remote commands ready"
                     : "Connect and authenticate to enable these commands");
     }
+
+    text_at(canvas, 348, 450, UI_SIZE_BODY, UI_DIM,
+            "L3 + R3 sends remote HOME without opening the Wii U HOME menu");
 }
 
 static void add_diagnostics(MenuCanvas *canvas,
