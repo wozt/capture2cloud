@@ -78,7 +78,7 @@ software surface.
 ## The menu
 
 The same idea as the GamePad client's: it lives on the pad's screen,
-opens from a **small corner marker**, and everything in it is something
+opens from a **5x5 corner marker** with a 10x10 touch target, and everything in it is something
 you only notice while playing.
 
 In **TV mode** the menu is on the GamePad and can simply stay open — the
@@ -133,8 +133,9 @@ it a setting so it can be flipped without a rebuild.
 and the adapter pretends to be an Xbox 360, whose four letters sit in
 different places: Nintendo's A is on the right where Xbox's B is, and
 Nintendo's X is on top where Xbox's Y is. Map by **position**, not by
-letter, or every on-screen prompt lands on the wrong button. Also a
-setting.
+letter, or every on-screen prompt lands on the wrong button. Xbox position
+is the default; the Bindings page can remap all 16 digital buttons and saves
+the permutation on SD.
 
 ---
 

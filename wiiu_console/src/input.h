@@ -14,6 +14,7 @@
  *   sticks:          -100 .. +100
  */
 #define PAD_SLOT_COUNT C2S_PAD_SLOTS
+#define INPUT_BUTTON_COUNT 16
 
 enum {
     PAD_GUIDE = 0,
@@ -45,7 +46,8 @@ typedef struct {
     uint8_t deadzone[2];       /* percent, left/right */
     uint8_t range[2];          /* percent that counts as fully pushed */
     uint8_t invert_y;
-    uint8_t face_by_position;  /* Xbox positions instead of Wii U letters */
+    uint8_t face_by_position;  /* legacy config migration only */
+    uint8_t button_map[INPUT_BUTTON_COUNT]; /* physical index -> PAD_* */
 } InputConfig;
 
 /*
@@ -78,5 +80,19 @@ void input_snapshot(PadState21 out);
 
 void input_set_config(const InputConfig *config);
 void input_get_config(InputConfig *config);
+
+/* Full digital-button binding support. The default uses Xbox positions
+ * for A/B/X/Y. Binding swaps the displaced physical button so the map
+ * always remains a permutation with no duplicate output. */
+void input_config_reset_bindings(InputConfig *config);
+void input_config_sanitize(InputConfig *config);
+void input_config_bind(InputConfig *config, int physical_button, int pad_slot);
+int  input_config_physical_for_slot(const InputConfig *config, int pad_slot);
+const char *input_physical_button_name(int physical_button);
+const char *input_pad_slot_name(int pad_slot);
+
+/* Rising edge from the raw Wii U buttons, independent of their mapping. */
+int  input_take_physical_button(void);
+void input_clear_physical_buttons(void);
 
 #endif

@@ -130,7 +130,8 @@ keep up at 1080p60 grows a queue that never drains.
 - Wii U GamePad input is forwarded to the host using the common
   21-slot controller format.
 - Face buttons are mapped by physical position rather than Nintendo
-  letters.
+  letters by default. The Bindings page remaps all 16 digital buttons,
+  swaps conflicts and persists the resulting permutation on SD.
 - Opening the local menu neutralises remote input.
 - The menu has **REMOTE HOME**, sent as `C2S_MSG_HOME`.
 - **L3 + R3** sends remote HOME directly. Physical HOME still belongs to
@@ -141,8 +142,11 @@ keep up at 1080p60 grows a queue that never drains.
   stored on SD.
 - A token gives `CONTROL`; otherwise the connection remains a viewer and
   input is rejected server-side.
-- The touch menu has separate Connection and Console pages. Console
-  exposes HOME, wake, adapter reset and host restart with CONTROL gating.
+- The touch menu has Connection, Stream, Controls, Bindings, Interface and
+  Console pages. Console exposes HOME, wake, adapter reset and host restart
+  with CONTROL gating.
+- Its opener is a configurable 5x5 coloured pixel marker at one of the four
+  corners, backed by an invisible 10x10 touch target.
 - Wii U menu drawing uses a reusable `menu.c/.h` component. Backgrounds
   and text are flushed as separate layers after GX2 video. Stream and
   controller pages apply their settings immediately.

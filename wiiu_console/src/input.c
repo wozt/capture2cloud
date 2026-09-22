@@ -40,6 +40,25 @@ enum {
     WIIU_BTN_DOWN
 };
 
+static const uint8_t DEFAULT_BUTTON_MAP[INPUT_BUTTON_COUNT] = {
+    PAD_B, PAD_A, PAD_Y, PAD_X,
+    PAD_LS, PAD_RS, PAD_LB, PAD_RB,
+    PAD_LT, PAD_RT, PAD_START, PAD_BACK,
+    PAD_LEFT, PAD_UP, PAD_RIGHT, PAD_DOWN
+};
+
+static const uint8_t BINDABLE_PAD_SLOTS[INPUT_BUTTON_COUNT] = {
+    PAD_A, PAD_B, PAD_X, PAD_Y,
+    PAD_LS, PAD_RS, PAD_LB, PAD_RB,
+    PAD_LT, PAD_RT, PAD_START, PAD_BACK,
+    PAD_LEFT, PAD_UP, PAD_RIGHT, PAD_DOWN
+};
+
+static const char *const PHYSICAL_BUTTON_NAMES[INPUT_BUTTON_COUNT] = {
+    "A", "B", "X", "Y", "L3", "R3", "L", "R",
+    "ZL", "ZR", "+", "-", "D-Left", "D-Up", "D-Right", "D-Down"
+};
+
 #define INPUT_KEEPALIVE_MS 100
 
 /*
@@ -53,7 +72,13 @@ static InputConfig g_config = {
     .deadzone = { 3, 3 },
     .range = { 100, 100 },
     .invert_y = 0,
-    .face_by_position = 1
+    .face_by_position = 1,
+    .button_map = {
+        PAD_B, PAD_A, PAD_Y, PAD_X,
+        PAD_LS, PAD_RS, PAD_LB, PAD_RB,
+        PAD_LT, PAD_RT, PAD_START, PAD_BACK,
+        PAD_LEFT, PAD_UP, PAD_RIGHT, PAD_DOWN
+    }
 };
 
 static PadState21 g_state;
@@ -61,6 +86,182 @@ static PadState21 g_last_sent;
 
 static uint32_t g_last_send_ms;
 static int g_remote_home_chord_held;
+static uint32_t g_physical_mask;
+static uint32_t g_physical_pressed;
+
+
+static int bindable_slot(int slot)
+{
+    for (int i = 0; i < INPUT_BUTTON_COUNT; ++i) {
+        if (BINDABLE_PAD_SLOTS[i] == slot) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+
+void input_config_reset_bindings(InputConfig *config)
+{
+    if (!config) {
+        return;
+    }
+
+    memcpy(
+        config->button_map,
+        DEFAULT_BUTTON_MAP,
+        sizeof(config->button_map));
+
+    config->face_by_position = 1;
+}
+
+
+void input_config_sanitize(InputConfig *config)
+{
+    if (!config) {
+        return;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        if (config->deadzone[i] > 40)
+            config->deadzone[i] = 40;
+        if (config->range[i] < 45)
+            config->range[i] = 45;
+        if (config->range[i] > 100)
+            config->range[i] = 100;
+        if (config->range[i] <= config->deadzone[i])
+            config->range[i] = config->deadzone[i] + 1;
+    }
+
+    config->invert_y = !!config->invert_y;
+    config->face_by_position = !!config->face_by_position;
+
+    uint32_t seen = 0;
+
+    for (int i = 0; i < INPUT_BUTTON_COUNT; ++i) {
+        const int slot = config->button_map[i];
+
+        if (!bindable_slot(slot) ||
+            (seen & (1u << slot)) != 0) {
+
+            input_config_reset_bindings(config);
+            return;
+        }
+
+        seen |= 1u << slot;
+    }
+}
+
+
+int input_config_physical_for_slot(const InputConfig *config,
+                                   int pad_slot)
+{
+    if (!config) {
+        return -1;
+    }
+
+    for (int i = 0; i < INPUT_BUTTON_COUNT; ++i) {
+        if (config->button_map[i] == pad_slot) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+
+void input_config_bind(InputConfig *config,
+                       int physical_button,
+                       int pad_slot)
+{
+    if (!config ||
+        physical_button < 0 ||
+        physical_button >= INPUT_BUTTON_COUNT ||
+        !bindable_slot(pad_slot)) {
+
+        return;
+    }
+
+    input_config_sanitize(config);
+
+    const int displaced =
+        input_config_physical_for_slot(
+            config,
+            pad_slot);
+
+    const uint8_t old_slot =
+        config->button_map[physical_button];
+
+    config->button_map[physical_button] =
+        (uint8_t)pad_slot;
+
+    if (displaced >= 0 &&
+        displaced != physical_button) {
+
+        config->button_map[displaced] =
+            old_slot;
+    }
+
+    config->face_by_position = 0;
+}
+
+
+const char *input_physical_button_name(int physical_button)
+{
+    if (physical_button < 0 ||
+        physical_button >= INPUT_BUTTON_COUNT) {
+
+        return "?";
+    }
+
+    return PHYSICAL_BUTTON_NAMES[physical_button];
+}
+
+
+const char *input_pad_slot_name(int pad_slot)
+{
+    switch (pad_slot) {
+    case PAD_A: return "A";
+    case PAD_B: return "B";
+    case PAD_X: return "X";
+    case PAD_Y: return "Y";
+    case PAD_LS: return "L3";
+    case PAD_RS: return "R3";
+    case PAD_LB: return "L";
+    case PAD_RB: return "R";
+    case PAD_LT: return "ZL";
+    case PAD_RT: return "ZR";
+    case PAD_START: return "+";
+    case PAD_BACK: return "-";
+    case PAD_LEFT: return "D-Left";
+    case PAD_UP: return "D-Up";
+    case PAD_RIGHT: return "D-Right";
+    case PAD_DOWN: return "D-Down";
+    default: return "?";
+    }
+}
+
+
+int input_take_physical_button(void)
+{
+    for (int i = 0; i < INPUT_BUTTON_COUNT; ++i) {
+        const uint32_t bit = 1u << i;
+
+        if ((g_physical_pressed & bit) != 0) {
+            g_physical_pressed &= ~bit;
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+
+void input_clear_physical_buttons(void)
+{
+    g_physical_pressed = 0;
+}
 
 
 /*
@@ -124,7 +325,7 @@ static int pressed(int index)
 }
 
 
-static void sample_pad(PadState21 out)
+static uint32_t sample_pad(PadState21 out)
 {
     memset(
         out,
@@ -133,75 +334,29 @@ static void sample_pad(PadState21 out)
 
     if (!g_pad ||
         !SDL_JoystickGetAttached(g_pad)) {
-        return;
+        return 0;
     }
 
-    /*
-     * FACE BUTTONS BY POSITION, not by Nintendo letter.
-     *
-     * Wii U:                 Xbox-style wire:
-     *
-     *        X                       Y
-     *     Y     A                 X     B
-     *        B                       A
-     *
-     * Therefore:
-     *
-     * physical B (bottom) -> PAD_A
-     * physical A (right)  -> PAD_B
-     * physical Y (left)   -> PAD_X
-     * physical X (top)    -> PAD_Y
-     */
-    if (g_config.face_by_position) {
-        out[PAD_A] = pressed(WIIU_BTN_B);
-        out[PAD_B] = pressed(WIIU_BTN_A);
-        out[PAD_X] = pressed(WIIU_BTN_Y);
-        out[PAD_Y] = pressed(WIIU_BTN_X);
-    } else {
-        out[PAD_A] = pressed(WIIU_BTN_A);
-        out[PAD_B] = pressed(WIIU_BTN_B);
-        out[PAD_X] = pressed(WIIU_BTN_X);
-        out[PAD_Y] = pressed(WIIU_BTN_Y);
+    uint32_t physical_mask = 0;
+
+    for (int physical = 0;
+         physical < INPUT_BUTTON_COUNT;
+         ++physical) {
+
+        if (!pressed(physical)) {
+            continue;
+        }
+
+        physical_mask |=
+            1u << physical;
+
+        const int slot =
+            g_config.button_map[physical];
+
+        if (slot >= 0 && slot < PAD_SLOT_COUNT) {
+            out[slot] = 100;
+        }
     }
-
-
-    out[PAD_LB] =
-        pressed(WIIU_BTN_L);
-
-    out[PAD_RB] =
-        pressed(WIIU_BTN_R);
-
-    out[PAD_LT] =
-        pressed(WIIU_BTN_ZL);
-
-    out[PAD_RT] =
-        pressed(WIIU_BTN_ZR);
-
-    out[PAD_LS] =
-        pressed(WIIU_BTN_L3);
-
-    out[PAD_RS] =
-        pressed(WIIU_BTN_R3);
-
-
-    out[PAD_START] =
-        pressed(WIIU_BTN_PLUS);
-
-    out[PAD_BACK] =
-        pressed(WIIU_BTN_MINUS);
-
-
-    out[PAD_LEFT] =
-        pressed(WIIU_BTN_LEFT);
-
-    out[PAD_UP] =
-        pressed(WIIU_BTN_UP);
-
-    out[PAD_RIGHT] =
-        pressed(WIIU_BTN_RIGHT);
-
-    out[PAD_DOWN] =
-        pressed(WIIU_BTN_DOWN);
 
 
     /*
@@ -247,12 +402,7 @@ static void sample_pad(PadState21 out)
                 3),
             1);
 
-    /*
-     * PAD_GUIDE remains zero.
-     *
-     * HOME belongs to ProcUI on the Wii U and opens the local system
-     * overlay. Remote HOME can later be exposed as a menu action/combo.
-     */
+    return physical_mask;
 }
 
 
@@ -342,6 +492,8 @@ int input_init(char *why,
 
     g_last_send_ms = 0;
     g_remote_home_chord_held = 0;
+    g_physical_mask = 0;
+    g_physical_pressed = 0;
 
     WHBLogPrintf(
         "input: Wii U GamePad ready, axes=%d buttons=%d",
@@ -371,6 +523,8 @@ void input_exit(void)
 
     g_last_send_ms = 0;
     g_remote_home_chord_held = 0;
+    g_physical_mask = 0;
+    g_physical_pressed = 0;
 }
 
 
@@ -401,20 +555,7 @@ void input_set_config(const InputConfig *config)
     }
 
     g_config = *config;
-
-    for (int i = 0; i < 2; ++i) {
-        if (g_config.deadzone[i] > 40)
-            g_config.deadzone[i] = 40;
-        if (g_config.range[i] < 45)
-            g_config.range[i] = 45;
-        if (g_config.range[i] > 100)
-            g_config.range[i] = 100;
-        if (g_config.range[i] <= g_config.deadzone[i])
-            g_config.range[i] = g_config.deadzone[i] + 1;
-    }
-
-    g_config.invert_y = !!g_config.invert_y;
-    g_config.face_by_position = !!g_config.face_by_position;
+    input_config_sanitize(&g_config);
 }
 
 void input_get_config(InputConfig *config)
@@ -430,7 +571,15 @@ void input_update(int forward)
     PadState21 physical;
     PadState21 wanted;
 
-    sample_pad(physical);
+    const uint32_t physical_mask =
+        sample_pad(physical);
+
+    g_physical_pressed |=
+        physical_mask &
+        ~g_physical_mask;
+
+    g_physical_mask =
+        physical_mask;
 
     memcpy(
         g_state,
@@ -442,8 +591,10 @@ void input_update(int forward)
      * capture stays visible. Latch it so one hold sends one HOME, and do
      * not leak the two stick clicks into the remote game as well. */
     const int remote_home_chord =
-        physical[PAD_LS] != 0 &&
-        physical[PAD_RS] != 0;
+        (physical_mask &
+         (1u << WIIU_BTN_L3)) != 0 &&
+        (physical_mask &
+         (1u << WIIU_BTN_R3)) != 0;
 
     if (forward &&
         remote_home_chord &&
@@ -457,8 +608,8 @@ void input_update(int forward)
         remote_home_chord;
 
     if (remote_home_chord) {
-        physical[PAD_LS] = 0;
-        physical[PAD_RS] = 0;
+        physical[g_config.button_map[WIIU_BTN_L3]] = 0;
+        physical[g_config.button_map[WIIU_BTN_R3]] = 0;
     }
 
     if (forward) {

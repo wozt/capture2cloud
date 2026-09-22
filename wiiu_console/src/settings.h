@@ -12,6 +12,24 @@ enum {
     OUTPUT_MODE_COUNT = 2
 };
 
+enum {
+    MARKER_TOP_LEFT = 0,
+    MARKER_TOP_RIGHT,
+    MARKER_BOTTOM_LEFT,
+    MARKER_BOTTOM_RIGHT,
+    MARKER_CORNER_COUNT
+};
+
+enum {
+    MARKER_FUCHSIA = 0,
+    MARKER_CYAN,
+    MARKER_LIME,
+    MARKER_WHITE,
+    MARKER_ORANGE,
+    MARKER_RED,
+    MARKER_COLOUR_COUNT
+};
+
 /*
  * Persistent Wii U client settings.
  *
@@ -27,6 +45,8 @@ typedef struct {
     InputConfig input;
 
     uint8_t output_mode; /* TV + GamePad, or GamePad only */
+    uint8_t marker_corner;
+    uint8_t marker_colour;
 
     char token[C2S_MAX_TOKEN_LEN + 1];
 } Settings;
