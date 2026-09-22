@@ -30,6 +30,15 @@ double gamepad_bridge_report_rate(void);
 
 const char *gamepad_bridge_backend_name(void);
 
+/* Output-backend registry. Planned backends stay visible to the UI
+ * but report unavailable until an implementation is registered. */
+int gamepad_bridge_backend_count(void);
+const char *gamepad_bridge_backend_name_at(int index);
+const char *gamepad_bridge_backend_label(int index);
+int gamepad_bridge_backend_available(int index);
+int gamepad_bridge_backend_from_name(const char *name);
+int gamepad_bridge_backend_configured_index(void);
+
 void gamepad_bridge_shutdown(void);
 
 /*

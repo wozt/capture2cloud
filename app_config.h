@@ -97,4 +97,9 @@ long config_get_int(const char *key, long fallback, long min_value, long max_val
  * lose them. Returns 0 on success. */
 int config_set_int(const char *key, long value);
 
+/* Writes a simple unquoted string token back to the .env.
+ * Accepted values contain only letters, digits, '.', '_', '-' or '/'.
+ * This deliberately does not try to become a general shell quoting API. */
+int config_set_str(const char *key, const char *value);
+
 #endif

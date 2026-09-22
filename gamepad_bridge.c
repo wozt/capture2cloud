@@ -64,19 +64,87 @@ static void recombine(int8_t merged[CONTROLLER_STATE_COUNT])
     }
 }
 
-static const GamepadOutputBackend *find_backend(const char *name)
-{
-    const GamepadOutputBackend *backends[] = {
-        output_titan_backend(),
-    };
+typedef const GamepadOutputBackend *(*BackendFactory)(void);
 
-    for (size_t i = 0; i < sizeof(backends) / sizeof(backends[0]); i++) {
-        if (backends[i] && strcasecmp(backends[i]->name, name) == 0) {
-            return backends[i];
+typedef struct {
+    const char *name;
+    const char *label;
+    BackendFactory factory;
+} BackendEntry;
+
+/*
+ * The UI is built from this registry.
+ *
+ * A planned backend therefore exists as a visible but unavailable row.
+ * Adding its implementation later only means registering its factory
+ * here; the GTK application does not need another special case.
+ */
+static const BackendEntry BACKENDS[] = {
+    {
+        "titan",
+        "Titan / ConsoleTuner USB",
+        output_titan_backend,
+    },
+    {
+        "pcble2joycon2",
+        "Joy-Con 2 Bluetooth (pcble2joycon2)",
+        NULL,
+    },
+    {
+        "jocp",
+        "JOCP / Pico 2 W",
+        NULL,
+    },
+};
+
+#define BACKEND_COUNT ((int)(sizeof(BACKENDS) / sizeof(BACKENDS[0])))
+
+static int g_configured_backend = -1;
+
+int gamepad_bridge_backend_count(void)
+{
+    return BACKEND_COUNT;
+}
+
+const char *gamepad_bridge_backend_name_at(int index)
+{
+    return (index >= 0 && index < BACKEND_COUNT)
+        ? BACKENDS[index].name
+        : "";
+}
+
+const char *gamepad_bridge_backend_label(int index)
+{
+    return (index >= 0 && index < BACKEND_COUNT)
+        ? BACKENDS[index].label
+        : "Unknown backend";
+}
+
+int gamepad_bridge_backend_available(int index)
+{
+    return index >= 0 &&
+           index < BACKEND_COUNT &&
+           BACKENDS[index].factory != NULL;
+}
+
+int gamepad_bridge_backend_from_name(const char *name)
+{
+    if (!name || !*name) {
+        return -1;
+    }
+
+    for (int i = 0; i < BACKEND_COUNT; i++) {
+        if (strcasecmp(BACKENDS[i].name, name) == 0) {
+            return i;
         }
     }
 
-    return NULL;
+    return -1;
+}
+
+int gamepad_bridge_backend_configured_index(void)
+{
+    return g_configured_backend;
 }
 
 int gamepad_bridge_init(void)
@@ -92,13 +160,31 @@ int gamepad_bridge_init(void)
         sizeof(backend_buf),
         "titan");
 
-    const GamepadOutputBackend *backend = find_backend(wanted);
+    g_configured_backend = gamepad_bridge_backend_from_name(wanted);
+
+    if (g_configured_backend < 0) {
+        fprintf(stderr,
+                "gamepad_bridge: unknown output backend \"%s\"\n",
+                wanted);
+        return 0;
+    }
+
+    const BackendEntry *entry = &BACKENDS[g_configured_backend];
+
+    if (!entry->factory) {
+        fprintf(stderr,
+                "gamepad_bridge: output backend \"%s\" is known but "
+                "not implemented in this build\n",
+                entry->name);
+        return 0;
+    }
+
+    const GamepadOutputBackend *backend = entry->factory();
 
     if (!backend) {
         fprintf(stderr,
-                "gamepad_bridge: unknown output backend \"%s\" "
-                "(currently available: titan)\n",
-                wanted);
+                "gamepad_bridge: output backend \"%s\" has no implementation\n",
+                entry->name);
         return 0;
     }
 

@@ -39,9 +39,11 @@ a player.
 homebrew and Wii U console homebrew can all use the same host. Watching
 and playing still use the same host-side authentication.
 
-**A window on the machine itself**, with a tray icon and a settings
-window — handy for sharing the screen over Discord, and the only place
-some of the more administrative settings live.
+**A server control panel on the machine itself**, opened from the tray.
+It separates server/hardware controls from a dedicated **Clients** section,
+where each remote client family has its own clearly labelled page. Console
+input output is its own section too, with a pluggable backend selector for
+Titan/ConsoleTuner today and the planned Joy-Con 2 BLE and JOCP/Pico paths.
 
 **Waking the console**, optionally, by power-cycling a Home Assistant
 smart plug — because cutting and restoring power is what wakes some

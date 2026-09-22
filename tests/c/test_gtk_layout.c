@@ -61,7 +61,27 @@ static void on_pair(void *u, const char *pin) { (void)u; (void)pin; }
 /* What gtk_shell.c calls into the USB bridge. Linking the real one would
  * drag libusb and an adapter into a test about a window. */
 int gamepad_bridge_link_up(void) { return 0; }
+double gamepad_bridge_report_rate(void) { return 0.0; }
 int gamepad_bridge_console(void) { return 0; }
+const char *gamepad_bridge_backend_name(void) { return "titan"; }
+int gamepad_bridge_backend_count(void) { return 3; }
+const char *gamepad_bridge_backend_name_at(int i) {
+    static const char *const N[] = {"titan", "pcble2joycon2", "jocp"};
+    return (i >= 0 && i < 3) ? N[i] : "";
+}
+const char *gamepad_bridge_backend_label(int i) {
+    static const char *const L[] = {
+        "Titan / ConsoleTuner USB",
+        "Joy-Con 2 Bluetooth (pcble2joycon2)",
+        "JOCP / Pico 2 W",
+    };
+    return (i >= 0 && i < 3) ? L[i] : "?";
+}
+int gamepad_bridge_backend_available(int i) { return i == 0; }
+int gamepad_bridge_backend_from_name(const char *name) {
+    return name && strcmp(name, "titan") == 0 ? 0 : -1;
+}
+int gamepad_bridge_backend_configured_index(void) { return 0; }
 const char *gamepad_protocol_label(int i) {
     static const char *const L[] = {"auto", "ps3", "xb360", "wiiu", "ps4", "xb1", "switch"};
     return (i >= 0 && i < 7) ? L[i] : "?";

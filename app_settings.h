@@ -61,6 +61,9 @@ typedef struct {
     /* --- this machine's controller, driving the console --- */
     int gamepad_enabled;    /* off in headless, where there is nobody here */
     int gamepad_index;      /* which SDL controller, -1 for none */
+    /* Console-output backend registry index. Changing this is
+     * persisted to GAMEPAD_OUTPUT_BACKEND and requires a restart. */
+    int output_backend;
     int invert_ry;
     int lt_threshold;       /* percent of the trigger's travel */
     int rt_threshold;
@@ -96,7 +99,7 @@ typedef struct {
         .wiiu_console_bitrate_mbps = 8,                            \
         .browser_height = 1080,         \
         .bitrate_mbps = 12, .capture_mjpeg = 0, .gamepad_enabled = 1,          \
-        .gamepad_index = -1, .invert_ry = 0, .lt_threshold = 30,               \
+        .gamepad_index = -1, .output_backend = 0, .invert_ry = 0, .lt_threshold = 30,               \
         .rt_threshold = 30, .stick_deadzone = {5, 5}, .stick_range = {100, 100},\
         .stick_diagonal = {100, 100}, .output_protocol = -1,                   \
         .local_muted = 0, .local_direct_sink = 0, .local_volume = 13,                                  \
