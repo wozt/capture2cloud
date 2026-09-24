@@ -2353,6 +2353,10 @@ static int wake_capture_run(
         return 2;
     }
 
+    /*
+     * run-classic.sh stopped bluetoothd before entering here.
+     * Make sure the selected controller itself is UP.
+     */
     int control =
         socket(
             AF_BLUETOOTH,
@@ -2397,48 +2401,15 @@ static int wake_capture_run(
         return 1;
     }
 
-    const uint8_t scan_parameters[] = {
-        0x00,
-        0x10, 0x00,
-        0x10, 0x00,
-        0x00,
-        0x00
-    };
-
-    const uint8_t scan_on[] = {
-        0x01,
-        0x00
-    };
-
-    const uint8_t scan_off[] = {
-        0x00,
-        0x00
-    };
-
-    if (!wake_probe_command(
-            dd,
-            WAKE_PROBE_OCF_SET_SCAN_PARAMETERS,
-            scan_parameters,
-            sizeof(scan_parameters),
-            "LE Set Scan Parameters",
-            1) ||
-        !wake_probe_command(
-            dd,
-            WAKE_PROBE_OCF_SET_SCAN_ENABLE,
-            scan_on,
-            sizeof(scan_on),
-            "LE Scan Enable",
-            1)) {
-
-        fprintf(
-            stderr,
-            "Could not enable passive LE scan on %s\n",
-            adapter_id);
-
-        close(dd);
-        return 1;
-    }
-
+    /*
+     * Install the LE Meta Event filter before scanning so even a very
+     * short wake advertisement cannot fall into a gap between enabling
+     * the controller scan and installing our userspace filter.
+     *
+     * hci_send_req(), used internally by the libbluetooth helpers below,
+     * temporarily installs its own command-complete filter and restores
+     * this one afterwards.
+     */
     struct hci_filter old_filter;
     socklen_t old_filter_size =
         sizeof(old_filter);
@@ -2470,19 +2441,90 @@ static int wake_capture_run(
             HCI_FILTER,
             &filter,
             sizeof(filter)) < 0) {
-
         fprintf(
             stderr,
             "Could not install LE event filter: %s\n",
             strerror(errno));
 
-        wake_probe_command(
+        close(dd);
+        return 1;
+    }
+
+    /*
+     * Match BlueZ hcitool lescan:
+     *
+     *   active scan
+     *   public own address
+     *   full-duty 0x0010 / 0x0010 scan
+     *   accept all advertisers
+     *   duplicate filtering disabled
+     *
+     * Active scanning is useful here because it also lets us see a scan
+     * response if a controller places part of its manufacturer payload
+     * there.
+     */
+    const uint8_t scan_type =
+        0x01;
+
+    const uint8_t own_type =
+        LE_PUBLIC_ADDRESS;
+
+    const uint8_t filter_policy =
+        0x00;
+
+    const uint8_t filter_duplicates =
+        0x00;
+
+    const uint16_t interval =
+        htobs(0x0010);
+
+    const uint16_t window =
+        htobs(0x0010);
+
+    if (hci_le_set_scan_parameters(
             dd,
-            WAKE_PROBE_OCF_SET_SCAN_ENABLE,
-            scan_off,
-            sizeof(scan_off),
-            "cleanup scan disable",
-            1);
+            scan_type,
+            interval,
+            window,
+            own_type,
+            filter_policy,
+            2000) < 0) {
+        fprintf(
+            stderr,
+            "LE Set Scan Parameters failed: %s\n",
+            strerror(errno));
+
+        if (have_old_filter) {
+            setsockopt(
+                dd,
+                SOL_HCI,
+                HCI_FILTER,
+                &old_filter,
+                old_filter_size);
+        }
+
+        close(dd);
+        return 1;
+    }
+
+    if (hci_le_set_scan_enable(
+            dd,
+            0x01,
+            filter_duplicates,
+            2000) < 0) {
+        fprintf(
+            stderr,
+            "LE Scan Enable failed: %s\n",
+            strerror(errno));
+
+        if (have_old_filter) {
+            setsockopt(
+                dd,
+                SOL_HCI,
+                HCI_FILTER,
+                &old_filter,
+                old_filter_size);
+        }
 
         close(dd);
         return 1;
@@ -2495,6 +2537,10 @@ static int wake_capture_run(
     const gint64 deadline =
         g_get_monotonic_time() +
         20 * G_USEC_PER_SEC;
+
+    unsigned meta_events_seen = 0;
+    unsigned advertising_reports_seen = 0;
+    unsigned other_subevents_seen = 0;
 
     int found = 0;
 
@@ -2539,6 +2585,10 @@ static int wake_capture_run(
             break;
         }
 
+        if (!(poll_fd.revents & POLLIN)) {
+            continue;
+        }
+
         uint8_t buffer[
             HCI_MAX_EVENT_SIZE];
 
@@ -2549,7 +2599,8 @@ static int wake_capture_run(
                 sizeof(buffer));
 
         if (received < 0) {
-            if (errno == EINTR) {
+            if (errno == EINTR ||
+                errno == EAGAIN) {
                 continue;
             }
 
@@ -2578,8 +2629,20 @@ static int wake_capture_run(
                 1 +
                 HCI_EVENT_HDR_SIZE);
 
+        meta_events_seen++;
+
         if (meta->subevent !=
             EVT_LE_ADVERTISING_REPORT) {
+
+            other_subevents_seen++;
+
+            if (other_subevents_seen <= 8) {
+                fprintf(
+                    stderr,
+                    "LE meta event subevent=0x%02X ignored\n",
+                    meta->subevent);
+            }
+
             continue;
         }
 
@@ -2618,6 +2681,46 @@ static int wake_capture_run(
                     report_size >
                 packet_end) {
                 break;
+            }
+
+            advertising_reports_seen++;
+
+            /*
+             * Print the first reports while debugging this capture path.
+             * This makes it immediately obvious whether the radio hears
+             * BLE traffic but our Nintendo matcher rejects it.
+             */
+            if (advertising_reports_seen <= 12) {
+                char address[18];
+
+                ba2str(
+                    &info->bdaddr,
+                    address);
+
+                char hex[
+                    31 * 2 + 1];
+
+                if (info->length <= 31) {
+                    wake_capture_hex(
+                        info->data,
+                        info->length,
+                        hex,
+                        sizeof(hex));
+                } else {
+                    snprintf(
+                        hex,
+                        sizeof(hex),
+                        "<too-long>");
+                }
+
+                fprintf(
+                    stderr,
+                    "LE adv #%u type=0x%02X addr=%s len=%u data=%s\n",
+                    advertising_reports_seen,
+                    info->evt_type,
+                    address,
+                    info->length,
+                    hex);
             }
 
             size_t switch_offset = 0;
@@ -2677,6 +2780,12 @@ static int wake_capture_run(
         }
     }
 
+    hci_le_set_scan_enable(
+        dd,
+        0x00,
+        filter_duplicates,
+        2000);
+
     if (have_old_filter) {
         setsockopt(
             dd,
@@ -2686,20 +2795,24 @@ static int wake_capture_run(
             old_filter_size);
     }
 
-    wake_probe_command(
-        dd,
-        WAKE_PROBE_OCF_SET_SCAN_ENABLE,
-        scan_off,
-        sizeof(scan_off),
-        "cleanup scan disable",
-        1);
-
     close(dd);
 
     if (!found) {
-        fprintf(
-            stderr,
-            "No Switch 2 wake beacon detected within 20 seconds.\n");
+        if (advertising_reports_seen == 0) {
+            fprintf(
+                stderr,
+                "No LE advertising reports received in 20 seconds "
+                "(meta=%u other-subevents=%u).\n",
+                meta_events_seen,
+                other_subevents_seen);
+        } else {
+            fprintf(
+                stderr,
+                "Saw %u LE advertising reports, but none matched "
+                "the Switch 2 Nintendo wake beacon.\n",
+                advertising_reports_seen);
+        }
+
         return 1;
     }
 
