@@ -25,6 +25,12 @@ typedef struct {
     void (*reset)(void);
     void (*press_home)(void);
 
+    /*
+     * Advance non-blocking backend maintenance from the Capture2Cloud
+     * main loop. No GUI/event-loop dependency is allowed here.
+     */
+    void (*service)(void);
+
     int    (*link_up)(void);
     double (*report_rate)(void);
 

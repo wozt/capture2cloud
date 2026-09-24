@@ -127,9 +127,9 @@ static const BackendEntry BACKENDS[] = {
         "pcble",
         "pcble2gamepad",
         "reconnect paired Switch",
-        "Queues the same Reconnect paired Switch action shown in "
-        "Controller output. Startup, Maintenance and remote C2C reset "
-        "requests all execute that action on the GTK thread.",
+        "Requests backend-owned paired-Switch recovery. The same "
+        "operation is used by startup, Maintenance and remote C2C reset "
+        "requests and does not require GTK.",
         output_pcble_backend,
     },
     {
@@ -347,6 +347,13 @@ void gamepad_bridge_reset(void)
 {
     if (g_backend && g_backend->reset) {
         g_backend->reset();
+    }
+}
+
+void gamepad_bridge_service(void)
+{
+    if (g_backend && g_backend->service) {
+        g_backend->service();
     }
 }
 

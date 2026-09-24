@@ -1324,32 +1324,26 @@ int main(int argc, char **argv) {
     };
     g_settings.web_port = g_web_port;
     g_settings.capture_mjpeg = (video_capture_format(g_video) == VIDEO_FORMAT_MJPEG);
-    g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
-
-    if (g_shell) {
-        publish_server_status();
-    }
 
     /*
-     * Automatic pcble reconnect happens here rather than from
-     * output_pcble_init().
-     *
-     * SDL and the desktop environment are now initialised, matching the
-     * environment in which manually pressing "Reconnect paired Switch"
-     * is known to work.
-     *
-     * gamepad_bridge_reset() maps to output_pcble_reset() for pcble.
-     * With no existing session at startup that directly launches the
-     * saved --reconnect session.
+     * Automatic controller-output recovery is requested BEFORE GTK
+     * starts. It is backend work and must also function on a machine
+     * where gtk_init_check() fails or no display exists at all.
      */
     if (strcmp(
             gamepad_bridge_backend_name(),
             "pcble") == 0) {
         fprintf(
             stderr,
-            "pcble: attempting automatic paired-Switch reconnect\n");
+            "pcble: requesting automatic paired-Switch reconnect\n");
 
         gamepad_bridge_reset();
+    }
+
+    g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
+
+    if (g_shell) {
+        publish_server_status();
     }
 
     if (!g_headless && open_capture_window() != 0) {
@@ -1398,6 +1392,14 @@ int main(int argc, char **argv) {
     int browser_fed = -1, native_fed = -1;
 
     while (g_app.running) {
+        /*
+         * Advance backend maintenance independently of every UI.
+         *
+         * pcble uses this for stop -> wait for BlueZ cleanup -> fresh
+         * --reconnect. Titan currently has no service hook.
+         */
+        gamepad_bridge_service();
+
         /* A controller here drives the console, on the same terms as a
          * browser or the console client: one more source into the merge,
          * so several hands combine rather than fight. Polled in both

@@ -51,13 +51,13 @@ static GSubprocess *g_launcher;
 static int g_session_stopping;
 
 /*
- * Recovery is requested from arbitrary threads (GTK, HTTP, native C2C,
- * startup). Only the GTK thread consumes the request and launches the
- * Bluetooth session.
+ * Recovery is backend state, not UI state.
  *
- * That is intentional: the known-good manual reconnect runs from GTK,
- * and keeping every reconnect there also keeps GSubprocess/pkexec on the
- * same GLib main context.
+ * Requests may come from GTK, HTTP, native C2C or startup. The normal
+ * Capture2Cloud main loop consumes them through output_pcble_service().
+ *
+ * Process lifetime is watched by a dedicated blocking GThread, so this
+ * backend does not depend on a GTK/GLib GUI main loop being present.
  */
 static SDL_atomic_t g_reconnect_requested;
 static SDL_atomic_t g_reconnect_active;
@@ -972,46 +972,53 @@ int output_pcble_set_controller(const char *profile)
     return 1;
 }
 
-static void launcher_finished(
-    GObject *source,
-    GAsyncResult *result,
-    gpointer unused)
+static gpointer launcher_wait_thread(gpointer data)
 {
-    (void)unused;
+    GSubprocess *process =
+        G_SUBPROCESS(data);
 
     GError *error = NULL;
 
-    if (!g_subprocess_wait_check_finish(
-            G_SUBPROCESS(source),
-            result,
-            &error)) {
-        g_mutex_lock(&g_session_lock);
-        int stopping = g_session_stopping;
-        g_mutex_unlock(&g_session_lock);
+    const int ok =
+        g_subprocess_wait_check(
+            process,
+            NULL,
+            &error);
 
-        if (!stopping && error) {
-            fprintf(
-                stderr,
-                "pcble: session launcher exited: %s\n",
-                error->message);
-        }
-    }
-
-    g_clear_error(&error);
+    int stopping = 0;
 
     g_mutex_lock(&g_session_lock);
 
-    if (g_launcher == G_SUBPROCESS(source)) {
-        g_clear_object(&g_launcher);
+    stopping =
+        g_session_stopping;
+
+    if (g_launcher == process) {
+        g_clear_object(
+            &g_launcher);
     }
 
     g_session_stopping = 0;
 
     g_mutex_unlock(&g_session_lock);
 
+    if (!ok &&
+        !stopping &&
+        error) {
+        fprintf(
+            stderr,
+            "pcble: session launcher exited: %s\n",
+            error->message);
+    }
+
+    g_clear_error(&error);
+
     SDL_AtomicSet(
         &g_reconnect_active,
         0);
+
+    g_object_unref(process);
+
+    return NULL;
 }
 
 
@@ -1169,11 +1176,22 @@ int output_pcble_start_session(
         reconnect_address &&
         *reconnect_address);
 
-    g_subprocess_wait_check_async(
-        g_launcher,
-        NULL,
-        launcher_finished,
-        NULL);
+    /*
+     * Do not attach process completion to GTK's GLib main context.
+     * A headless Capture2Cloud has no GTK loop at all.
+     *
+     * The waiter blocks on this one child only; GLib releases/reaps it
+     * there, then clears g_launcher under g_session_lock.
+     */
+    GThread *waiter =
+        g_thread_new(
+            "pcble-launcher-wait",
+            launcher_wait_thread,
+            g_object_ref(g_launcher));
+
+    if (waiter) {
+        g_thread_unref(waiter);
+    }
 
     g_mutex_unlock(&g_session_lock);
 
@@ -1189,6 +1207,240 @@ int output_pcble_start_session(
 
     return 1;
 }
+
+static int output_pcble_start_saved_reconnect(
+    char *error,
+    size_t error_size)
+{
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+
+    char profile[32];
+    char peer[32];
+    char paired_adapter[32];
+
+    config_get_str(
+        "PCBLE_CONTROLLER",
+        profile,
+        sizeof(profile),
+        "pro");
+
+    if (strcmp(profile, "pro") != 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "Automatic reconnect is currently available for Pro Controller only");
+        }
+
+        return 0;
+    }
+
+    config_get_str(
+        "PCBLE_SWITCH_ADDRESS",
+        peer,
+        sizeof(peer),
+        "none");
+
+    config_get_str(
+        "PCBLE_PAIRED_ADAPTER",
+        paired_adapter,
+        sizeof(paired_adapter),
+        "none");
+
+    if (!valid_mac(peer)) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "No paired Switch is stored yet");
+        }
+
+        return 0;
+    }
+
+    if (!valid_mac(paired_adapter)) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "The Bluetooth adapter used for pairing is not stored");
+        }
+
+        return 0;
+    }
+
+    OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS];
+
+    char scan_error[256];
+
+    const int count =
+        output_pcble_scan_adapters(
+            adapters,
+            scan_error,
+            sizeof(scan_error));
+
+    if (count < 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                scan_error[0]
+                    ? scan_error
+                    : "Could not scan Bluetooth adapters");
+        }
+
+        return 0;
+    }
+
+    int selected = -1;
+
+    for (int i = 0; i < count; i++) {
+        if (g_ascii_strcasecmp(
+                adapters[i].address,
+                paired_adapter) == 0) {
+            selected = i;
+            break;
+        }
+    }
+
+    if (selected < 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "The paired Bluetooth adapter is not present");
+        }
+
+        return 0;
+    }
+
+    char body[16];
+    char buttons[16];
+    char left[16];
+    char right[16];
+
+    config_get_str(
+        "PCBLE_BODY_COLOR",
+        body,
+        sizeof(body),
+        "828282");
+
+    config_get_str(
+        "PCBLE_BUTTON_COLOR",
+        buttons,
+        sizeof(buttons),
+        "0F0F0F");
+
+    config_get_str(
+        "PCBLE_LEFT_GRIP_COLOR",
+        left,
+        sizeof(left),
+        "828282");
+
+    config_get_str(
+        "PCBLE_RIGHT_GRIP_COLOR",
+        right,
+        sizeof(right),
+        "828282");
+
+    const int verbose =
+        (int)config_get_int(
+            "PCBLE_VERBOSE",
+            0,
+            0,
+            1);
+
+    /*
+     * Same final primitive used by the manual GTK button:
+     *
+     *     output_pcble_start_session(..., paired_switch, ...)
+     *
+     * The GUI does not own any part of the Bluetooth implementation.
+     */
+    return output_pcble_start_session(
+        adapters[selected].id,
+        NULL,
+        "pro",
+        peer,
+        body,
+        buttons,
+        left,
+        right,
+        verbose,
+        error,
+        error_size);
+}
+
+
+static void output_pcble_service(void)
+{
+    if (!SDL_AtomicGet(
+            &g_reconnect_requested)) {
+        return;
+    }
+
+    /*
+     * If a helper currently owns BlueZ, perform the same logical
+     * sequence as Stop session -> Reconnect paired Switch.
+     *
+     * Keep the request armed while the waiter thread waits for
+     * run-classic.sh to finish its cleanup.
+     */
+    if (output_pcble_session_running()) {
+        if (!output_pcble_session_stopping()) {
+            fprintf(
+                stderr,
+                "pcble: recovery: stopping current Bluetooth session\n");
+
+            output_pcble_stop_session();
+        }
+
+        return;
+    }
+
+    char error[256];
+
+    /*
+     * No helper owns BlueZ anymore. The previous wait thread has already
+     * reaped it and run-classic.sh has completed its EXIT cleanup.
+     */
+    if (output_pcble_start_saved_reconnect(
+            error,
+            sizeof(error))) {
+        SDL_AtomicSet(
+            &g_reconnect_requested,
+            0);
+
+        fprintf(
+            stderr,
+            "pcble: recovery: paired-Switch reconnect launched\n");
+
+        return;
+    }
+
+    /*
+     * One recovery request is one attempt. Do not hammer pkexec, BlueZ
+     * or an absent adapter every frame.
+     */
+    SDL_AtomicSet(
+        &g_reconnect_requested,
+        0);
+
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        0);
+
+    fprintf(
+        stderr,
+        "pcble: recovery failed: %s\n",
+        error[0]
+            ? error
+            : "unknown reconnect error");
+}
+
 
 void output_pcble_stop_session(void)
 {
@@ -1324,6 +1576,7 @@ const GamepadOutputBackend *output_pcble_backend(void)
         .update = output_pcble_update,
         .reset = output_pcble_reset,
         .press_home = output_pcble_press_home,
+        .service = output_pcble_service,
         .link_up = output_pcble_link_up,
         .report_rate = output_pcble_report_rate,
         .shutdown = output_pcble_shutdown,
