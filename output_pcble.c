@@ -133,8 +133,10 @@ static void build_nintendo_state(
     if (pressed(state, CONTROLLER_L2)) buttons[2] |= 1u << 7;
 
     /*
-     * Same centers and measured ranges as pcble2gamepad's validated
-     * InputFrame -> ProState conversion.
+     * These centers and excursions are also advertised through the
+     * emulated controller's SPI factory calibration. Keep both sides in
+     * sync: the Switch interprets these raw 12-bit values through that
+     * calibration table.
      */
     sticks[0] = stick_axis(state[CONTROLLER_LX], 2159, 1466, 1517, 0);
     sticks[1] = stick_axis(state[CONTROLLER_LY], 1916, 1583, 1465, 1);

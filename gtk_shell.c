@@ -1230,7 +1230,7 @@ static gboolean stick_preview_draw(
     snprintf(
         line,
         sizeof(line),
-        "deadzone %d%%   range %d%%   diagonal %d%%",
+        "dead %d%%   axis sat %d%%   diag sat %d%%",
         dz,
         range,
         diagonal);
@@ -2772,7 +2772,7 @@ static void build_settings_window(GtkShell *shell) {
         snprintf(
             label,
             sizeof(label),
-            "%s stick range (%%)",
+            "%s axis saturation (%%)",
             OUTPUT_SIDE[i]);
 
         g_c.output_range[i] = add_row(
@@ -2798,7 +2798,7 @@ static void build_settings_window(GtkShell *shell) {
         snprintf(
             label,
             sizeof(label),
-            "%s stick diagonal (%%)",
+            "%s diagonal saturation (%%)",
             OUTPUT_SIDE[i]);
 
         g_c.output_diagonal[i] = add_row(
@@ -2946,7 +2946,7 @@ static void build_settings_window(GtkShell *shell) {
         snprintf(
             label,
             sizeof(label),
-            "%s stick range (%%)",
+            "%s axis saturation (%%)",
             SIDE[i]);
         g_c.range[i] = add_row(
             grid,
@@ -2961,7 +2961,7 @@ static void build_settings_window(GtkShell *shell) {
         snprintf(
             label,
             sizeof(label),
-            "%s stick diagonals (%%)",
+            "%s diagonal saturation (%%)",
             SIDE[i]);
         g_c.diagonal[i] = add_row(
             grid,
