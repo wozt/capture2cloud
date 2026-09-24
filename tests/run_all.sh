@@ -110,6 +110,7 @@ run_c_test() {
 timed "C: gamepad bridge"  run_c_test test_gamepad_bridge "libusb-1.0 sdl2"
 timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
 timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
+timed "C: pcble protocol"   run_c_test test_pcble_protocol ""
 # glib because web_stream.c now answers a WebSocket upgrade, whose
 # handshake is a SHA-1 and a base64 -- both GLib's.
 timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 glib-2.0"

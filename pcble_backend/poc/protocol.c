@@ -141,13 +141,51 @@ static uint8_t spi(const ProState *s, uint32_t a) {
      * Do NOT extend this table into 0x6050: that is where the controller
      * body/button colors begin.
      */
+    /*
+     * This calibration MUST describe the values we actually send in
+     * ProState.sticks.
+     *
+     * Nintendo's layout is:
+     *
+     * Left:
+     *   +X/+Y excursion, center, -X/-Y excursion
+     *
+     * Right:
+     *   center, -X/-Y excursion, +X/+Y excursion
+     *
+     * These are the same values used by output_pcble.c:
+     *
+     *   LX center 2159, +1466, -1517
+     *   LY center 1916, +1583, -1465
+     *   RX center 2070, +1414, -1522
+     *   RY center 2013, +1510, -1531
+     *
+     * The previous synthetic 2032/2032 values made the Switch expect
+     * much more travel than Capture2Cloud could ever transmit. Cardinal
+     * directions therefore stopped well short of the calibration rim
+     * while diagonals could look correct because both axes contributed
+     * to the radial distance.
+     */
     static const uint8_t pro_sticks[] = {
-        0xf0,0x07,0x7f,
-        0xf0,0x07,0x7f,
-        0xf0,0x07,0x7f,
-        0xf0,0x07,0x7f,
-        0xf0,0x07,0x7f,
-        0xf0,0x07,0x7f,
+        /* left: positive excursion */
+        0xba,0xf5,0x62,
+
+        /* left: center */
+        0x6f,0xc8,0x77,
+
+        /* left: negative excursion */
+        0xed,0x95,0x5b,
+
+        /* right: center */
+        0x16,0xd8,0x7d,
+
+        /* right: negative excursion */
+        0xf2,0xb5,0x5f,
+
+        /* right: positive excursion */
+        0x86,0x65,0x5e,
+
+        /* observed factory byte at 0x604F */
         0x0f
     };
     static const uint8_t pro_config[] = {
