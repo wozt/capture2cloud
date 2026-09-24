@@ -67,8 +67,8 @@ if [[ $profile == pro ]]; then
     )
 fi
 installed=false
-if [[ -x "$script_dir/pcble2gamepad-controller-backend" && -f "$script_dir/pro-controller.xml" ]]; then
-    app="$script_dir/pcble2gamepad-controller-backend"
+if [[ -x "$script_dir/capture2cloud-pcble-backend" && -f "$script_dir/pro-controller.xml" ]]; then
+    app="$script_dir/capture2cloud-pcble-backend"
     sdp="$script_dir/pro-controller.xml"
     installed=true
 else
@@ -76,10 +76,8 @@ else
     sdp="$project_dir/poc/pro-controller.xml"
     app=
     for candidate in \
-        "$project_dir/build/pcble2gamepad-controller-backend" \
-        "$project_dir/build-studio/pcble2gamepad-controller-backend" \
-        "$project_dir/build-check/pcble2gamepad-controller-backend" \
-        "$project_dir/build-pro/pcble2gamepad-pro-poc"; do
+        "$project_dir/capture2cloud-pcble-backend" \
+        "$project_dir/build/capture2cloud-pcble-backend"; do
         if [[ -x "$candidate" ]]; then app=$candidate; break; fi
     done
 fi
@@ -91,11 +89,11 @@ for controller in /sys/class/bluetooth/hci*; do
         echo 'Connected Bluetooth devices; stop them before this shared-service test.'; exit 1;
     }
 done
-dropin=/run/systemd/system/bluetooth.service.d/90-pcble2gamepad-pro-poc.conf
+dropin=/run/systemd/system/bluetooth.service.d/90-capture2cloud-pcble.conf
 bluetooth_overridden=false
 
 [[ ! -e "$dropin" ]] || {
-    echo 'A pcble2gamepad Bluetooth service override already exists'
+    echo 'A Capture2Cloud pcble Bluetooth service override already exists'
     exit 1
 }
 
@@ -107,7 +105,7 @@ capture_owner=${PKEXEC_UID:-${SUDO_UID:-0}}
 
 # Runtime diagnostics are temporary session artifacts, not persistent state.
 # Keep every capture in a private random directory under /tmp.
-capture=$(mktemp -d "/tmp/pcble2gamepad-${capture_owner}-XXXXXXXX")
+capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
 chmod 700 "$capture"
 monitor_pids=()
 backend_pids=()
@@ -164,15 +162,15 @@ if [[ -n $secondary ]]; then
 fi
 if $desktop; then
     [[ -n ${PKEXEC_UID:-} ]] || { echo 'Desktop mode requires pkexec.' >&2; exit 1; }
-    mkdir -p "/run/pcble2gamepad/$PKEXEC_UID"
-    chown "$PKEXEC_UID" "/run/pcble2gamepad/$PKEXEC_UID"
-    chmod 700 "/run/pcble2gamepad/$PKEXEC_UID"
+    mkdir -p "/run/capture2cloud/pcble/$PKEXEC_UID"
+    chown "$PKEXEC_UID" "/run/capture2cloud/pcble/$PKEXEC_UID"
+    chmod 700 "/run/capture2cloud/pcble/$PKEXEC_UID"
     if [[ $profile == pro ]]; then
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type pro "${backend_options[@]}" | tee "$capture/daemon.log"
     else
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
         left_pid=$!;backend_pids+=("$left_pid")
-        left_socket="/run/pcble2gamepad/$PKEXEC_UID/joycon-left.sock"
+        left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
         for _ in {1..100}; do [[ -S $left_socket ]] && break; kill -0 "$left_pid" 2>/dev/null || break; sleep .05; done
         [[ -S $left_socket ]] || { echo 'Left Joy-Con backend failed to start' >&2; wait "$left_pid" || true; exit 1; }
         "$app" "$secondary" "$sdp" --desktop "$PKEXEC_UID" --type joycon-r --allow-adapter "$adapter" --shared-profile "${backend_options[@]}" > "$capture/joycon-right.log" 2>&1 &

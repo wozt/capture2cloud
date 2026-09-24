@@ -107,10 +107,10 @@ static char *request(gpointer data,const char *text) {
 ProControl *pro_control_new(ProState *state,gint64 *release_at,gboolean *verbose,uid_t owner,gboolean mock,const char *socket_name,GMainLoop *loop,GError **error) {
     g_autofree char *directory=NULL,*path=NULL;
     if(mock) {
-        const char *override=g_getenv("PCBLE2GAMEPAD_PRO_SOCKET");
-        path=override?g_strdup(override):g_build_filename(g_get_user_runtime_dir(),"pcble2gamepad",socket_name,NULL);
+        const char *override=g_getenv("CAPTURE2CLOUD_PCBLE_SOCKET");
+        path=override?g_strdup(override):g_build_filename(g_get_user_runtime_dir(),"capture2cloud-pcble",socket_name,NULL);
     } else {
-        directory=g_strdup_printf("/run/pcble2gamepad/%u",(unsigned)owner);
+        directory=g_strdup_printf("/run/capture2cloud/pcble/%u",(unsigned)owner);
         if(g_mkdir_with_parents(directory,0755)<0) {g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_FAILED,"Cannot create runtime directory");return NULL;}
         if(chown(directory,owner,(gid_t)-1)<0 || g_chmod(directory,0700)<0) {g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_FAILED,"Cannot secure runtime directory");return NULL;}
         path=g_build_filename(directory,socket_name,NULL);

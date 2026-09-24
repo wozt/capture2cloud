@@ -65,6 +65,11 @@ PACKAGES=(
     gstreamer1.0-libav gstreamer1.0-nice
     # colour conversion + usb
     libavutil-dev libswscale-dev libusb-1.0-0-dev
+
+    # Classic Bluetooth controller backend
+    libglib2.0-dev libjson-glib-dev libbluetooth-dev
+    bluez pkexec
+
     # handy for finding your capture device / debugging
     v4l-utils
 )
