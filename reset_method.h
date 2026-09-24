@@ -69,6 +69,16 @@ int reset_method_test_bluetooth_adapter(
     char *message,
     size_t message_size);
 
+
+/*
+ * Captures a real Switch 2 wake advertisement and stores it in the
+ * current user's persistent data directory.
+ */
+int reset_method_capture_bluetooth_beacon(
+    const char *adapter_id,
+    char *message,
+    size_t message_size);
+
 /*
  * Starts the configured console wake operation.
  *

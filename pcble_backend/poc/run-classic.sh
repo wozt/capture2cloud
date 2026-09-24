@@ -2,7 +2,7 @@
 # Run the reversible Classic HID backend.
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run through pkexec or sudo.' >&2; exit 1; }
-[[ $# -ge 1 && $1 =~ ^hci[0-9]+$ ]] || { echo "Usage: $0 hciN [--wake-probe] [--desktop] [--profile pro|joycon-pair] [--secondary hciN] [--verbose] [--body-color RRGGBB] [--button-color RRGGBB] [--left-grip-color RRGGBB] [--right-grip-color RRGGBB] [--reconnect MAC]" >&2; exit 2; }
+[[ $# -ge 1 && $1 =~ ^hci[0-9]+$ ]] || { echo "Usage: $0 hciN [--wake-probe|--wake-capture] [--desktop] [--profile pro|joycon-pair] [--secondary hciN] [--verbose] [--body-color RRGGBB] [--button-color RRGGBB] [--left-grip-color RRGGBB] [--right-grip-color RRGGBB] [--reconnect MAC]" >&2; exit 2; }
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 adapter=$1
 shift
@@ -12,6 +12,7 @@ secondary=
 reconnect=
 verbose=false
 wake_probe=false
+wake_capture=false
 body_color=828282
 button_color=0F0F0F
 left_grip_color=828282
@@ -19,6 +20,7 @@ right_grip_color=828282
 while [[ $# -gt 0 ]]; do
     case $1 in
         --wake-probe) wake_probe=true; shift ;;
+        --wake-capture) wake_capture=true; shift ;;
         --desktop) desktop=true; shift ;;
         --profile) [[ $# -ge 2 ]] || { echo 'Missing profile value' >&2; exit 2; }; profile=$2; shift 2 ;;
         --secondary) [[ $# -ge 2 && $2 =~ ^hci[0-9]+$ ]] || { echo 'Invalid secondary adapter' >&2; exit 2; }; secondary=$2; shift 2 ;;
@@ -91,7 +93,7 @@ fi
 # or start a controller session. It briefly stops normal BlueZ, exercises
 # the exact raw LE commands needed by beacon capture/transmit, then
 # restores the service before returning.
-if $wake_probe; then
+if $wake_probe || $wake_capture; then
     bluetooth_was_active=false
 
     if systemctl is-active --quiet bluetooth; then
@@ -116,7 +118,12 @@ if $wake_probe; then
 
     sleep .2
 
-    "$app" --wake-probe "$adapter"
+    if $wake_probe; then
+        "$app" --wake-probe "$adapter"
+    else
+        "$app" --wake-capture "$adapter"
+    fi
+
     exit $?
 fi
 [[ -d /sys/class/bluetooth/$adapter ]] || { echo 'Adapter not present'; exit 1; }

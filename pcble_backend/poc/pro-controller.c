@@ -2240,6 +2240,472 @@ wake_probe_cleanup:
     return 1;
 }
 
+
+static int wake_capture_find_switch2(
+    const uint8_t *data,
+    size_t length,
+    size_t *switch_offset)
+{
+    static const uint8_t magic[] = {
+        0x01, 0x00, 0x03, 0x7E, 0x05
+    };
+
+    size_t offset = 0;
+
+    while (offset < length) {
+        uint8_t field_length =
+            data[offset];
+
+        if (field_length == 0) {
+            break;
+        }
+
+        if (offset + 1u +
+                field_length >
+            length) {
+            break;
+        }
+
+        /*
+         * AD type FF = manufacturer specific.
+         *
+         * Nintendo company id 0x0553 appears on the wire little-endian:
+         *
+         *     53 05
+         *
+         * The Switch 2 wake payload begins:
+         *
+         *     01 00 03 7E 05
+         */
+        if (field_length >= 19 &&
+            data[offset + 1] == 0xFF &&
+            data[offset + 2] == 0x53 &&
+            data[offset + 3] == 0x05 &&
+            memcmp(
+                data + offset + 4,
+                magic,
+                sizeof(magic)) == 0) {
+
+            /*
+             * Manufacturer payload byte 10 is the first byte of the
+             * target Switch MAC in little-endian order.
+             */
+            if (switch_offset) {
+                *switch_offset =
+                    offset + 14;
+            }
+
+            return 1;
+        }
+
+        offset +=
+            (size_t)field_length + 1;
+    }
+
+    return 0;
+}
+
+static void wake_capture_hex(
+    const uint8_t *data,
+    size_t length,
+    char *out,
+    size_t out_size)
+{
+    static const char hex[] =
+        "0123456789ABCDEF";
+
+    if (!out || out_size == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+
+    if (!data ||
+        out_size < length * 2 + 1) {
+        return;
+    }
+
+    for (size_t i = 0; i < length; i++) {
+        out[i * 2] =
+            hex[data[i] >> 4];
+
+        out[i * 2 + 1] =
+            hex[data[i] & 0x0F];
+    }
+
+    out[length * 2] = '\0';
+}
+
+static int wake_capture_run(
+    const char *adapter_id)
+{
+    int dev_id =
+        wake_probe_adapter_index(
+            adapter_id);
+
+    if (dev_id < 0) {
+        fprintf(
+            stderr,
+            "Invalid wake-capture adapter: %s\n",
+            adapter_id
+                ? adapter_id
+                : "(null)");
+        return 2;
+    }
+
+    int control =
+        socket(
+            AF_BLUETOOTH,
+            SOCK_RAW | SOCK_CLOEXEC,
+            BTPROTO_HCI);
+
+    if (control < 0) {
+        fprintf(
+            stderr,
+            "Could not open HCI control socket: %s\n",
+            strerror(errno));
+        return 1;
+    }
+
+    if (ioctl(
+            control,
+            HCIDEVUP,
+            dev_id) < 0 &&
+        errno != EALREADY) {
+        fprintf(
+            stderr,
+            "Could not bring %s up: %s\n",
+            adapter_id,
+            strerror(errno));
+
+        close(control);
+        return 1;
+    }
+
+    close(control);
+
+    int dd =
+        hci_open_dev(
+            dev_id);
+
+    if (dd < 0) {
+        fprintf(
+            stderr,
+            "Could not open %s: %s\n",
+            adapter_id,
+            strerror(errno));
+        return 1;
+    }
+
+    const uint8_t scan_parameters[] = {
+        0x00,
+        0x10, 0x00,
+        0x10, 0x00,
+        0x00,
+        0x00
+    };
+
+    const uint8_t scan_on[] = {
+        0x01,
+        0x00
+    };
+
+    const uint8_t scan_off[] = {
+        0x00,
+        0x00
+    };
+
+    if (!wake_probe_command(
+            dd,
+            WAKE_PROBE_OCF_SET_SCAN_PARAMETERS,
+            scan_parameters,
+            sizeof(scan_parameters),
+            "LE Set Scan Parameters",
+            1) ||
+        !wake_probe_command(
+            dd,
+            WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+            scan_on,
+            sizeof(scan_on),
+            "LE Scan Enable",
+            1)) {
+
+        fprintf(
+            stderr,
+            "Could not enable passive LE scan on %s\n",
+            adapter_id);
+
+        close(dd);
+        return 1;
+    }
+
+    struct hci_filter old_filter;
+    socklen_t old_filter_size =
+        sizeof(old_filter);
+
+    int have_old_filter =
+        getsockopt(
+            dd,
+            SOL_HCI,
+            HCI_FILTER,
+            &old_filter,
+            &old_filter_size) == 0;
+
+    struct hci_filter filter;
+
+    hci_filter_clear(
+        &filter);
+
+    hci_filter_set_ptype(
+        HCI_EVENT_PKT,
+        &filter);
+
+    hci_filter_set_event(
+        EVT_LE_META_EVENT,
+        &filter);
+
+    if (setsockopt(
+            dd,
+            SOL_HCI,
+            HCI_FILTER,
+            &filter,
+            sizeof(filter)) < 0) {
+
+        fprintf(
+            stderr,
+            "Could not install LE event filter: %s\n",
+            strerror(errno));
+
+        wake_probe_command(
+            dd,
+            WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+            scan_off,
+            sizeof(scan_off),
+            "cleanup scan disable",
+            1);
+
+        close(dd);
+        return 1;
+    }
+
+    fprintf(
+        stderr,
+        "Listening up to 20 seconds for a Nintendo Switch 2 wake beacon...\n");
+
+    const gint64 deadline =
+        g_get_monotonic_time() +
+        20 * G_USEC_PER_SEC;
+
+    int found = 0;
+
+    while (!found) {
+        gint64 now =
+            g_get_monotonic_time();
+
+        if (now >= deadline) {
+            break;
+        }
+
+        gint64 remaining_us =
+            deadline - now;
+
+        int remaining_ms =
+            (int)((remaining_us + 999) / 1000);
+
+        struct pollfd poll_fd = {
+            .fd = dd,
+            .events = POLLIN,
+        };
+
+        int poll_result =
+            poll(
+                &poll_fd,
+                1,
+                remaining_ms);
+
+        if (poll_result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+
+            fprintf(
+                stderr,
+                "Bluetooth capture poll failed: %s\n",
+                strerror(errno));
+            break;
+        }
+
+        if (poll_result == 0) {
+            break;
+        }
+
+        uint8_t buffer[
+            HCI_MAX_EVENT_SIZE];
+
+        ssize_t received =
+            read(
+                dd,
+                buffer,
+                sizeof(buffer));
+
+        if (received < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+
+            fprintf(
+                stderr,
+                "Bluetooth capture read failed: %s\n",
+                strerror(errno));
+            break;
+        }
+
+        if ((size_t)received <
+            1 +
+            HCI_EVENT_HDR_SIZE +
+            EVT_LE_META_EVENT_SIZE) {
+            continue;
+        }
+
+        if (buffer[0] !=
+            HCI_EVENT_PKT) {
+            continue;
+        }
+
+        evt_le_meta_event *meta =
+            (evt_le_meta_event *)(
+                buffer +
+                1 +
+                HCI_EVENT_HDR_SIZE);
+
+        if (meta->subevent !=
+            EVT_LE_ADVERTISING_REPORT) {
+            continue;
+        }
+
+        uint8_t *cursor =
+            meta->data;
+
+        uint8_t *packet_end =
+            buffer + received;
+
+        if (cursor >= packet_end) {
+            continue;
+        }
+
+        unsigned report_count =
+            *cursor++;
+
+        for (unsigned report = 0;
+             report < report_count;
+             report++) {
+
+            if (cursor +
+                    LE_ADVERTISING_INFO_SIZE >
+                packet_end) {
+                break;
+            }
+
+            le_advertising_info *info =
+                (le_advertising_info *)cursor;
+
+            size_t report_size =
+                LE_ADVERTISING_INFO_SIZE +
+                info->length +
+                1; /* RSSI */
+
+            if (cursor +
+                    report_size >
+                packet_end) {
+                break;
+            }
+
+            size_t switch_offset = 0;
+
+            if (info->length <= 31 &&
+                wake_capture_find_switch2(
+                    info->data,
+                    info->length,
+                    &switch_offset)) {
+
+                char controller[18];
+
+                ba2str(
+                    &info->bdaddr,
+                    controller);
+
+                const uint8_t *target =
+                    info->data +
+                    switch_offset;
+
+                char target_switch[18];
+
+                snprintf(
+                    target_switch,
+                    sizeof(target_switch),
+                    "%02X:%02X:%02X:%02X:%02X:%02X",
+                    target[5],
+                    target[4],
+                    target[3],
+                    target[2],
+                    target[1],
+                    target[0]);
+
+                char hex[
+                    31 * 2 + 1];
+
+                wake_capture_hex(
+                    info->data,
+                    info->length,
+                    hex,
+                    sizeof(hex));
+
+                printf(
+                    "WAKE_CAPTURE_OK controller=%s switch=%s data=%s\n",
+                    controller,
+                    target_switch,
+                    hex);
+
+                fflush(stdout);
+
+                found = 1;
+                break;
+            }
+
+            cursor +=
+                report_size;
+        }
+    }
+
+    if (have_old_filter) {
+        setsockopt(
+            dd,
+            SOL_HCI,
+            HCI_FILTER,
+            &old_filter,
+            old_filter_size);
+    }
+
+    wake_probe_command(
+        dd,
+        WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+        scan_off,
+        sizeof(scan_off),
+        "cleanup scan disable",
+        1);
+
+    close(dd);
+
+    if (!found) {
+        fprintf(
+            stderr,
+            "No Switch 2 wake beacon detected within 20 seconds.\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 static const char xml[]=
 "<node><interface name='org.bluez.Agent1'>"
 "<method name='Release'/><method name='Cancel'/>"
@@ -2256,6 +2722,9 @@ static const char xml[]=
 int main(int argc,char **argv) {
     if(argc==3 && !strcmp(argv[1],"--wake-probe"))
         return wake_probe_run(argv[2]);
+
+    if(argc==3 && !strcmp(argv[1],"--wake-capture"))
+        return wake_capture_run(argv[2]);
 
     mock_mode=argc>=2 && !strcmp(argv[1],"--mock");
     if(mock_mode) {
