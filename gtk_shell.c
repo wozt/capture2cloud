@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /*
  * One GTK thread with its own loop, as before. What it puts on screen is
@@ -109,10 +110,12 @@ typedef struct {
     GtkWidget *overview_status;
 
     /* Local SDL input calibration. */
+    GtkWidget *input_stick_preview[2];
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
 
     /* Final merged-state calibration. */
+    GtkWidget *output_stick_preview[2];
     GtkWidget *output_invert_ry;
     GtkWidget *output_lt_threshold, *output_rt_threshold;
     GtkWidget *output_deadzone[2], *output_range[2], *output_diagonal[2];
@@ -987,6 +990,339 @@ static void pcble_refresh_status(GtkShell *shell)
     }
 
     pcble_update_controls(shell);
+}
+
+
+/* --- stick shaping preview ------------------------------------------ */
+
+static void queue_stick_preview_group(int output)
+{
+    GtkWidget **preview =
+        output
+            ? g_c.output_stick_preview
+            : g_c.input_stick_preview;
+
+    for (int i = 0; i < 2; i++) {
+        if (preview[i]) {
+            gtk_widget_queue_draw(preview[i]);
+        }
+    }
+}
+
+static void on_stick_preview_input_changed(GtkWidget *w, gpointer user_data)
+{
+    (void)w;
+    (void)user_data;
+    queue_stick_preview_group(0);
+}
+
+static void on_stick_preview_output_changed(GtkWidget *w, gpointer user_data)
+{
+    (void)w;
+    (void)user_data;
+    queue_stick_preview_group(1);
+}
+
+static void preview_attach_input_signal(GtkWidget *w, const char *signal)
+{
+    g_signal_connect(
+        w,
+        signal,
+        G_CALLBACK(on_stick_preview_input_changed),
+        NULL);
+}
+
+static void preview_attach_output_signal(GtkWidget *w, const char *signal)
+{
+    g_signal_connect(
+        w,
+        signal,
+        G_CALLBACK(on_stick_preview_output_changed),
+        NULL);
+}
+
+static void preview_get_values(
+    GtkWidget *area,
+    int *deadzone,
+    int *range,
+    int *diagonal)
+{
+    GtkShell *shell =
+        g_object_get_data(
+            G_OBJECT(area),
+            "c2c-preview-shell");
+
+    const int output =
+        GPOINTER_TO_INT(
+            g_object_get_data(
+                G_OBJECT(area),
+                "c2c-preview-output"));
+
+    const int side =
+        GPOINTER_TO_INT(
+            g_object_get_data(
+                G_OBJECT(area),
+                "c2c-preview-side"));
+
+    AppSettings settings;
+
+    SDL_LockMutex(shell->lock);
+    settings = shell->settings;
+    SDL_UnlockMutex(shell->lock);
+
+    if (output) {
+        *deadzone = settings.output_stick_deadzone[side];
+        *range = settings.output_stick_range[side];
+        *diagonal = settings.output_stick_diagonal[side];
+    } else {
+        *deadzone = settings.stick_deadzone[side];
+        *range = settings.stick_range[side];
+        *diagonal = settings.stick_diagonal[side];
+    }
+}
+
+static double preview_sat_for_angle(
+    double angle,
+    int range_pct,
+    int diagonal_pct)
+{
+    const double x = fabs(cos(angle));
+    const double y = fabs(sin(angle));
+
+    const double peak = x > y ? x : y;
+    const double least = x > y ? y : x;
+
+    const double diagonality =
+        peak > 0.00001
+            ? least / peak
+            : 0.0;
+
+    return (range_pct +
+           (diagonal_pct - range_pct) * diagonality) / 100.0;
+}
+
+static gboolean stick_preview_draw(
+    GtkWidget *area,
+    cairo_t *cr,
+    gpointer user_data)
+{
+    (void)user_data;
+
+    int dz = 0;
+    int range = 100;
+    int diagonal = 100;
+
+    preview_get_values(
+        area,
+        &dz,
+        &range,
+        &diagonal);
+
+    const int w =
+        gtk_widget_get_allocated_width(area);
+
+    const int h =
+        gtk_widget_get_allocated_height(area);
+
+    const double cx = w * 0.5;
+    const double cy = h * 0.48;
+    const double radius =
+        MIN(w, h) * 0.33;
+
+    cairo_set_source_rgb(cr, 0.10, 0.10, 0.10);
+    cairo_paint(cr);
+
+    /* outer guide */
+    cairo_set_line_width(cr, 1.2);
+    cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
+    cairo_arc(cr, cx, cy, radius, 0.0, 2.0 * G_PI);
+    cairo_stroke(cr);
+
+    /* axes */
+    cairo_set_source_rgba(cr, 0.6, 0.6, 0.6, 0.45);
+    cairo_move_to(cr, cx - radius, cy);
+    cairo_line_to(cr, cx + radius, cy);
+    cairo_move_to(cr, cx, cy - radius);
+    cairo_line_to(cr, cx, cy + radius);
+    cairo_stroke(cr);
+
+    /* diagonals */
+    double dash[2] = {4.0, 4.0};
+    cairo_set_dash(cr, dash, 2, 0.0);
+    cairo_move_to(
+        cr,
+        cx - radius * 0.7071,
+        cy - radius * 0.7071);
+    cairo_line_to(
+        cr,
+        cx + radius * 0.7071,
+        cy + radius * 0.7071);
+    cairo_move_to(
+        cr,
+        cx - radius * 0.7071,
+        cy + radius * 0.7071);
+    cairo_line_to(
+        cr,
+        cx + radius * 0.7071,
+        cy - radius * 0.7071);
+    cairo_stroke(cr);
+    cairo_set_dash(cr, NULL, 0, 0.0);
+
+    /* saturation shape */
+    cairo_new_path(cr);
+
+    for (int i = 0; i <= 128; i++) {
+        const double a =
+            (2.0 * G_PI * i) / 128.0;
+
+        const double sat =
+            preview_sat_for_angle(
+                a,
+                range,
+                diagonal);
+
+        const double px =
+            cx + cos(a) * radius * sat;
+
+        const double py =
+            cy - sin(a) * radius * sat;
+
+        if (i == 0)
+            cairo_move_to(cr, px, py);
+        else
+            cairo_line_to(cr, px, py);
+    }
+
+    cairo_close_path(cr);
+    cairo_set_source_rgba(cr, 0.22, 0.56, 0.98, 0.18);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.22, 0.56, 0.98);
+    cairo_set_line_width(cr, 2.0);
+    cairo_stroke(cr);
+
+    /* dead zone */
+    const double dzr =
+        radius * dz / 100.0;
+
+    cairo_set_source_rgba(cr, 0.95, 0.25, 0.25, 0.20);
+    cairo_arc(cr, cx, cy, dzr, 0.0, 2.0 * G_PI);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgb(cr, 0.95, 0.25, 0.25);
+    cairo_set_line_width(cr, 1.4);
+    cairo_stroke(cr);
+
+    /* center dot */
+    cairo_set_source_rgb(cr, 0.95, 0.95, 0.95);
+    cairo_arc(cr, cx, cy, 2.2, 0.0, 2.0 * G_PI);
+    cairo_fill(cr);
+
+    /* simple legend */
+    cairo_select_font_face(
+        cr,
+        "Sans",
+        CAIRO_FONT_SLANT_NORMAL,
+        CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, 11.0);
+    cairo_set_source_rgb(cr, 0.92, 0.92, 0.92);
+
+    char line[96];
+
+    snprintf(
+        line,
+        sizeof(line),
+        "deadzone %d%%   range %d%%   diagonal %d%%",
+        dz,
+        range,
+        diagonal);
+
+    cairo_move_to(cr, 8.0, h - 10.0);
+    cairo_show_text(cr, line);
+
+    return FALSE;
+}
+
+static GtkWidget *make_stick_preview(
+    GtkShell *shell,
+    int output,
+    int side,
+    const char *title)
+{
+    GtkWidget *frame =
+        gtk_frame_new(title);
+
+    GtkWidget *area =
+        gtk_drawing_area_new();
+
+    gtk_widget_set_size_request(
+        area,
+        180,
+        180);
+
+    gtk_container_add(
+        GTK_CONTAINER(frame),
+        area);
+
+    g_object_set_data(
+        G_OBJECT(area),
+        "c2c-preview-shell",
+        shell);
+
+    g_object_set_data(
+        G_OBJECT(area),
+        "c2c-preview-output",
+        GINT_TO_POINTER(output));
+
+    g_object_set_data(
+        G_OBJECT(area),
+        "c2c-preview-side",
+        GINT_TO_POINTER(side));
+
+    g_signal_connect(
+        area,
+        "draw",
+        G_CALLBACK(stick_preview_draw),
+        NULL);
+
+    if (output)
+        g_c.output_stick_preview[side] = area;
+    else
+        g_c.input_stick_preview[side] = area;
+
+    return frame;
+}
+
+static GtkWidget *make_stick_preview_row(
+    GtkShell *shell,
+    int output)
+{
+    GtkWidget *box =
+        gtk_box_new(
+            GTK_ORIENTATION_HORIZONTAL,
+            12);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        make_stick_preview(
+            shell,
+            output,
+            0,
+            "Left stick"),
+        TRUE,
+        TRUE,
+        0);
+
+    gtk_box_pack_start(
+        GTK_BOX(box),
+        make_stick_preview(
+            shell,
+            output,
+            1,
+            "Right stick"),
+        TRUE,
+        TRUE,
+        0);
+
+    return box;
 }
 
 /* --- the controls ---------------------------------------------------- */
@@ -2314,6 +2650,14 @@ static void build_settings_window(GtkShell *shell) {
         row++,
         "Output shaping");
 
+    add_row(
+        grid,
+        row++,
+        "visual preview",
+        make_stick_preview_row(
+            shell,
+            1));
+
     {
         GtkWidget *note =
             gtk_label_new(
@@ -2352,6 +2696,10 @@ static void build_settings_window(GtkShell *shell) {
             shell,
             "invert up/down"));
 
+    preview_attach_output_signal(
+        g_c.output_invert_ry,
+        "toggled");
+
     g_c.output_lt_threshold = add_row(
         grid,
         row++,
@@ -2362,6 +2710,10 @@ static void build_settings_window(GtkShell *shell) {
             100,
             5,
             "%"));
+
+    preview_attach_output_signal(
+        g_c.output_lt_threshold,
+        "value-changed");
 
     gtk_widget_set_tooltip_text(
         g_c.output_lt_threshold,
@@ -2378,6 +2730,10 @@ static void build_settings_window(GtkShell *shell) {
             100,
             5,
             "%"));
+
+    preview_attach_output_signal(
+        g_c.output_rt_threshold,
+        "value-changed");
 
     gtk_widget_set_tooltip_text(
         g_c.output_rt_threshold,
@@ -2409,6 +2765,10 @@ static void build_settings_window(GtkShell *shell) {
                 1,
                 "%"));
 
+        preview_attach_output_signal(
+            g_c.output_deadzone[i],
+            "value-changed");
+
         snprintf(
             label,
             sizeof(label),
@@ -2425,6 +2785,10 @@ static void build_settings_window(GtkShell *shell) {
                 100,
                 1,
                 "%"));
+
+        preview_attach_output_signal(
+            g_c.output_range[i],
+            "value-changed");
 
         gtk_widget_set_tooltip_text(
             g_c.output_range[i],
@@ -2447,6 +2811,10 @@ static void build_settings_window(GtkShell *shell) {
                 100,
                 1,
                 "%"));
+
+        preview_attach_output_signal(
+            g_c.output_diagonal[i],
+            "value-changed");
 
         gtk_widget_set_tooltip_text(
             g_c.output_diagonal[i],
@@ -2487,6 +2855,14 @@ static void build_settings_window(GtkShell *shell) {
 
     add_section_header(grid, row++, "Input shaping");
 
+    add_row(
+        grid,
+        row++,
+        "visual preview",
+        make_stick_preview_row(
+            shell,
+            0));
+
     {
         GtkWidget *note =
             gtk_label_new(
@@ -2523,17 +2899,29 @@ static void build_settings_window(GtkShell *shell) {
         "right stick",
         make_check(shell, "invert up/down"));
 
+    preview_attach_input_signal(
+        g_c.invert_ry,
+        "toggled");
+
     g_c.lt_threshold = add_row(
         grid,
         row++,
         "LT threshold (%)",
         make_scale(shell, 0, 100, 5, "%"));
 
+    preview_attach_input_signal(
+        g_c.lt_threshold,
+        "value-changed");
+
     g_c.rt_threshold = add_row(
         grid,
         row++,
         "RT threshold (%)",
         make_scale(shell, 0, 100, 5, "%"));
+
+    preview_attach_input_signal(
+        g_c.rt_threshold,
+        "value-changed");
 
     static const char *SIDE[2] = {"left", "right"};
 
@@ -2551,6 +2939,10 @@ static void build_settings_window(GtkShell *shell) {
             label,
             make_scale(shell, 0, 40, 1, "%"));
 
+        preview_attach_input_signal(
+            g_c.deadzone[i],
+            "value-changed");
+
         snprintf(
             label,
             sizeof(label),
@@ -2562,6 +2954,10 @@ static void build_settings_window(GtkShell *shell) {
             label,
             make_scale(shell, 45, 100, 1, "%"));
 
+        preview_attach_input_signal(
+            g_c.range[i],
+            "value-changed");
+
         snprintf(
             label,
             sizeof(label),
@@ -2572,6 +2968,10 @@ static void build_settings_window(GtkShell *shell) {
             row++,
             label,
             make_scale(shell, 45, 100, 1, "%"));
+
+        preview_attach_input_signal(
+            g_c.diagonal[i],
+            "value-changed");
     }
 
 
