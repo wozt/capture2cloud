@@ -26,6 +26,9 @@ void gamepad_bridge_forget(unsigned source);
 void gamepad_bridge_reset(void);
 void gamepad_bridge_press_home(void);
 
+/* Advances backend maintenance; safe with or without GTK. */
+void gamepad_bridge_service(void);
+
 int gamepad_bridge_link_up(void);
 double gamepad_bridge_report_rate(void);
 

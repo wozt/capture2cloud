@@ -828,68 +828,6 @@ static void pcble_start(
     pcble_update_controls(shell);
 }
 
-static void pcble_process_reconnect_request(
-    GtkShell *shell)
-{
-    if (!output_pcble_reconnect_pending()) {
-        return;
-    }
-
-    if (strcmp(
-            gamepad_bridge_backend_name(),
-            "pcble") != 0) {
-        output_pcble_clear_reconnect_request();
-        return;
-    }
-
-    /*
-     * Reconnect is currently a Pro Controller operation.
-     */
-    if (strcmp(
-            pcble_profile(),
-            "pro") != 0) {
-        output_pcble_clear_reconnect_request();
-
-        gtk_label_set_text(
-            GTK_LABEL(g_c.pcble_status),
-            "automatic reconnect is currently available for Pro Controller only");
-
-        pcble_update_controls(shell);
-        return;
-    }
-
-    /*
-     * If a helper owns BlueZ already, first perform exactly what a user
-     * would do manually: Stop session.
-     *
-     * Keep the reconnect request armed. launcher_finished() will clear
-     * g_launcher on this same GTK main context; a later 200 ms tick then
-     * reaches the launch below.
-     */
-    if (output_pcble_session_running()) {
-        if (!output_pcble_session_stopping()) {
-            gtk_label_set_text(
-                GTK_LABEL(g_c.pcble_status),
-                "reconnect requested — stopping current Bluetooth session...");
-
-            output_pcble_stop_session();
-        }
-
-        pcble_update_controls(shell);
-        return;
-    }
-
-    /*
-     * No helper owns BlueZ now. Consume the request and call THE SAME
-     * implementation as clicking "Reconnect paired Switch".
-     */
-    output_pcble_clear_reconnect_request();
-
-    pcble_start(
-        shell,
-        1);
-}
-
 static void pcble_pair_clicked(
     GtkWidget *widget,
     gpointer user_data)
@@ -3709,11 +3647,9 @@ static gboolean on_tick(gpointer user_data) {
     }
 
     /*
-     * Generic backend recovery requests from startup, Maintenance, HTTP
-     * or native clients are deliberately executed here on the GTK thread.
+     * GTK only observes backend recovery state. The backend itself is
+     * serviced by Capture2Cloud's main loop, including in --headless.
      */
-    pcble_process_reconnect_request(shell);
-
     pcble_refresh_status(shell);
 
     if (g_c.adapter_sees) {
