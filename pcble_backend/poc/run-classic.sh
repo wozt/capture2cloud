@@ -2,7 +2,7 @@
 # Run the reversible Classic HID backend.
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run through pkexec or sudo.' >&2; exit 1; }
-[[ $# -ge 1 && $1 =~ ^hci[0-9]+$ ]] || { echo "Usage: $0 hciN [--desktop] [--profile pro|joycon-pair] [--secondary hciN] [--verbose] [--body-color RRGGBB] [--button-color RRGGBB] [--left-grip-color RRGGBB] [--right-grip-color RRGGBB] [--reconnect MAC]" >&2; exit 2; }
+[[ $# -ge 1 && $1 =~ ^hci[0-9]+$ ]] || { echo "Usage: $0 hciN [--wake-probe] [--desktop] [--profile pro|joycon-pair] [--secondary hciN] [--verbose] [--body-color RRGGBB] [--button-color RRGGBB] [--left-grip-color RRGGBB] [--right-grip-color RRGGBB] [--reconnect MAC]" >&2; exit 2; }
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 adapter=$1
 shift
@@ -11,12 +11,14 @@ profile=pro
 secondary=
 reconnect=
 verbose=false
+wake_probe=false
 body_color=828282
 button_color=0F0F0F
 left_grip_color=828282
 right_grip_color=828282
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --wake-probe) wake_probe=true; shift ;;
         --desktop) desktop=true; shift ;;
         --profile) [[ $# -ge 2 ]] || { echo 'Missing profile value' >&2; exit 2; }; profile=$2; shift 2 ;;
         --secondary) [[ $# -ge 2 && $2 =~ ^hci[0-9]+$ ]] || { echo 'Invalid secondary adapter' >&2; exit 2; }; secondary=$2; shift 2 ;;
@@ -82,6 +84,41 @@ else
     done
 fi
 [[ -n "$app" && -x "$app" ]] || { echo 'Build the controller backend first.' >&2; exit 1; }
+
+# Wake-beacon HCI compatibility probe.
+#
+# This path deliberately does not install the pcble bluetoothd override
+# or start a controller session. It briefly stops normal BlueZ, exercises
+# the exact raw LE commands needed by beacon capture/transmit, then
+# restores the service before returning.
+if $wake_probe; then
+    bluetooth_was_active=false
+
+    if systemctl is-active --quiet bluetooth; then
+        bluetooth_was_active=true
+    fi
+
+    restore_probe_bluez() {
+        trap - EXIT
+
+        if $bluetooth_was_active; then
+            systemctl start bluetooth || true
+        fi
+    }
+
+    trap restore_probe_bluez EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    if $bluetooth_was_active; then
+        systemctl stop bluetooth
+    fi
+
+    sleep .2
+
+    "$app" --wake-probe "$adapter"
+    exit $?
+fi
 [[ -d /sys/class/bluetooth/$adapter ]] || { echo 'Adapter not present'; exit 1; }
 [[ -z $secondary || -d /sys/class/bluetooth/$secondary ]] || { echo 'Secondary adapter not present'; exit 1; }
 for controller in /sys/class/bluetooth/hci*; do

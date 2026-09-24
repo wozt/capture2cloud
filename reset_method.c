@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define RESET_BT_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
+
 /*
  * Current legacy reset method: execute scripts/wake_console.sh.
  *
@@ -324,6 +326,134 @@ int reset_method_scan_bluetooth_adapters(
     g_variant_unref(reply);
 
     return count;
+}
+
+
+static int reset_bt_hci_id_valid(const char *id)
+{
+    if (!id ||
+        strncmp(id, "hci", 3) != 0 ||
+        !isdigit((unsigned char)id[3])) {
+        return 0;
+    }
+
+    for (const char *p = id + 3; *p; p++) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int reset_method_test_bluetooth_adapter(
+    const char *adapter_id,
+    char *message,
+    size_t message_size)
+{
+    if (message && message_size) {
+        message[0] = '\0';
+    }
+
+    if (!reset_bt_hci_id_valid(adapter_id)) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Invalid Bluetooth adapter id");
+        }
+        return 0;
+    }
+
+    if (access(RESET_BT_RUNNER, X_OK) != 0) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Bluetooth helper is not installed. Run scripts/install_pcble_backend.sh");
+        }
+        return 0;
+    }
+
+    const char *argv[] = {
+        "pkexec",
+        RESET_BT_RUNNER,
+        adapter_id,
+        "--wake-probe",
+        NULL
+    };
+
+    GError *error = NULL;
+
+    GSubprocess *process =
+        g_subprocess_newv(
+            argv,
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+            G_SUBPROCESS_FLAGS_STDERR_MERGE,
+            &error);
+
+    if (!process) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "%s",
+                error
+                    ? error->message
+                    : "Could not start Bluetooth compatibility probe");
+        }
+
+        g_clear_error(&error);
+        return 0;
+    }
+
+    gchar *output = NULL;
+
+    gboolean communicated =
+        g_subprocess_communicate_utf8(
+            process,
+            NULL,
+            NULL,
+            &output,
+            NULL,
+            &error);
+
+    int ok =
+        communicated &&
+        g_subprocess_get_successful(process);
+
+    if (ok) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Compatible — LE scan, random-address and advertising commands accepted.");
+        }
+    } else if (message && message_size) {
+        if (output && *output) {
+            g_strstrip(output);
+
+            snprintf(
+                message,
+                message_size,
+                "%s",
+                output);
+        } else {
+            snprintf(
+                message,
+                message_size,
+                "%s",
+                error
+                    ? error->message
+                    : "Bluetooth compatibility probe failed");
+        }
+    }
+
+    g_free(output);
+    g_clear_error(&error);
+    g_object_unref(process);
+
+    return ok;
 }
 
 static int script_wake_thread(void *arg)
