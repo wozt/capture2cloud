@@ -690,9 +690,8 @@ static void pcble_verbose_changed(
             : 0);
 }
 
-static void pcble_start(
-    GtkShell *shell,
-    int reconnect)
+static void pcble_start_pair(
+    GtkShell *shell)
 {
     int primary =
         pcble_selected_adapter(
@@ -708,8 +707,10 @@ static void pcble_start(
     const char *profile =
         pcble_profile();
 
-    int pair =
-        strcmp(profile, "joycon-pair") == 0;
+    const int pair =
+        strcmp(
+            profile,
+            "joycon-pair") == 0;
 
     int secondary =
         pcble_selected_adapter(
@@ -722,32 +723,6 @@ static void pcble_start(
             shell,
             "A Joy-Con pair requires two distinct Bluetooth adapters.");
         return;
-    }
-
-    if (reconnect) {
-        if (pair) {
-            gtk_shell_show_error(
-                shell,
-                "Automatic reconnect is currently available for Pro Controller sessions.");
-            return;
-        }
-
-        if (!g_c.pcble_paired_switch[0]) {
-            gtk_shell_show_error(
-                shell,
-                "No paired Switch is stored yet. Use Pair / Sync new Switch first.");
-            return;
-        }
-
-        if (!g_c.pcble_paired_adapter[0] ||
-            g_ascii_strcasecmp(
-                g_c.pcble_paired_adapter,
-                g_c.pcble_adapters[primary].address) != 0) {
-            gtk_shell_show_error(
-                shell,
-                "Reconnect requires the Bluetooth adapter used for the original pairing.");
-            return;
-        }
     }
 
     char body[7];
@@ -787,16 +762,14 @@ static void pcble_start(
 
     char error[256];
 
-    int ok =
+    const int ok =
         output_pcble_start_session(
             g_c.pcble_adapters[primary].id,
             pair
                 ? g_c.pcble_adapters[secondary].id
                 : NULL,
             profile,
-            reconnect
-                ? g_c.pcble_paired_switch
-                : NULL,
+            NULL,
             body,
             buttons,
             left,
@@ -821,9 +794,7 @@ static void pcble_start(
 
     gtk_label_set_text(
         GTK_LABEL(g_c.pcble_status),
-        reconnect
-            ? "reconnecting to paired Switch..."
-            : "waiting for pairing — open Controllers → Change Grip/Order on the Switch");
+        "waiting for pairing — open Controllers → Change Grip/Order on the Switch");
 
     pcble_update_controls(shell);
 }
@@ -833,7 +804,7 @@ static void pcble_pair_clicked(
     gpointer user_data)
 {
     (void)widget;
-    pcble_start(user_data, 0);
+    pcble_start_pair(user_data);
 }
 
 static void pcble_reconnect_clicked(
@@ -841,7 +812,23 @@ static void pcble_reconnect_clicked(
     gpointer user_data)
 {
     (void)widget;
-    pcble_start(user_data, 1);
+
+    GtkShell *shell =
+        user_data;
+
+    /*
+     * No Bluetooth logic lives here.
+     *
+     * This is intentionally the SAME call used by Maintenance,
+     * remote clients and startup.
+     */
+    gamepad_bridge_reset();
+
+    gtk_label_set_text(
+        GTK_LABEL(g_c.pcble_status),
+        "reconnect requested...");
+
+    pcble_update_controls(shell);
 }
 
 static void pcble_stop_clicked(
