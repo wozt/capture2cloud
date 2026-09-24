@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <ctype.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -1925,6 +1926,320 @@ static gboolean input(GIOChannel *io,GIOCondition cond,gpointer unused) {
     } else log_event("input_help","buttons HEX HEX HEX | sticks LX LY RX RY | release | status | quit; inputs release after 500 ms");
     g_free(line);return G_SOURCE_CONTINUE;
 }
+
+#define WAKE_PROBE_OCF_SET_RANDOM_ADDRESS          0x0005
+#define WAKE_PROBE_OCF_SET_ADV_PARAMETERS          0x0006
+#define WAKE_PROBE_OCF_SET_ADV_DATA                0x0008
+#define WAKE_PROBE_OCF_SET_ADV_ENABLE              0x000A
+#define WAKE_PROBE_OCF_SET_SCAN_PARAMETERS         0x000B
+#define WAKE_PROBE_OCF_SET_SCAN_ENABLE             0x000C
+
+static int wake_probe_adapter_index(const char *id)
+{
+    if (!id ||
+        strncmp(id, "hci", 3) != 0 ||
+        !isdigit((unsigned char)id[3])) {
+        return -1;
+    }
+
+    char *end = NULL;
+    long value =
+        strtol(id + 3, &end, 10);
+
+    if (!end ||
+        *end ||
+        value < 0 ||
+        value > 65535) {
+        return -1;
+    }
+
+    return (int)value;
+}
+
+static int wake_probe_command(
+    int dd,
+    uint16_t ocf,
+    const void *parameters,
+    int parameter_size,
+    const char *name,
+    int quiet)
+{
+    uint8_t status = 0xff;
+
+    struct hci_request request;
+    memset(&request, 0, sizeof(request));
+
+    request.ogf = OGF_LE_CTL;
+    request.ocf = ocf;
+    request.event = EVT_CMD_COMPLETE;
+    request.cparam = (void *)parameters;
+    request.clen = parameter_size;
+    request.rparam = &status;
+    request.rlen = sizeof(status);
+
+    if (hci_send_req(
+            dd,
+            &request,
+            2000) < 0) {
+        if (!quiet) {
+            fprintf(
+                stderr,
+                "%s failed: %s\n",
+                name,
+                strerror(errno));
+        }
+        return 0;
+    }
+
+    if (status != 0x00) {
+        if (!quiet) {
+            fprintf(
+                stderr,
+                "%s failed: controller status 0x%02X\n",
+                name,
+                status);
+        }
+        return 0;
+    }
+
+    if (!quiet) {
+        printf(
+            "OK  %s\n",
+            name);
+        fflush(stdout);
+    }
+
+    return 1;
+}
+
+static int wake_probe_run(const char *adapter_id)
+{
+    int dev_id =
+        wake_probe_adapter_index(
+            adapter_id);
+
+    if (dev_id < 0) {
+        fprintf(
+            stderr,
+            "Invalid wake-probe adapter: %s\n",
+            adapter_id ? adapter_id : "(null)");
+        return 2;
+    }
+
+    /*
+     * BlueZ is stopped by the privileged runner before entering here.
+     * Bring the kernel HCI controller up so raw LE commands can be
+     * exercised directly.
+     */
+    int control =
+        socket(
+            AF_BLUETOOTH,
+            SOCK_RAW | SOCK_CLOEXEC,
+            BTPROTO_HCI);
+
+    if (control < 0) {
+        fprintf(
+            stderr,
+            "Could not open HCI control socket: %s\n",
+            strerror(errno));
+        return 1;
+    }
+
+    if (ioctl(
+            control,
+            HCIDEVUP,
+            dev_id) < 0 &&
+        errno != EALREADY) {
+        fprintf(
+            stderr,
+            "Could not bring %s up: %s\n",
+            adapter_id,
+            strerror(errno));
+
+        close(control);
+        return 1;
+    }
+
+    close(control);
+
+    int dd =
+        hci_open_dev(dev_id);
+
+    if (dd < 0) {
+        fprintf(
+            stderr,
+            "Could not open %s: %s\n",
+            adapter_id,
+            strerror(errno));
+        return 1;
+    }
+
+    /*
+     * Safe capture-side probe.
+     *
+     * Passive LE scan, short interval/window, no duplicate filtering.
+     */
+    const uint8_t scan_parameters[] = {
+        0x00,       /* passive scan */
+        0x10, 0x00, /* interval */
+        0x10, 0x00, /* window */
+        0x00,       /* public own address */
+        0x00        /* accept all */
+    };
+
+    const uint8_t scan_on[] = {
+        0x01,
+        0x00
+    };
+
+    const uint8_t scan_off[] = {
+        0x00,
+        0x00
+    };
+
+    /*
+     * Static random address:
+     *
+     *   C0:00:00:00:00:01
+     *
+     * HCI transports BD_ADDR least-significant byte first.
+     */
+    const uint8_t random_address[] = {
+        0x01, 0x00, 0x00,
+        0x00, 0x00, 0xC0
+    };
+
+    /*
+     * Same advertising mode that successfully woke the user's Switch 2:
+     *
+     *   ADV_NONCONN_IND
+     *   own address = random
+     *   channels 37/38/39
+     */
+    const uint8_t advertising_parameters[] = {
+        0x20, 0x00, /* minimum interval */
+        0x40, 0x00, /* maximum interval */
+        0x03,       /* ADV_NONCONN_IND */
+        0x01,       /* random own address */
+        0x00,       /* direct address type */
+        0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+        0x07,       /* all advertising channels */
+        0x00        /* no filter */
+    };
+
+    uint8_t advertising_data[32];
+    memset(
+        advertising_data,
+        0,
+        sizeof(advertising_data));
+
+    advertising_data[0] = 3;
+    advertising_data[1] = 0x02;
+    advertising_data[2] = 0x01;
+    advertising_data[3] = 0x06;
+
+    const uint8_t advertise_on = 0x01;
+    const uint8_t advertise_off = 0x00;
+
+    int ok = 1;
+
+#define WAKE_PROBE_STEP(ocf, data, name)                     \
+    do {                                                      \
+        if (!wake_probe_command(                              \
+                dd,                                           \
+                (ocf),                                        \
+                (data),                                       \
+                sizeof(data),                                 \
+                (name),                                       \
+                0)) {                                         \
+            ok = 0;                                           \
+            goto wake_probe_cleanup;                          \
+        }                                                     \
+    } while (0)
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_SCAN_PARAMETERS,
+        scan_parameters,
+        "LE Set Scan Parameters");
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+        scan_on,
+        "LE Scan Enable");
+
+    usleep(20000);
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+        scan_off,
+        "LE Scan Disable");
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_RANDOM_ADDRESS,
+        random_address,
+        "LE Set Random Address");
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_ADV_PARAMETERS,
+        advertising_parameters,
+        "LE Set Advertising Parameters");
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_ADV_DATA,
+        advertising_data,
+        "LE Set Advertising Data");
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_ADV_ENABLE,
+        &advertise_on,
+        "LE Advertising Enable");
+
+    usleep(20000);
+
+    WAKE_PROBE_STEP(
+        WAKE_PROBE_OCF_SET_ADV_ENABLE,
+        &advertise_off,
+        "LE Advertising Disable");
+
+wake_probe_cleanup:
+
+    /*
+     * Best-effort cleanup even when one of the tested commands fails.
+     * BlueZ is restarted by the runner immediately afterwards as the
+     * final authoritative restoration step.
+     */
+    wake_probe_command(
+        dd,
+        WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+        scan_off,
+        sizeof(scan_off),
+        "cleanup scan disable",
+        1);
+
+    wake_probe_command(
+        dd,
+        WAKE_PROBE_OCF_SET_ADV_ENABLE,
+        &advertise_off,
+        sizeof(advertise_off),
+        "cleanup advertising disable",
+        1);
+
+    close(dd);
+
+#undef WAKE_PROBE_STEP
+
+    if (ok) {
+        printf(
+            "WAKE_PROBE_OK %s\n",
+            adapter_id);
+        fflush(stdout);
+        return 0;
+    }
+
+    return 1;
+}
+
 static const char xml[]=
 "<node><interface name='org.bluez.Agent1'>"
 "<method name='Release'/><method name='Cancel'/>"
@@ -1939,6 +2254,9 @@ static const char xml[]=
 "<method name='NewConnection'><arg type='o' direction='in'/><arg type='h' direction='in'/><arg type='a{sv}' direction='in'/></method>"
 "<method name='RequestDisconnection'><arg type='o' direction='in'/></method></interface></node>";
 int main(int argc,char **argv) {
+    if(argc==3 && !strcmp(argv[1],"--wake-probe"))
+        return wake_probe_run(argv[2]);
+
     mock_mode=argc>=2 && !strcmp(argv[1],"--mock");
     if(mock_mode) {
         if(argc>3 || (argc==3 && !select_controller(argv[2]))) {fprintf(stderr,"Usage: %s --mock [pro|joycon-l|joycon-r]\n",argv[0]);return 2;}
