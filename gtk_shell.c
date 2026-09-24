@@ -739,6 +739,69 @@ static void reset_capture_clicked(
     SDL_DetachThread(thread);
 }
 
+typedef struct {
+    char adapter[16];
+    int ok;
+    char message[512];
+} ResetBeaconTestJob;
+
+static gboolean reset_beacon_test_finished(
+    gpointer user_data)
+{
+    ResetBeaconTestJob *job =
+        user_data;
+
+    if (g_c.reset_bt_status) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            job->message[0]
+                ? job->message
+                : (job->ok
+                    ? "Wake beacon transmitted."
+                    : "Wake beacon transmission failed."));
+    }
+
+    if (g_c.reset_bt_test_beacon) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_beacon,
+            TRUE);
+    }
+
+    if (g_c.reset_bt_capture) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_capture,
+            TRUE);
+    }
+
+    if (g_c.reset_bt_test_adapter) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_adapter,
+            TRUE);
+    }
+
+    free(job);
+    return G_SOURCE_REMOVE;
+}
+
+static int reset_beacon_test_thread(
+    void *user_data)
+{
+    ResetBeaconTestJob *job =
+        user_data;
+
+    job->ok =
+        reset_method_test_bluetooth_beacon(
+            job->adapter,
+            job->message,
+            sizeof(job->message));
+
+    g_idle_add(
+        reset_beacon_test_finished,
+        job);
+
+    return 0;
+}
+
 static void reset_test_beacon_clicked(
     GtkWidget *widget,
     gpointer user_data)
@@ -756,9 +819,79 @@ static void reset_test_beacon_clicked(
         return;
     }
 
+    if (output_pcble_session_running() ||
+        output_pcble_ipc_up()) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Controller Bluetooth session is active. Wait for it to stop before transmitting the wake beacon.");
+        return;
+    }
+
+    ResetBeaconTestJob *job =
+        calloc(
+            1,
+            sizeof(*job));
+
+    if (!job) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Could not allocate wake beacon test job.");
+        return;
+    }
+
+    snprintf(
+        job->adapter,
+        sizeof(job->adapter),
+        "%s",
+        g_c.reset_bt_adapters[index].id);
+
+    reset_method_set_bluetooth_adapter(
+        g_c.reset_bt_adapters[index].address);
+
     gtk_label_set_text(
         GTK_LABEL(g_c.reset_bt_status),
-        "Beacon test ready — privileged HCI backend not connected yet.");
+        "Transmitting saved Switch 2 wake beacon for 3 seconds...");
+
+    gtk_widget_set_sensitive(
+        g_c.reset_bt_test_beacon,
+        FALSE);
+
+    gtk_widget_set_sensitive(
+        g_c.reset_bt_capture,
+        FALSE);
+
+    gtk_widget_set_sensitive(
+        g_c.reset_bt_test_adapter,
+        FALSE);
+
+    SDL_Thread *thread =
+        SDL_CreateThread(
+            reset_beacon_test_thread,
+            "reset-bt-send",
+            job);
+
+    if (!thread) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_beacon,
+            TRUE);
+
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_capture,
+            TRUE);
+
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_adapter,
+            TRUE);
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Could not start wake beacon transmission.");
+
+        free(job);
+        return;
+    }
+
+    SDL_DetachThread(thread);
 }
 
 static void reset_load_config(GtkShell *shell)

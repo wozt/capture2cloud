@@ -2819,6 +2819,325 @@ static int wake_capture_run(
     return 0;
 }
 
+
+static int wake_send_hex_value(
+    char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+
+    if (c >= 'a' && c <= 'f') {
+        return 10 + c - 'a';
+    }
+
+    if (c >= 'A' && c <= 'F') {
+        return 10 + c - 'A';
+    }
+
+    return -1;
+}
+
+static int wake_send_decode_hex(
+    const char *text,
+    uint8_t *out,
+    size_t out_size,
+    size_t *decoded_size)
+{
+    if (decoded_size) {
+        *decoded_size = 0;
+    }
+
+    if (!text ||
+        !out) {
+        return 0;
+    }
+
+    size_t length =
+        strlen(text);
+
+    if (length == 0 ||
+        (length & 1u) != 0 ||
+        length / 2 > out_size) {
+        return 0;
+    }
+
+    for (size_t i = 0;
+         i < length / 2;
+         i++) {
+
+        int high =
+            wake_send_hex_value(
+                text[i * 2]);
+
+        int low =
+            wake_send_hex_value(
+                text[i * 2 + 1]);
+
+        if (high < 0 ||
+            low < 0) {
+            return 0;
+        }
+
+        out[i] =
+            (uint8_t)(
+                (high << 4) |
+                low);
+    }
+
+    if (decoded_size) {
+        *decoded_size =
+            length / 2;
+    }
+
+    return 1;
+}
+
+static int wake_send_run(
+    const char *adapter_id,
+    const char *controller_address,
+    const char *advertisement_hex)
+{
+    int dev_id =
+        wake_probe_adapter_index(
+            adapter_id);
+
+    if (dev_id < 0) {
+        fprintf(
+            stderr,
+            "Invalid wake-send adapter\n");
+        return 2;
+    }
+
+    bdaddr_t controller;
+
+    if (!controller_address ||
+        str2ba(
+            controller_address,
+            &controller) < 0) {
+        fprintf(
+            stderr,
+            "Invalid controller Bluetooth address\n");
+        return 2;
+    }
+
+    uint8_t advertisement[31];
+    size_t advertisement_size = 0;
+
+    if (!wake_send_decode_hex(
+            advertisement_hex,
+            advertisement,
+            sizeof(advertisement),
+            &advertisement_size)) {
+        fprintf(
+            stderr,
+            "Invalid Switch 2 advertisement data\n");
+        return 2;
+    }
+
+    /*
+     * Never transmit arbitrary data through this privileged helper.
+     * Require the Nintendo Switch 2 wake manufacturer payload that the
+     * capture path itself recognises.
+     */
+    if (!wake_capture_find_switch2(
+            advertisement,
+            advertisement_size,
+            NULL)) {
+        fprintf(
+            stderr,
+            "Advertisement is not a Switch 2 Nintendo wake beacon\n");
+        return 2;
+    }
+
+    int control =
+        socket(
+            AF_BLUETOOTH,
+            SOCK_RAW | SOCK_CLOEXEC,
+            BTPROTO_HCI);
+
+    if (control < 0) {
+        fprintf(
+            stderr,
+            "Could not open HCI control socket: %s\n",
+            strerror(errno));
+        return 1;
+    }
+
+    if (ioctl(
+            control,
+            HCIDEVUP,
+            dev_id) < 0 &&
+        errno != EALREADY) {
+        fprintf(
+            stderr,
+            "Could not bring %s up: %s\n",
+            adapter_id,
+            strerror(errno));
+
+        close(control);
+        return 1;
+    }
+
+    close(control);
+
+    int dd =
+        hci_open_dev(
+            dev_id);
+
+    if (dd < 0) {
+        fprintf(
+            stderr,
+            "Could not open %s: %s\n",
+            adapter_id,
+            strerror(errno));
+        return 1;
+    }
+
+    const uint8_t scan_off[] = {
+        0x00,
+        0x00
+    };
+
+    const uint8_t advertising_off =
+        0x00;
+
+    const uint8_t advertising_on =
+        0x01;
+
+    /*
+     * str2ba() stores the address in the byte order expected by HCI.
+     *
+     * Example:
+     *   38:C6:CE:11:2B:F7
+     *
+     * becomes:
+     *   F7 2B 11 CE C6 38
+     *
+     * which is exactly the proven wake PoC.
+     */
+    uint8_t random_address[6];
+
+    memcpy(
+        random_address,
+        controller.b,
+        sizeof(random_address));
+
+    const uint8_t advertising_parameters[] = {
+        0x20, 0x00,
+        0x40, 0x00,
+        0x03,       /* ADV_NONCONN_IND */
+        0x01,       /* random own address */
+        0x00,
+        0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+        0x07,
+        0x00
+    };
+
+    uint8_t advertising_data[32];
+
+    memset(
+        advertising_data,
+        0,
+        sizeof(advertising_data));
+
+    advertising_data[0] =
+        (uint8_t)advertisement_size;
+
+    memcpy(
+        advertising_data + 1,
+        advertisement,
+        advertisement_size);
+
+    /*
+     * Start from a known controller state.
+     */
+    wake_probe_command(
+        dd,
+        WAKE_PROBE_OCF_SET_SCAN_ENABLE,
+        scan_off,
+        sizeof(scan_off),
+        "cleanup scan disable",
+        1);
+
+    wake_probe_command(
+        dd,
+        WAKE_PROBE_OCF_SET_ADV_ENABLE,
+        &advertising_off,
+        sizeof(advertising_off),
+        "cleanup advertising disable",
+        1);
+
+    int ok = 1;
+
+#define WAKE_SEND_STEP(ocf, data, name)                       \
+    do {                                                       \
+        if (!wake_probe_command(                               \
+                dd,                                            \
+                (ocf),                                         \
+                (data),                                        \
+                sizeof(data),                                  \
+                (name),                                        \
+                0)) {                                          \
+            ok = 0;                                            \
+            goto wake_send_cleanup;                            \
+        }                                                      \
+    } while (0)
+
+    WAKE_SEND_STEP(
+        WAKE_PROBE_OCF_SET_RANDOM_ADDRESS,
+        random_address,
+        "LE Set Random Address");
+
+    WAKE_SEND_STEP(
+        WAKE_PROBE_OCF_SET_ADV_PARAMETERS,
+        advertising_parameters,
+        "LE Set Advertising Parameters");
+
+    WAKE_SEND_STEP(
+        WAKE_PROBE_OCF_SET_ADV_DATA,
+        advertising_data,
+        "LE Set Advertising Data");
+
+    WAKE_SEND_STEP(
+        WAKE_PROBE_OCF_SET_ADV_ENABLE,
+        &advertising_on,
+        "LE Advertising Enable");
+
+    fprintf(
+        stderr,
+        "Transmitting Switch 2 wake beacon for 3 seconds...\n");
+
+    g_usleep(
+        3 * G_USEC_PER_SEC);
+
+wake_send_cleanup:
+
+    wake_probe_command(
+        dd,
+        WAKE_PROBE_OCF_SET_ADV_ENABLE,
+        &advertising_off,
+        sizeof(advertising_off),
+        "LE Advertising Disable",
+        ok ? 0 : 1);
+
+    close(dd);
+
+#undef WAKE_SEND_STEP
+
+    if (!ok) {
+        return 1;
+    }
+
+    printf(
+        "WAKE_SEND_OK %s\n",
+        adapter_id);
+
+    fflush(stdout);
+    return 0;
+}
+
 static const char xml[]=
 "<node><interface name='org.bluez.Agent1'>"
 "<method name='Release'/><method name='Cancel'/>"
@@ -2838,6 +3157,9 @@ int main(int argc,char **argv) {
 
     if(argc==3 && !strcmp(argv[1],"--wake-capture"))
         return wake_capture_run(argv[2]);
+
+    if(argc==5 && !strcmp(argv[1],"--wake-send"))
+        return wake_send_run(argv[2],argv[3],argv[4]);
 
     mock_mode=argc>=2 && !strcmp(argv[1],"--mock");
     if(mock_mode) {
