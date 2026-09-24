@@ -2,306 +2,438 @@
 
 # Capture2Cloud
 
-**Play your game console from a browser, a phone, or another Switch —
-anywhere on your network.**
+**Play your game console from a browser, phone, Nintendo Switch or Wii U — anywhere on your network.**
 
 <br clear="left">
 
-A USB capture card takes the HDMI out of a console; this streams it to
-whatever you are holding, and sends your buttons back to the console
-through a USB adapter that it sees as an ordinary controller. Nothing is
-installed on the console and nothing is modified on it.
+Capture2Cloud takes the HDMI output of a console through a USB capture card,
+streams it to one or more clients, and sends controller input back to the
+console.
+
+Controller input from browsers, native clients and a controller connected to
+the host is merged into one common state, then sent through a selectable
+controller-output backend.
 
 > **Status:** a working personal project, not a product. It runs daily on
-> the setup it was built for. [WORKINPROGRESS.md](WORKINPROGRESS.md) has
-> the honest state of things — what is measured, what is guessed, and
-> what is still wrong.
+> the setup it was built for. [WORKINPROGRESS.md](WORKINPROGRESS.md) contains
+> development notes, measurements and known limitations.
 
 ---
 
-## What you get
+## Features
 
-**A picture and a sound, with as little delay as the hardware allows.**
-The card's frames are encoded once and shared by everyone watching, so a
-second viewer costs bandwidth rather than a processor core.
-
-**Something to play with, whatever you are holding.** A real controller
-plugged into your phone or laptop, a touch pad drawn over the picture,
-or the keyboard and mouse. All three end up as the same twenty-one bytes
-by the time they reach the console.
-
-**Watch, or play.** Anyone with the link can watch. Driving the console
-needs the password, and that is checked on the host — not hidden in the
-page, where hiding it would mean anyone who opens the developer tools is
-a player.
-
-**Four client types.** The browser, Android app, Nintendo Switch
-homebrew and Wii U console homebrew can all use the same host. Watching
-and playing still use the same host-side authentication.
-
-**A server control panel on the machine itself**, opened from the tray.
-It separates server/hardware controls from a dedicated **Clients** section,
-where each remote client family has its own clearly labelled page. Console
-input output is its own section too, with a pluggable backend selector for
-Titan/ConsoleTuner today and the planned Joy-Con 2 BLE and JOCP/Pico paths.
-
-**Waking the console**, optionally, by power-cycling a Home Assistant
-smart plug — because cutting and restoring power is what wakes some
-consoles from sleep.
+* Low-latency video and audio streaming
+* Browser client with WebRTC or WebSocket/WebCodecs
+* Native Android client
+* Nintendo Switch homebrew client
+* Native Wii U console client
+* Direct Wii U GamePad streaming
+* Multiple clients at the same time
+* Password-protected controller access
+* Touch controls, keyboard/mouse and physical controllers
+* Local controller input on the Linux host
+* Pluggable controller-output backends
+* Live input and output stick shaping
+* Optional Home Assistant console wake-up
 
 ---
 
-## How it fits together
+## Architecture
 
 Video paths:
 
-- HDMI capture card -> Capture2Cloud host
-- Browser -> WebRTC or WebSocket
-- Android and Nintendo Switch -> native H.264 transport
-- Wii U console -> dedicated H.264 video and PCM audio path
-- Wii U GamePad -> dedicated DRC path
+* HDMI capture card -> Capture2Cloud
+* Browser -> WebRTC or WebSocket
+* Android / Nintendo Switch -> native H.264 transport
+* Wii U console -> dedicated H.264 path
+* Wii U GamePad -> dedicated DRC path
 
-Controller input from browsers, native clients and local controllers is
-merged by the host into one controller state.
+Controller inputs from all clients and the local Linux controller are merged by
+the host.
 
-The merged controller state is then sent through a selectable output backend:
+The resulting controller state is sent through one selected output backend:
 
-- Titan / ConsoleTuner USB -- current backend
-- Joy-Con 2 Bluetooth through pcble2joycon2 -- planned
-- JOCP / Raspberry Pi Pico 2 W -- planned
+* **Titan / ConsoleTuner USB**
+* **pcble2gamepad Bluetooth**
+* **JOCP / Raspberry Pi Pico 2 W** — planned
 
-The host-side controller path now ends in a pluggable output-backend
-interface. Titan/ConsoleTuner is the first implementation; future
-pcble2joycon2 and JOCP/Pico 2 W backends can consume the same merged
-controller state without changing the browser or native-client protocols.
+Clients do not need to know which output backend is active.
 
-The console is driven by a real adapter pretending to be a controller,
-which is why nothing has to change on the console. Which controller it
-pretends to be — Switch Pro, Xbox pad, DualShock — is a setting; it is
-written into the adapter's own memory, so it survives everything, and it
-only takes effect once the adapter has been unplugged from the console
-and back in. The settings window says so and waits for it.
+The historical `RESET_DONGLE` command therefore means **recover the currently
+selected controller-output backend**: Titan can recover its USB connection,
+while pcble2gamepad reconnects the paired console.
 
 ---
 
 ## What you need
 
-- **A USB HDMI capture card** that Linux sees as a webcam (UVC/V4L2).
-  Developed against a MACROSILICON USB3 device.
-- **A ConsoleTuner adapter** — Titan One, Cronus, CronusMAX — if you want
-  to *play*. Without one everything still works as a view-only stream.
-- **Linux with X11.** The local window uses SDL2, GTK3 and an
-  X-specific hint.
+### Required
+
+* **Linux PC**
+* **USB HDMI capture card** supported by V4L2/UVC
+* a console with HDMI output
+* another device to use as a client
+
+Capture2Cloud was mainly developed with a MACROSILICON USB3 capture device.
+
+### Controller output
+
+To actually control the console, you currently have two choices.
+
+#### Titan / ConsoleTuner
+
+A compatible USB controller adapter such as:
+
+* Titan One
+* Cronus / CronusMAX
+* another supported ConsoleTuner-compatible adapter
+
+#### pcble2gamepad
+
+A **Linux-compatible Bluetooth dongle supporting Classic Bluetooth / BR/EDR**.
+
+One Bluetooth adapter is enough for Pro Controller emulation.
+
+Using a dedicated USB Bluetooth dongle is recommended because pcble2gamepad
+temporarily takes control of the Bluetooth stack while the virtual controller
+session is running.
+
+The experimental Joy-Con pair mode requires two Bluetooth adapters.
+
+Without an output backend, Capture2Cloud still works as a view-only streaming
+server.
 
 ---
 
 ## Getting started
 
 ```sh
-git clone <this-repo> capture2cloud
+git clone https://github.com/wozt/capture2cloud
 cd capture2cloud
+
 ./scripts/install_deps.sh
 $EDITOR scripts/.env
 ```
 
-The script installs everything, adds a udev rule so the adapter works
-without root, and copies `scripts/.env.example` to `scripts/.env`. On a
-distribution it does not know, it prints the equivalent package list
-instead of guessing.
-
-Two things to set, and one you should:
+At minimum, configure your capture devices:
 
 ```sh
-v4l2-ctl --list-devices     # which /dev/video* is the card
-pactl list short sources    # which source is its sound
+v4l2-ctl --list-devices
+pactl list short sources
 ```
+
+Example:
 
 ```ini
 VIDEO_DEVICE=/dev/video0
 AUDIO_SOURCE=alsa_input.usb-MACROSILICON...
-PLAYER_PASSWORD=something                # the one you should
+PLAYER_PASSWORD=something
 ```
 
-**Set the password.** Without it, anyone who opens the page can drive
-the console — and so can any website you happen to visit, through a
-cross-origin request that reaches the "wake the console" button.
-
-Then start it:
+Then start Capture2Cloud:
 
 ```sh
-./toggle_capture2cloud.sh              # a window on this machine
-./toggle_capture2cloud_headless.sh     # no window; the page is the interface
+./toggle_capture2cloud.sh
 ```
 
-Both are toggles: run one again to stop it. Open
-`http://<this-machine>:5080` from anything on the network.
+or without the local window:
+
+```sh
+./toggle_capture2cloud_headless.sh
+```
+
+Open:
+
+```text
+http://<host>:5080
+```
+
+Run the launcher again to stop the server.
+
+---
+
+## pcble2gamepad Bluetooth backend
+
+Capture2Cloud includes an integrated version of **pcble2gamepad**.
+
+Instead of sending controller state to an external USB adapter, the Linux host
+itself appears to the console as a Nintendo controller over Classic Bluetooth.
+
+The currently validated profile is **Nintendo Pro Controller**.
+
+Install the privileged helper once:
+
+```sh
+sudo ./scripts/install_pcble_backend.sh
+```
+
+The main Capture2Cloud process remains unprivileged. Only the separate Bluetooth
+helper temporarily takes control of BlueZ.
+
+The **Controller output** page provides:
+
+* Bluetooth adapter discovery
+* adapter selection
+* controller profile selection
+* **Pair / Sync new Switch**
+* **Reconnect paired Switch**
+* saved pairing information
+* connection status
+* controller colour configuration
+
+Capture2Cloud remembers both:
+
+* the paired console Bluetooth address
+* the physical Bluetooth adapter MAC address
+
+The adapter is remembered by MAC rather than by `hci0`, `hci1`, etc., because
+Linux may assign a different HCI number after rebooting or replugging USB
+devices.
+
+The same pcble recovery operation is used for:
+
+* automatic reconnect at startup
+* **Reconnect paired Switch**
+* the Maintenance recovery button
+* browser reset requests
+* native-client `RESET_DONGLE` requests
+
+The recovery logic belongs to the backend rather than GTK, so it also works with
+a headless Capture2Cloud server.
+
+---
+
+## Controller input and shaping
+
+### Local controller
+
+A controller connected directly to the Linux host can be selected from the
+**Local controller input** page.
+
+The selected controller is remembered by SDL GUID rather than by its temporary
+device index, so normal replugging or rebooting should not require selecting it
+again.
+
+### Input shaping
+
+Input shaping affects only the local physical controller.
+
+Available controls include:
+
+* dead zone
+* stick range
+* diagonal range
+* trigger threshold
+* Y-axis inversion
+
+### Output shaping
+
+Output shaping happens **after all controller sources have been merged**.
+
+It therefore applies equally to input coming from:
+
+* browser
+* Android
+* Nintendo Switch
+* Wii U
+* local Linux controller
+
+Changes are applied live.
+
+The GTK interface also draws the resulting left and right stick shapes so dead
+zones, cardinal saturation and diagonal saturation can be seen directly.
+
+### Nintendo stick calibration
+
+The pcble backend sends raw 12-bit Nintendo stick values and advertises matching
+factory calibration data to the console.
+
+Keeping those two sides consistent fixes the case where full cardinal movement
+could stop short while diagonal movement reached the edge of the Nintendo
+calibration screen.
 
 ---
 
 ## Playing
 
-Click **start stream**, then **log in to play** and type the password.
-Pick your input from the *gamepad* dropdown: a controller it detected,
-**Virtual buttons (touch)**, or **Keyboard/mouse**.
+Click **start stream**, then **log in to play** and enter the configured
+password.
 
-**The touch pad** is a transparent overlay: two sticks, a d-pad with
-real diagonals, face buttons, shoulders and triggers, in Xbox,
-PlayStation or Nintendo lettering. A "move buttons" mode lets you drag
-any control to where your thumbs actually are, and remembers it.
+Depending on the client, input can come from:
 
-**Real controllers get their own remapping panel** — press a button,
-bind it — kept per controller, because browsers describe the same pad
-differently depending on the day and no single mapping fits them all.
+* physical controller
+* virtual touch controls
+* keyboard and mouse
+* the controller connected locally to the Capture2Cloud host
 
-**Keyboard and mouse** drive the same virtual pad, the mouse on the
-right stick through pointer lock, with named binding profiles.
+All controller sources eventually become the same common controller state on
+the server.
+
+The browser touch interface provides sticks, d-pad, face buttons, shoulders and
+triggers, and allows the controls to be repositioned.
+
+Physical browser controllers have their own remapping configuration.
+
+Keyboard and mouse use the same virtual controller path, with pointer lock
+available for right-stick control.
 
 ---
 
-## Two ways the page can receive the stream
+## Browser transports
 
-The page can take the video either way, and the choice is a setting in
-its own menu — one or the other, for everybody, switchable while
-running. `WEB_TRANSPORT` in the `.env` only decides which one the host
-*starts* on.
+The browser supports two video transports.
 
-**WebRTC** is the default and the faster of the two. Its media travels
-peer-to-peer over UDP, so a lost packet costs one frame and nothing
-waits for it.
+### WebRTC
 
-**WebSocket** carries the same protocol the Android and Switch clients
-speak, and the browser decodes it with WebCodecs. It is ordinary web
-traffic, which is the whole point: Cloudflare, Nginx and Authelia relay
-it without being told anything, where WebRTC's media never touches the
-HTTP chain at all and needs STUN — possibly TURN — to leave the house.
+The default low-latency path.
 
-The trade is TCP's, and it is real: a lost packet stalls everything
-behind it instead of costing one frame. On a good link you will not
-notice; on a lossy one you swap artefacts for pauses, which is the wrong
-way round for something you are playing. Hence a choice, not a
-replacement.
+Media travels directly over UDP, making packet loss preferable to blocking
+later frames.
 
-Each of these is its own encode, made only while somebody is watching
-it. A path nobody is on costs nothing.
+### WebSocket / WebCodecs
 
-The same rule extends to the native clients. Switch/Android share their native
-H.264 chain, while Wii U console and Wii U GamePad each have dedicated paths
-for their very different hardware.
+Carries the native Capture2Cloud stream over ordinary TCP/WebSocket traffic.
 
-The development setup has been tested with **four different client families
-connected simultaneously**, without forcing them onto one common resolution,
-bitrate or decoder profile.
+This is useful behind conventional HTTP proxies such as Nginx, Cloudflare or
+Authelia, although TCP packet loss can stall later data and therefore behaves
+worse than WebRTC on lossy links.
+
+Each encode path runs only while at least one client needs it.
 
 ---
 
 ## Native clients
 
-The native clients skip the browser and speak `c2s_protocol.h` directly.
+### Nintendo Switch
 
-**`switch_homebrew/`** — H.264 at 720p60, decoded on the console's video
-engine, with controller and touch input.
+`switch_homebrew/`
 
-**`android/`** — hardware H.264, Bluetooth/USB controllers, touch
-controls and automatic bitrate.
+Native H.264 client with controller and touch input.
 
-**`wiiu_console/`** — a full native client running directly on a Wii U.
-The validated path is 720p60 H.264 decoded by the console's **H264DEC**
-hardware decoder and displayed from its NV12 decode buffers through a custom
-**GX2 zero-copy** renderer. Raw 48 kHz stereo PCM arrives separately over UDP
-and is played directly through **AX**.
+### Android
 
-It has GamePad controls, remappable bindings, 480p/720p and 30/60 fps stream
-profiles, password login through the Wii U software keyboard, saved session
-tokens, diagnostics, display-target settings and remote HOME. Normal Wii U
-HOME-menu suspend/resume/exit has been validated on hardware.
+`android/`
 
-Build and installation instructions live in
-[`wiiu_console/README.md`](wiiu_console/README.md).
+Hardware H.264 decoding with Bluetooth/USB controllers, touch controls and
+automatic bitrate handling.
 
-The Wii U GamePad sends the same 21-slot controller state as the other
-clients, mapped by physical button position. The menu supports host and
-port configuration, password login through `nn::swkbd`, saved session
-tokens, diagnostics, and **REMOTE HOME** for opening the captured
-console's system menu.
+### Wii U console
 
-The Wii U client uses **TCP 5083** for H.264/control and **UDP 5084** for
-PCM audio. Authentication uses `/login` on `WEB_PORT` (5080 by default).
-The password itself is never stored; only the temporary session token
-may be saved to SD.
+`wiiu_console/`
 
-Its Latency tab saves two independent A/B switches: renderer VSync and an
-asynchronous TCP receiver. The latter submits complete H.264 access units
-to H264DEC while the UI thread is waiting for VBlank; the validated defaults
-remain VSync on and frame-loop receive.
+A native Wii U client using:
+
+* **H264DEC** hardware video decoding
+* custom **GX2 NV12 zero-copy rendering**
+* GamePad controller input
+* remappable bindings
+* 480p / 720p modes
+* 30 / 60 FPS profiles
+* password login through the Wii U software keyboard
+* saved session tokens
+* diagnostics
+* display-target settings
+* remote HOME
+
+Normal Wii U HOME-menu suspend/resume/exit behaviour has been validated on
+hardware.
+
+See [`wiiu_console/README.md`](wiiu_console/README.md).
+
+### Wii U GamePad
+
+`wiiu_gamepad/`
+
+Capture2Cloud can also stream directly to a real Wii U GamePad through the
+libdrc-based path, with controller input returned to the same host-side bridge.
 
 ---
 
-## Settings several people share
+## Shared settings
 
-There is one capture card and one adapter, so some settings belong to
-whoever is connected rather than to whoever changed them last. A client
-that joins is **told** what everyone is watching and moves its own
-controls to match, rather than pushing what it had saved and changing
-the picture for people already there.
+There is one capture device and one controller output, so some settings are
+shared between clients.
 
-Volume, the picture adjustments, the touch pad and the stick shaping are
-nobody else's business and are never sent anywhere.
+A newly connected client receives the current server state instead of
+overwriting everybody else's configuration with whatever it had saved locally.
 
-[SHARED_SETTINGS.md](SHARED_SETTINGS.md) has the full split and why it
-falls where it does.
+Client-only settings such as UI layout, touch controls and local presentation
+remain local.
+
+See [SHARED_SETTINGS.md](SHARED_SETTINGS.md) for the complete split.
 
 ---
 
 ## Configuration
 
-Everything lives in `scripts/.env`, which is git-ignored and read by
-both the program and the shell scripts.
-[`scripts/.env.example`](scripts/.env.example) is the annotated list;
-these are the ones worth knowing about.
+Configuration lives in:
 
-| Key | What it does |
-| --- | --- |
-| `VIDEO_DEVICE`, `AUDIO_SOURCE` | Which card, and which of its sounds |
-| `PLAYER_PASSWORD` | The password to play. Empty means anyone can. |
-| `CAPTURE_FORMAT` | `yuyv` (raw, least processor) or `mjpeg` (least USB bandwidth). Also switchable from the page. |
-| `WEB_TRANSPORT` | `webrtc` or `ws` — which one the page starts on |
-| `WEB_PORT`, `WEB_AUTOSTART` | The page's port, and whether it starts on launch |
-| `SWITCH_PORT`, `SWITCH_AUTOSTART` | The same, for the Android and Switch clients |
-| `GAMEPAD_OUTPUT_BACKEND` | Console output backend. Currently `titan`; Joy-Con 2 BLE and JOCP/Pico are planned behind the same interface. |
-| `TITAN_OUTPUT_PROTOCOL` | What the adapter pretends to be: `auto`, `switch`, `xb360`, `ps4`… |
-| `LOCAL_SINK` | Play the sound on this output rather than the system default — worth setting where the default is a virtual device, since sound that vanishes into one looks exactly like sound this program failed to produce |
-| `HA_URL`, `HA_TOKEN`, `HA_PLUG_ENTITY` | Home Assistant, for waking the console |
+```text
+scripts/.env
+```
+
+The annotated template is:
+
+```text
+scripts/.env.example
+```
+
+Important settings include:
+
+| Setting                                | Purpose                                     |
+| -------------------------------------- | ------------------------------------------- |
+| `VIDEO_DEVICE`                         | V4L2 capture device                         |
+| `AUDIO_SOURCE`                         | PulseAudio capture source                   |
+| `PLAYER_PASSWORD`                      | Password required to control the console    |
+| `CAPTURE_FORMAT`                       | Capture format such as `yuyv` or `mjpeg`    |
+| `WEB_TRANSPORT`                        | Default browser transport: `webrtc` or `ws` |
+| `WEB_PORT`                             | Browser/server port                         |
+| `SWITCH_PORT`                          | Native client port                          |
+| `GAMEPAD_OUTPUT_BACKEND`               | `titan` or `pcble`                          |
+| `TITAN_OUTPUT_PROTOCOL`                | Titan emulation protocol                    |
+| `PCBLE_CONTROLLER`                     | pcble Nintendo controller profile           |
+| `PCBLE_PRIMARY_ADAPTER`                | Preferred Bluetooth adapter                 |
+| `PCBLE_PAIRED_ADAPTER`                 | Adapter MAC that owns the stored pairing    |
+| `PCBLE_SWITCH_ADDRESS`                 | Stored paired console Bluetooth address     |
+| `LOCAL_SINK`                           | Optional local audio output                 |
+| `HA_URL`, `HA_TOKEN`, `HA_PLUG_ENTITY` | Optional Home Assistant wake support        |
+
+Input and output shaping also have corresponding `INPUT_*` and `OUTPUT_*`
+settings in `.env`.
 
 ---
 
 ## Development
 
+Run the complete test suite with:
+
 ```sh
-./tests/run_all.sh          # everything: C, JavaScript, the protocol, the attack suite
+./tests/run_all.sh
 ```
 
-The launchers rebuild whenever a source is newer than the binary, so
-there is usually nothing to compile by hand. `page.html` and the files
-under `web/` are served straight from disk: edit, refresh, done.
+The normal launch scripts rebuild the Linux host and pcble helper when their
+sources change.
 
-The front end is eleven plain scripts sharing one scope, not modules,
-and the order `page.html` loads them in is part of the program — a
-declaration hoists within a file and not across two. A test compares
-that order against the one the suite runs them in, because a file added
-to one list and not the other passes here and breaks in a browser.
+The repository contains separate code for the native clients because each
+platform has very different video, audio and UI requirements, while the common
+controller protocol and server-side bridge remain shared.
 
-The architecture, the protocol, and the reasoning behind the parts that
-look strange — latency, the GCAPI wire format, the threading — are in
-[WORKINPROGRESS.md](WORKINPROGRESS.md) and in comments beside the code
-they explain.
+Additional design notes and measurements are available in
+[WORKINPROGRESS.md](WORKINPROGRESS.md).
 
 ---
 
 ## Acknowledgements
 
 The GCAPI protocol handling was reverse-engineered with help from
-[GIMX](https://github.com/matlo/GIMX)'s source and USB captures of the
-vendor's own software.
+[GIMX](https://github.com/matlo/GIMX)'s source and USB captures of the vendor
+software.
+
+The Bluetooth controller backend incorporates work developed as
+**pcble2gamepad** and the upstream projects credited by its vendored source and
+licence files.
+
+---
 
 ## Licence
 
