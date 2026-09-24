@@ -458,12 +458,66 @@ static void reset_refresh_adapters(
     shell->loading = 0;
 }
 
+typedef struct {
+    GtkShell *shell;
+    char adapter[16];
+    int ok;
+    char message[512];
+} ResetProbeJob;
+
+static gboolean reset_probe_finished(
+    gpointer user_data)
+{
+    ResetProbeJob *job =
+        user_data;
+
+    if (g_c.reset_bt_status) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            job->message[0]
+                ? job->message
+                : (job->ok
+                    ? "Bluetooth dongle is compatible."
+                    : "Bluetooth dongle compatibility test failed."));
+    }
+
+    if (g_c.reset_bt_test_adapter) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_adapter,
+            TRUE);
+    }
+
+    free(job);
+    return G_SOURCE_REMOVE;
+}
+
+static int reset_probe_thread(
+    void *user_data)
+{
+    ResetProbeJob *job =
+        user_data;
+
+    job->ok =
+        reset_method_test_bluetooth_adapter(
+            job->adapter,
+            job->message,
+            sizeof(job->message));
+
+    g_idle_add(
+        reset_probe_finished,
+        job);
+
+    return 0;
+}
+
 static void reset_test_adapter_clicked(
     GtkWidget *widget,
     gpointer user_data)
 {
     (void)widget;
-    (void)user_data;
+
+    GtkShell *shell =
+        user_data;
 
     int index =
         reset_selected_adapter();
@@ -476,13 +530,72 @@ static void reset_test_adapter_clicked(
     }
 
     /*
-     * The UI is complete now. The actual HCI compatibility probe must
-     * run through the privileged helper; doing raw HCI from the GTK
-     * process would undo the privilege separation used by pcble.
+     * Do not fight a live Nintendo-controller helper for ownership of
+     * the same Bluetooth stack. Shared-adapter wake orchestration will
+     * explicitly release/reconnect pcble later.
      */
+    if (output_pcble_session_running() ||
+        output_pcble_ipc_up()) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Controller Bluetooth session is active. Stop it before testing the wake adapter.");
+        return;
+    }
+
+    ResetProbeJob *job =
+        calloc(
+            1,
+            sizeof(*job));
+
+    if (!job) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Could not allocate Bluetooth test job.");
+        return;
+    }
+
+    job->shell = shell;
+
+    snprintf(
+        job->adapter,
+        sizeof(job->adapter),
+        "%s",
+        g_c.reset_bt_adapters[index].id);
+
+    /*
+     * The visible hciN is runtime-only. Persist the physical MAC.
+     */
+    reset_method_set_bluetooth_adapter(
+        g_c.reset_bt_adapters[index].address);
+
     gtk_label_set_text(
         GTK_LABEL(g_c.reset_bt_status),
-        "Dongle test ready — privileged HCI backend not connected yet.");
+        "Testing LE scan and advertising support...");
+
+    gtk_widget_set_sensitive(
+        g_c.reset_bt_test_adapter,
+        FALSE);
+
+    SDL_Thread *thread =
+        SDL_CreateThread(
+            reset_probe_thread,
+            "reset-bt-probe",
+            job);
+
+    if (!thread) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_adapter,
+            TRUE);
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Could not start Bluetooth compatibility test.");
+
+        free(job);
+        return;
+    }
+
+    SDL_DetachThread(thread);
 }
 
 static void reset_capture_clicked(

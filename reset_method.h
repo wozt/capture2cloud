@@ -58,6 +58,17 @@ int reset_method_scan_bluetooth_adapters(
     char *error,
     size_t error_size);
 
+
+/*
+ * Runs the privileged LE compatibility probe on the selected runtime
+ * hciN adapter. The adapter MAC remains the persistent identity; hciN
+ * is used only for this immediate operation.
+ */
+int reset_method_test_bluetooth_adapter(
+    const char *adapter_id,
+    char *message,
+    size_t message_size);
+
 /*
  * Starts the configured console wake operation.
  *

@@ -102,6 +102,24 @@ int reset_method_scan_bluetooth_adapters(
     return 2;
 }
 
+int reset_method_test_bluetooth_adapter(
+    const char *adapter_id,
+    char *message,
+    size_t message_size)
+{
+    (void)adapter_id;
+
+    if (message && message_size) {
+        snprintf(
+            message,
+            message_size,
+            "Compatible");
+    }
+
+    return 1;
+}
+
+
 #include "../../gtk_shell.c"
 
 #include "test_util.h"
