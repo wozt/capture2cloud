@@ -10,9 +10,11 @@
  * ControllerState.  A backend only has to deliver that final state to
  * the real console.
  *
- * Planned implementations:
- *   - Titan/ConsoleTuner USB (current)
- *   - pcble2joycon2 daemon
+ * Implementations:
+ *   - Titan/ConsoleTuner USB
+ *   - vendored pcble Classic Bluetooth HID
+ *
+ * Planned:
  *   - JOCP / JoypadOS-compatible Pico 2 W
  */
 typedef struct {

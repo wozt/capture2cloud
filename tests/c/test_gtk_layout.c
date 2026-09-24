@@ -66,13 +66,13 @@ int gamepad_bridge_console(void) { return 0; }
 const char *gamepad_bridge_backend_name(void) { return "titan"; }
 int gamepad_bridge_backend_count(void) { return 3; }
 const char *gamepad_bridge_backend_name_at(int i) {
-    static const char *const N[] = {"titan", "pcble2joycon2", "jocp"};
+    static const char *const N[] = {"titan", "pcble", "jocp"};
     return (i >= 0 && i < 3) ? N[i] : "";
 }
 const char *gamepad_bridge_backend_label(int i) {
     static const char *const L[] = {
         "Titan / ConsoleTuner USB",
-        "Joy-Con 2 Bluetooth (pcble2joycon2)",
+        "Nintendo Bluetooth (Pro Controller / Joy-Con)",
         "JOCP / Pico 2 W",
     };
     return (i >= 0 && i < 3) ? L[i] : "?";
@@ -83,7 +83,7 @@ const char *gamepad_bridge_backend_maintenance_label(int i) {
 const char *gamepad_bridge_backend_maintenance_help(int i) {
     return i == 0 ? "test recovery help" : "";
 }
-int gamepad_bridge_backend_available(int i) { return i == 0; }
+int gamepad_bridge_backend_available(int i) { return i == 0 || i == 1; }
 int gamepad_bridge_backend_from_name(const char *name) {
     return name && strcmp(name, "titan") == 0 ? 0 : -1;
 }
