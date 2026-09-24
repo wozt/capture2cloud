@@ -1670,9 +1670,9 @@ static void output_pcble_service(void)
     }
 
     /*
-     * Eight REAL helper launches, not eight failures to execute pkexec.
+     * Three REAL helper launches, not three failures to execute pkexec.
      */
-    if (g_reconnect_attempt >= 8) {
+    if (g_reconnect_attempt >= 3) {
         fprintf(
             stderr,
             "pcble: recovery failed after %d helper attempts without link-up\n",
@@ -1740,7 +1740,7 @@ static void output_pcble_service(void)
         &g_recovery_launch_owned,
         0);
 
-    if (g_reconnect_attempt < 8) {
+    if (g_reconnect_attempt < 3) {
         fprintf(
             stderr,
             "pcble: recovery attempt %d could not launch: %s; retrying in 1 second\n",
