@@ -62,6 +62,16 @@ static int g_session_stopping;
 static SDL_atomic_t g_reconnect_requested;
 static SDL_atomic_t g_reconnect_active;
 
+/*
+ * BlueZ/systemd need a short settling period after run-classic.sh
+ * restores the normal Bluetooth service.
+ *
+ * A human pressing the GTK reconnect button naturally provides this
+ * delay. Automatic/backend recovery must provide it explicitly.
+ */
+static Uint32 g_reconnect_not_before;
+static int g_reconnect_attempt;
+
 #define PCBLE_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
 
 static int pressed(const int8_t state[CONTROLLER_STATE_COUNT], int index)
@@ -509,6 +519,9 @@ static int worker(void *unused)
             SDL_AtomicSet(
                 &g_reconnect_active,
                 0);
+
+            g_reconnect_attempt = 0;
+            g_reconnect_not_before = 0;
         }
 
         if (ok && peer[0]) {
@@ -652,6 +665,9 @@ static int output_pcble_init(void)
         &g_reconnect_active,
         0);
 
+    g_reconnect_not_before = 0;
+    g_reconnect_attempt = 0;
+
     return 1;
 }
 
@@ -689,9 +705,22 @@ static void output_pcble_reset(void)
         &g_reconnect_requested,
         1);
 
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        1);
+
+    g_reconnect_attempt = 0;
+
+    /*
+     * Also covers application restart: a previous Capture2Cloud/helper
+     * may still be finishing its BlueZ cleanup for a brief moment.
+     */
+    g_reconnect_not_before =
+        SDL_GetTicks() + 1000;
+
     fprintf(
         stderr,
-        "pcble: paired-Switch reconnect queued\n");
+        "pcble: paired-Switch reconnect queued; waiting for Bluetooth to settle\n");
 }
 
 static void output_pcble_press_home(void)
@@ -750,6 +779,9 @@ static void output_pcble_shutdown(void)
     SDL_AtomicSet(
         &g_reconnect_active,
         0);
+
+    g_reconnect_attempt = 0;
+    g_reconnect_not_before = 0;
 
     SDL_LockMutex(g_lock);
     g_running = 0;
@@ -1383,11 +1415,7 @@ static void output_pcble_service(void)
     }
 
     /*
-     * If a helper currently owns BlueZ, perform the same logical
-     * sequence as Stop session -> Reconnect paired Switch.
-     *
-     * Keep the request armed while the waiter thread waits for
-     * run-classic.sh to finish its cleanup.
+     * First release any session that currently owns BlueZ.
      */
     if (output_pcble_session_running()) {
         if (!output_pcble_session_stopping()) {
@@ -1396,17 +1424,40 @@ static void output_pcble_service(void)
                 "pcble: recovery: stopping current Bluetooth session\n");
 
             output_pcble_stop_session();
+
+            /*
+             * The waiter thread will clear g_launcher once
+             * run-classic.sh has really exited.
+             */
+            g_reconnect_not_before =
+                SDL_GetTicks() + 1000;
         }
 
         return;
     }
 
-    char error[256];
+    const Uint32 now =
+        SDL_GetTicks();
 
     /*
-     * No helper owns BlueZ anymore. The previous wait thread has already
-     * reaped it and run-classic.sh has completed its EXIT cleanup.
+     * run-classic.sh calls `systemctl restart bluetooth` during cleanup.
+     * The command returning does not mean every BlueZ/HCI object is
+     * instantly usable. Give it the same grace period a human gives it
+     * before clicking Reconnect.
      */
+    if ((Sint32)(now - g_reconnect_not_before) < 0) {
+        return;
+    }
+
+    g_reconnect_attempt++;
+
+    fprintf(
+        stderr,
+        "pcble: recovery: reconnect attempt %d\n",
+        g_reconnect_attempt);
+
+    char error[256];
+
     if (output_pcble_start_saved_reconnect(
             error,
             sizeof(error))) {
@@ -1422,9 +1473,33 @@ static void output_pcble_service(void)
     }
 
     /*
-     * One recovery request is one attempt. Do not hammer pkexec, BlueZ
-     * or an absent adapter every frame.
+     * Startup may race the previous process/helper cleanup, and a fresh
+     * BlueZ restart may briefly expose no usable adapter. Retry instead
+     * of turning that transient condition into a permanent failure.
      */
+    if (g_reconnect_attempt < 8) {
+        fprintf(
+            stderr,
+            "pcble: recovery attempt %d failed: %s; retrying in 1 second\n",
+            g_reconnect_attempt,
+            error[0]
+                ? error
+                : "unknown error");
+
+        g_reconnect_not_before =
+            now + 1000;
+
+        return;
+    }
+
+    fprintf(
+        stderr,
+        "pcble: recovery failed after %d attempts: %s\n",
+        g_reconnect_attempt,
+        error[0]
+            ? error
+            : "unknown error");
+
     SDL_AtomicSet(
         &g_reconnect_requested,
         0);
@@ -1433,12 +1508,7 @@ static void output_pcble_service(void)
         &g_reconnect_active,
         0);
 
-    fprintf(
-        stderr,
-        "pcble: recovery failed: %s\n",
-        error[0]
-            ? error
-            : "unknown reconnect error");
+    g_reconnect_attempt = 0;
 }
 
 
