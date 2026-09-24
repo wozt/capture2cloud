@@ -1011,7 +1011,7 @@ static void handle_wake(WebStream *ws, int fd, const char *token) {
     }
 
     if (web_stream_wake_console(ws) != 0) {
-        send_400(fd, "failed to launch wake_console.sh");
+        send_400(fd, "failed to start configured wake method");
         return;
     }
     send_204(fd);

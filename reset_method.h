@@ -15,6 +15,20 @@
  * the existing gamepad recovery path to reconnect it.
  */
 
+typedef enum {
+    RESET_METHOD_SCRIPT = 0,
+    RESET_METHOD_BLUETOOTH = 1,
+} ResetMethod;
+
+/* Current persistent selection. Missing/invalid config falls back to script. */
+ResetMethod reset_method_current(void);
+
+/* Stable config/UI name for a method, or NULL for an invalid value. */
+const char *reset_method_name(ResetMethod method);
+
+/* Saves the selected method to scripts/.env. */
+int reset_method_set(ResetMethod method);
+
 /*
  * Starts the configured console wake operation.
  *

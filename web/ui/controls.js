@@ -670,18 +670,14 @@ vidFilterResetBtn.onclick = function () {
   saveVideoFilterSettings();
 };
 
-/* --- wake the console from sleep, via the server-side /wake endpoint
- * (POST /wake -> handle_wake() in web_stream.c -> scripts/
- * wake_console.sh, power-cycling its smart plug through Home Assistant).
- * Manually triggered only. The endpoint backgrounds the script and
- * replies immediately (204) -- it does not wait for the plug to
- * actually confirm on/off, so this button's own feedback is only "the
- * request was sent", not "the console is awake".
+/* --- wake the console from sleep through the host's configured reset
+ * method. The page deliberately knows nothing about whether that is an
+ * external script, Bluetooth wake advertisement, or another mechanism.
  *
- * Players only: cutting the console's power is at least as disruptive as
- * pressing its buttons, so the server requires the same token here as
- * for gamepad input (403 otherwise) -- hiding the button below is just
- * the visible half of that. */
+ * Players only: waking/resetting the console is a shared operation, so
+ * the server requires the same token here as for gamepad input (403
+ * otherwise). Hiding the button below is only the visible half of that
+ * access check. */
 var wakeConsoleTimer = null;
 /* The reset takes a few seconds by design (the adapter is held closed so
  * the console sees it actually go away), so the button says so rather
