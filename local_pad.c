@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #define MAX_CONTROLLERS 8
 #define STICK_MAX 32767.0f
@@ -45,6 +46,92 @@ int local_pad_list(const char **names, int max_names) {
         n++;
     }
     return n;
+}
+
+
+static int local_pad_sdl_index_for_slot(int slot)
+{
+    if (slot < 0) {
+        return -1;
+    }
+
+    int seen = -1;
+
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        if (!SDL_IsGameController(i)) {
+            continue;
+        }
+
+        if (++seen == slot) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+int local_pad_guid_for_slot(
+    int slot,
+    char *out,
+    size_t out_size)
+{
+    if (!out || out_size == 0) {
+        return 0;
+    }
+
+    out[0] = '\0';
+
+    const int device =
+        local_pad_sdl_index_for_slot(slot);
+
+    if (device < 0) {
+        return 0;
+    }
+
+    SDL_JoystickGUID guid =
+        SDL_JoystickGetDeviceGUID(device);
+
+    SDL_JoystickGetGUIDString(
+        guid,
+        out,
+        (int)out_size);
+
+    return out[0] != '\0';
+}
+
+int local_pad_find_guid(const char *wanted)
+{
+    if (!wanted ||
+        !*wanted ||
+        strcasecmp(wanted, "none") == 0) {
+        return -1;
+    }
+
+    int slot = -1;
+
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        if (!SDL_IsGameController(i)) {
+            continue;
+        }
+
+        slot++;
+
+        SDL_JoystickGUID guid =
+            SDL_JoystickGetDeviceGUID(i);
+
+        char text[64];
+
+        SDL_JoystickGetGUIDString(
+            guid,
+            text,
+            sizeof(text));
+
+        if (strcasecmp(text, wanted) == 0) {
+            return slot;
+        }
+    }
+
+    return -1;
 }
 
 static int8_t button(SDL_GameController *c, SDL_GameControllerButton b) {

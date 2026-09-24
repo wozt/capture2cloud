@@ -439,8 +439,14 @@ static void pcble_refresh_adapters(
         sizeof(preferred_secondary),
         "");
 
-    if (!preferred_primary[0] &&
-        g_c.pcble_paired_adapter[0]) {
+    /*
+     * A saved Pro pairing belongs to one physical Bluetooth adapter
+     * because its Link Key/identity belongs to that adapter. Prefer it
+     * over an older arbitrary primary selection.
+     */
+    if (g_c.pcble_paired_adapter[0] &&
+        g_c.pcble_paired_switch[0] &&
+        strcmp(pcble_profile(), "pro") == 0) {
         snprintf(
             preferred_primary,
             sizeof(preferred_primary),

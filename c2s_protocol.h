@@ -223,7 +223,12 @@ typedef enum {
      * WAKE and RESET_DONGLE are the two buttons the browser has that
      * this transport did not. There is no browser on the console, and
      * needing one to wake the console the client exists to show is a
-     * poor joke. Both are players-only, as they are on the page. */
+     * poor joke. Both are players-only, as they are on the page.
+     *
+     * RESET_DONGLE is the historical wire name. The client deliberately
+     * does not know the selected output backend: the server maps this to
+     * backend recovery (USB re-enumeration for Titan, Bluetooth reconnect
+     * for pcble, etc.). */
     C2S_MSG_KEYFRAME     = 22,
     C2S_MSG_WAKE         = 23,
     C2S_MSG_RESET_DONGLE = 24,

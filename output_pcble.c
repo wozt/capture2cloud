@@ -191,12 +191,13 @@ static void reply_peer(
     out[n] = '\0';
 }
 
-static int socket_request(
+static int socket_request_timeout(
     const char *path,
     const char *request,
     int *initialized,
     char *peer,
-    size_t peer_size)
+    size_t peer_size,
+    int timeout_ms)
 {
     if (initialized) {
         *initialized = 0;
@@ -216,9 +217,13 @@ static int socket_request(
         return 0;
     }
 
+    if (timeout_ms < 1) {
+        timeout_ms = 1;
+    }
+
     struct timeval timeout = {
-        .tv_sec = 0,
-        .tv_usec = 150000,
+        .tv_sec = timeout_ms / 1000,
+        .tv_usec = (timeout_ms % 1000) * 1000,
     };
 
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -293,6 +298,22 @@ static int socket_request(
 
     free(reply);
     return ok;
+}
+
+static int socket_request(
+    const char *path,
+    const char *request,
+    int *initialized,
+    char *peer,
+    size_t peer_size)
+{
+    return socket_request_timeout(
+        path,
+        request,
+        initialized,
+        peer,
+        peer_size,
+        150);
 }
 
 static void socket_path(char *out, size_t out_size, const char *name)
@@ -597,6 +618,26 @@ static int output_pcble_init(void)
         g_pair_mode ? "joycon-pair" : "pro",
         g_socket_dir);
 
+    /*
+     * pcble is an output backend, not a GUI feature. If this host already
+     * knows a paired Pro Controller session, restore it automatically
+     * whenever Capture2Cloud starts with pcble selected.
+     */
+    if (!g_pair_mode) {
+        char reconnect_error[256];
+
+        if (!output_pcble_reconnect_saved(
+                reconnect_error,
+                sizeof(reconnect_error))) {
+            fprintf(
+                stderr,
+                "pcble: automatic reconnect not started: %s\n",
+                reconnect_error[0]
+                    ? reconnect_error
+                    : "no saved pairing");
+        }
+    }
+
     return 1;
 }
 
@@ -621,21 +662,18 @@ static void output_pcble_update(
 
 static void output_pcble_reset(void)
 {
-    if (!g_lock) {
-        return;
+    char error[256];
+
+    if (!output_pcble_reconnect_saved(
+            error,
+            sizeof(error))) {
+        fprintf(
+            stderr,
+            "pcble: recovery failed: %s\n",
+            error[0]
+                ? error
+                : "unknown reconnect error");
     }
-
-    SDL_LockMutex(g_lock);
-
-    memset(
-        g_state,
-        0,
-        sizeof(g_state));
-
-    g_home_until = 0;
-    g_dirty = 1;
-
-    SDL_UnlockMutex(g_lock);
 }
 
 static void output_pcble_press_home(void)
@@ -875,6 +913,262 @@ int output_pcble_scan_adapters(
     g_variant_unref(reply);
 
     return count;
+}
+
+
+int output_pcble_reconnect_saved(
+    char *error,
+    size_t error_size)
+{
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+
+    char profile[32];
+    char peer[32];
+    char paired_adapter[32];
+
+    config_get_str(
+        "PCBLE_CONTROLLER",
+        profile,
+        sizeof(profile),
+        "pro");
+
+    if (strcmp(profile, "pro") != 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "Automatic reconnect is currently available for Pro Controller sessions only");
+        }
+
+        return 0;
+    }
+
+    config_get_str(
+        "PCBLE_SWITCH_ADDRESS",
+        peer,
+        sizeof(peer),
+        "none");
+
+    config_get_str(
+        "PCBLE_PAIRED_ADAPTER",
+        paired_adapter,
+        sizeof(paired_adapter),
+        "none");
+
+    if (!valid_mac(peer)) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "No paired Switch is stored yet");
+        }
+
+        return 0;
+    }
+
+    if (!valid_mac(paired_adapter)) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "The Bluetooth adapter used for pairing is not stored");
+        }
+
+        return 0;
+    }
+
+    /*
+     * If the helper is already alive, keep its BlueZ/Link-Key state and
+     * ask it to reconnect in place. This is the cheapest and most reliable
+     * recovery path.
+     */
+    if (output_pcble_ipc_up()) {
+        int connected = 0;
+
+        if (g_lock) {
+            SDL_LockMutex(g_lock);
+            connected = g_link_up;
+            SDL_UnlockMutex(g_lock);
+        }
+
+        if (connected) {
+            return 1;
+        }
+
+        char request[160];
+
+        snprintf(
+            request,
+            sizeof(request),
+            "{\"version\":1,\"method\":\"reconnect\",\"address\":\"%s\"}\\n",
+            peer);
+
+        char path[320];
+
+        socket_path(
+            path,
+            sizeof(path),
+            "pro.sock");
+
+        /*
+         * Reconnect performs real HCI/L2CAP work and is intentionally
+         * allowed longer than the 150 ms input/status transactions.
+         */
+        if (!socket_request_timeout(
+                path,
+                request,
+                NULL,
+                NULL,
+                0,
+                8000)) {
+            if (error && error_size) {
+                snprintf(
+                    error,
+                    error_size,
+                    "The active Bluetooth session did not complete the reconnect request");
+            }
+
+            return 0;
+        }
+
+        fprintf(
+            stderr,
+            "pcble: reconnect requested inside active Bluetooth session\\n");
+
+        return 1;
+    }
+
+    /*
+     * A launcher may exist for a short time before its Unix socket does.
+     * Do not start a competing privileged BlueZ session on top of it.
+     */
+    if (output_pcble_session_running()) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "Bluetooth session is still starting");
+        }
+
+        return 0;
+    }
+
+    OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS];
+
+    char scan_error[256];
+
+    const int count =
+        output_pcble_scan_adapters(
+            adapters,
+            scan_error,
+            sizeof(scan_error));
+
+    if (count < 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                scan_error[0]
+                    ? scan_error
+                    : "Could not scan Bluetooth adapters");
+        }
+
+        return 0;
+    }
+
+    int selected = -1;
+
+    for (int i = 0; i < count; i++) {
+        if (g_ascii_strcasecmp(
+                adapters[i].address,
+                paired_adapter) == 0) {
+            selected = i;
+            break;
+        }
+    }
+
+    if (selected < 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "The Bluetooth adapter used for pairing is not currently present");
+        }
+
+        return 0;
+    }
+
+    char body[16];
+    char buttons[16];
+    char left[16];
+    char right[16];
+    char verbose[16];
+
+    config_get_str(
+        "PCBLE_BODY_COLOR",
+        body,
+        sizeof(body),
+        "828282");
+
+    config_get_str(
+        "PCBLE_BUTTON_COLOR",
+        buttons,
+        sizeof(buttons),
+        "0F0F0F");
+
+    config_get_str(
+        "PCBLE_LEFT_GRIP_COLOR",
+        left,
+        sizeof(left),
+        "828282");
+
+    config_get_str(
+        "PCBLE_RIGHT_GRIP_COLOR",
+        right,
+        sizeof(right),
+        "828282");
+
+    config_get_str(
+        "PCBLE_VERBOSE",
+        verbose,
+        sizeof(verbose),
+        "0");
+
+    const int ok =
+        output_pcble_start_session(
+            adapters[selected].id,
+            NULL,
+            "pro",
+            peer,
+            body,
+            buttons,
+            left,
+            right,
+            atoi(verbose) != 0,
+            error,
+            error_size);
+
+    if (ok) {
+        /*
+         * Keep the GTK preferred adapter aligned with the one that
+         * actually owns this pairing.
+         */
+        config_set_str(
+            "PCBLE_PRIMARY_ADAPTER",
+            paired_adapter);
+
+        fprintf(
+            stderr,
+            "pcble: reconnecting paired Switch %s on %s (%s)\\n",
+            peer,
+            adapters[selected].id,
+            adapters[selected].address);
+    }
+
+    return ok;
 }
 
 int output_pcble_set_controller(const char *profile)

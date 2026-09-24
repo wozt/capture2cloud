@@ -3,6 +3,8 @@
 
 #include "app_settings.h"
 
+#include <stddef.h>
+
 /*
  * A controller plugged into THIS machine, driving the console.
  *
@@ -31,5 +33,20 @@ void local_pad_poll(const AppSettings *settings);
  * Returns how many were written; the strings stay valid until the next
  * call. */
 int  local_pad_list(const char **names, int max_names);
+
+/*
+ * Persistent identity for the local controller.
+ *
+ * SDL joystick indices are enumeration-order values and can change after
+ * a reboot or USB replug. Store the device GUID instead and resolve it
+ * back to the current logical controller slot when the device list changes.
+ */
+int local_pad_guid_for_slot(
+    int slot,
+    char *out,
+    size_t out_size);
+
+int local_pad_find_guid(
+    const char *guid);
 
 #endif
