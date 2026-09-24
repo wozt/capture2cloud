@@ -270,6 +270,22 @@ int main(void) {
         output_invert,
         1);
 
+    t_ok(
+        "Local left stick preview exists",
+        g_c.input_stick_preview[0] != NULL);
+
+    t_ok(
+        "Local right stick preview exists",
+        g_c.input_stick_preview[1] != NULL);
+
+    t_ok(
+        "Output left stick preview exists",
+        g_c.output_stick_preview[0] != NULL);
+
+    t_ok(
+        "Output right stick preview exists",
+        g_c.output_stick_preview[1] != NULL);
+
     /* A second pass with different values, because a combo box with no
      * matching row and a scale outside its range both warn. */
     s.wiiu_console_height = 1080;
