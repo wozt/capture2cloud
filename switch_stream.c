@@ -1402,8 +1402,9 @@ static void handle_messages(SwitchStream *s, int index) {
                 }
                 break;
             case C2S_MSG_WAKE:
-                /* Players only, exactly as POST /wake is: this switches
-                 * mains power to a console. */
+                /* Players only, exactly as POST /wake is. The host's
+                 * configured reset method owns wake + controller recovery;
+                 * native clients deliberately do not know how it is done. */
                 if (c->may_control && s->web) {
                     fprintf(stderr, "switch_stream: client %d asks to wake the console\n", index);
                     web_stream_wake_console(s->web);

@@ -350,6 +350,34 @@ void gamepad_bridge_reset(void)
     }
 }
 
+
+void gamepad_bridge_prepare_console_wake(void)
+{
+    /*
+     * pcble owns BlueZ while its Nintendo controller helper is alive.
+     * Other backends currently have nothing to release before wake.
+     */
+    if (g_backend &&
+        strcmp(g_backend->name, "pcble") == 0) {
+        output_pcble_suspend_for_wake();
+    }
+}
+
+int gamepad_bridge_console_wake_ready(void)
+{
+    /*
+     * g_launcher remains present until run-classic.sh has completed its
+     * cleanup and restored normal BlueZ, so "session no longer running"
+     * is also the correct signal that the wake helper may take over.
+     */
+    if (g_backend &&
+        strcmp(g_backend->name, "pcble") == 0) {
+        return !output_pcble_session_running();
+    }
+
+    return 1;
+}
+
 void gamepad_bridge_service(void)
 {
     if (g_backend && g_backend->service) {

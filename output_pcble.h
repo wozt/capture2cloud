@@ -45,6 +45,14 @@ int output_pcble_start_session(
 void output_pcble_stop_session(void);
 
 /*
+ * Temporarily gives the Bluetooth stack back to a console-wake
+ * operation. Cancels backend-owned reconnect retries and stops the
+ * current pcble helper cleanly. A later gamepad_bridge_reset() resumes
+ * normal paired-Switch recovery.
+ */
+void output_pcble_suspend_for_wake(void);
+
+/*
  * Backend recovery state. Recovery itself is owned entirely by the
  * pcble backend and Capture2Cloud main loop; GTK only displays it.
  */

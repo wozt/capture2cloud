@@ -24,6 +24,16 @@ void gamepad_bridge_update(
 void gamepad_bridge_forget(unsigned source);
 
 void gamepad_bridge_reset(void);
+
+/*
+ * Console-wake coordination.
+ *
+ * Bluetooth-backed outputs may have to temporarily release the host
+ * Bluetooth stack before reset_method can transmit a wake beacon.
+ */
+void gamepad_bridge_prepare_console_wake(void);
+int gamepad_bridge_console_wake_ready(void);
+
 void gamepad_bridge_press_home(void);
 
 /* Advances backend maintenance; safe with or without GTK. */
