@@ -9,6 +9,7 @@
 #include <gio/gio.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdint.h>
 #include <signal.h>
@@ -69,8 +70,7 @@ static SDL_atomic_t g_reconnect_active;
  * the same thing as successfully reconnecting the Switch. If a managed
  * helper exits before link_up, backend recovery must retry.
  *
- * A reconnect started manually from GTK is deliberately not managed
- * here: the manual path remains exactly as it is today.
+ * Every reconnect, including the GTK button, is managed here.
  */
 static SDL_atomic_t g_recovery_launch_owned;
 
@@ -722,12 +722,15 @@ static void output_pcble_update(
 static void output_pcble_reset(void)
 {
     /*
-     * Historical C2S_MSG_RESET_DONGLE and every generic backend recovery
-     * land here.
+     * THIS is the single pcble recovery entry point.
      *
-     * Do not start/stop pkexec here: callers may be HTTP/native-client
-     * threads or the application's startup thread. Capture2Cloud's main
-     * loop consumes this through output_pcble_service().
+     * It is reached through gamepad_bridge_reset() from:
+     *
+     *   - Controller output -> Reconnect paired Switch
+     *   - Maintenance
+     *   - C2S_MSG_RESET_DONGLE
+     *   - browser reset-dongle
+     *   - automatic startup recovery
      */
     SDL_AtomicSet(
         &g_reconnect_requested,
@@ -740,16 +743,17 @@ static void output_pcble_reset(void)
     g_reconnect_attempt = 0;
 
     /*
-     * Also covers application restart: a previous Capture2Cloud/helper
-     * may still be finishing its BlueZ cleanup for a brief moment.
+     * Try on the next main-loop pass. If an existing helper owns BlueZ,
+     * service() will stop it first and reconnect only after it exits.
      */
     g_reconnect_not_before =
-        SDL_GetTicks() + 1000;
+        SDL_GetTicks();
 
     fprintf(
         stderr,
-        "pcble: paired-Switch reconnect queued; waiting for Bluetooth to settle\n");
+        "pcble: paired-Switch recovery requested\n");
 }
+
 
 static void output_pcble_press_home(void)
 {
@@ -888,6 +892,156 @@ static int valid_color(const char *value)
 
     return 1;
 }
+
+/*
+ * Resolve the stable Bluetooth controller MAC to its current hciN name.
+ *
+ * Reconnect must not depend on GTK's adapter combo, and it should not
+ * depend on BlueZ D-Bus being healthy either: run-classic.sh itself
+ * restarts BlueZ.
+ *
+ * /sys/class/bluetooth is kernel state and remains the authoritative
+ * mapping between a physical controller and hciN.
+ */
+static int resolve_hci_for_address(
+    const char *wanted,
+    char *out,
+    size_t out_size)
+{
+    if (!wanted ||
+        !out ||
+        out_size == 0) {
+        return 0;
+    }
+
+    out[0] = '\0';
+
+    DIR *dir =
+        opendir("/sys/class/bluetooth");
+
+    if (dir) {
+        struct dirent *entry;
+
+        while ((entry = readdir(dir)) != NULL) {
+            if (!valid_hci(entry->d_name)) {
+                continue;
+            }
+
+            /*
+             * dirent::d_name may theoretically be NAME_MAX bytes long.
+             * valid_hci() proves the syntax but the compiler cannot infer
+             * a useful maximum length from that function, so establish an
+             * explicit bound before using the name in fixed-size buffers.
+             */
+            const size_t hci_len =
+                strlen(entry->d_name);
+
+            char hci[16];
+
+            if (hci_len >= sizeof(hci)) {
+                continue;
+            }
+
+            memcpy(
+                hci,
+                entry->d_name,
+                hci_len + 1);
+
+            char path[64];
+
+            const int path_len =
+                snprintf(
+                    path,
+                    sizeof(path),
+                    "/sys/class/bluetooth/%s/address",
+                    hci);
+
+            if (path_len < 0 ||
+                (size_t)path_len >= sizeof(path)) {
+                continue;
+            }
+
+            FILE *f =
+                fopen(path, "r");
+
+            if (!f) {
+                continue;
+            }
+
+            char address[64] = {0};
+
+            if (fgets(
+                    address,
+                    sizeof(address),
+                    f)) {
+                address[
+                    strcspn(
+                        address,
+                        "\r\n")] = '\0';
+
+                if (g_ascii_strcasecmp(
+                        address,
+                        wanted) == 0) {
+                    if (hci_len + 1 > out_size) {
+                        fclose(f);
+                        closedir(dir);
+                        return 0;
+                    }
+
+                    memcpy(
+                        out,
+                        hci,
+                        hci_len + 1);
+
+                    fclose(f);
+                    closedir(dir);
+                    return 1;
+                }
+            }
+
+            fclose(f);
+        }
+
+        closedir(dir);
+    }
+
+    /*
+     * Compatibility fallback. Normally sysfs above is enough, but retain
+     * the existing BlueZ discovery path for kernels exposing less HCI
+     * metadata in sysfs.
+     */
+    OutputPcbleAdapter adapters[
+        OUTPUT_PCBLE_MAX_ADAPTERS];
+
+    char error[256];
+
+    const int count =
+        output_pcble_scan_adapters(
+            adapters,
+            error,
+            sizeof(error));
+
+    if (count < 0) {
+        return 0;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (g_ascii_strcasecmp(
+                adapters[i].address,
+                wanted) == 0) {
+            snprintf(
+                out,
+                out_size,
+                "%s",
+                adapters[i].id);
+
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 
 int output_pcble_scan_adapters(
     OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS],
@@ -1339,45 +1493,48 @@ static int output_pcble_start_saved_reconnect(
         error[0] = '\0';
     }
 
-    char profile[32];
-    char peer[32];
-    char paired_adapter[32];
+    char profile_buf[32];
+    char peer_buf[32];
+    char paired_adapter_buf[32];
 
-    config_get_str(
-        "PCBLE_CONTROLLER",
-        profile,
-        sizeof(profile),
-        "pro");
+    const char *profile =
+        config_get_str(
+            "PCBLE_CONTROLLER",
+            profile_buf,
+            sizeof(profile_buf),
+            "pro");
+
+    const char *peer =
+        config_get_str(
+            "PCBLE_SWITCH_ADDRESS",
+            peer_buf,
+            sizeof(peer_buf),
+            "");
+
+    const char *paired_adapter =
+        config_get_str(
+            "PCBLE_PAIRED_ADAPTER",
+            paired_adapter_buf,
+            sizeof(paired_adapter_buf),
+            "");
 
     if (strcmp(profile, "pro") != 0) {
         if (error && error_size) {
             snprintf(
                 error,
                 error_size,
-                "Automatic reconnect is currently available for Pro Controller only");
+                "Reconnect is currently supported only for the Pro Controller profile");
         }
 
         return 0;
     }
-
-    config_get_str(
-        "PCBLE_SWITCH_ADDRESS",
-        peer,
-        sizeof(peer),
-        "none");
-
-    config_get_str(
-        "PCBLE_PAIRED_ADAPTER",
-        paired_adapter,
-        sizeof(paired_adapter),
-        "none");
 
     if (!valid_mac(peer)) {
         if (error && error_size) {
             snprintf(
                 error,
                 error_size,
-                "No paired Switch is stored yet");
+                "No paired Switch address is saved");
         }
 
         return 0;
@@ -1388,86 +1545,61 @@ static int output_pcble_start_saved_reconnect(
             snprintf(
                 error,
                 error_size,
-                "The Bluetooth adapter used for pairing is not stored");
+                "No paired Bluetooth adapter is saved");
         }
 
         return 0;
     }
 
-    OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS];
+    char hci[16];
 
-    char scan_error[256];
-
-    const int count =
-        output_pcble_scan_adapters(
-            adapters,
-            scan_error,
-            sizeof(scan_error));
-
-    if (count < 0) {
+    if (!resolve_hci_for_address(
+            paired_adapter,
+            hci,
+            sizeof(hci))) {
         if (error && error_size) {
             snprintf(
                 error,
                 error_size,
-                "%s",
-                scan_error[0]
-                    ? scan_error
-                    : "Could not scan Bluetooth adapters");
+                "Bluetooth adapter %s is not present",
+                paired_adapter);
         }
 
         return 0;
     }
 
-    int selected = -1;
+    char body_buf[16];
+    char buttons_buf[16];
+    char left_buf[16];
+    char right_buf[16];
 
-    for (int i = 0; i < count; i++) {
-        if (g_ascii_strcasecmp(
-                adapters[i].address,
-                paired_adapter) == 0) {
-            selected = i;
-            break;
-        }
-    }
+    const char *body =
+        config_get_str(
+            "PCBLE_BODY_COLOR",
+            body_buf,
+            sizeof(body_buf),
+            "828282");
 
-    if (selected < 0) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "The paired Bluetooth adapter is not present");
-        }
+    const char *buttons =
+        config_get_str(
+            "PCBLE_BUTTON_COLOR",
+            buttons_buf,
+            sizeof(buttons_buf),
+            "0F0F0F");
 
-        return 0;
-    }
+    const char *left =
+        config_get_str(
+            "PCBLE_LEFT_GRIP_COLOR",
+            left_buf,
+            sizeof(left_buf),
+            "828282");
 
-    char body[16];
-    char buttons[16];
-    char left[16];
-    char right[16];
-
-    config_get_str(
-        "PCBLE_BODY_COLOR",
-        body,
-        sizeof(body),
-        "828282");
-
-    config_get_str(
-        "PCBLE_BUTTON_COLOR",
-        buttons,
-        sizeof(buttons),
-        "0F0F0F");
-
-    config_get_str(
-        "PCBLE_LEFT_GRIP_COLOR",
-        left,
-        sizeof(left),
-        "828282");
-
-    config_get_str(
-        "PCBLE_RIGHT_GRIP_COLOR",
-        right,
-        sizeof(right),
-        "828282");
+    const char *right =
+        config_get_str(
+            "PCBLE_RIGHT_GRIP_COLOR",
+            right_buf,
+            sizeof(right_buf),
+            "828282");
 
     const int verbose =
         (int)config_get_int(
@@ -1477,14 +1609,20 @@ static int output_pcble_start_saved_reconnect(
             1);
 
     /*
-     * Same final primitive used by the manual GTK button:
+     * This is THE reconnect primitive for Capture2Cloud.
      *
-     *     output_pcble_start_session(..., paired_switch, ...)
-     *
-     * The GUI does not own any part of the Bluetooth implementation.
+     * GTK, startup, Maintenance, HTTP and native C2C do not construct
+     * their own session parameters.
      */
+    fprintf(
+        stderr,
+        "pcble: reconnect %s through %s (%s)\n",
+        peer,
+        hci,
+        paired_adapter);
+
     return output_pcble_start_session(
-        adapters[selected].id,
+        hci,
         NULL,
         "pro",
         peer,

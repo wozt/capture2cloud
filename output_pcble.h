@@ -45,9 +45,8 @@ int output_pcble_start_session(
 void output_pcble_stop_session(void);
 
 /*
- * Backend-independent recovery requests do not launch Bluetooth work
- * themselves. They are consumed by the GTK thread, which then executes
- * the exact same reconnect path as the "Reconnect paired Switch" button.
+ * Backend recovery state. Recovery itself is owned entirely by the
+ * pcble backend and Capture2Cloud main loop; GTK only displays it.
  */
 int output_pcble_reconnect_pending(void);
 void output_pcble_clear_reconnect_request(void);
