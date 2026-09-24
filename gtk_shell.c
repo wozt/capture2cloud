@@ -286,14 +286,34 @@ static void pcble_update_controls(GtkShell *shell)
         output_pcble_session_running() ||
         output_pcble_ipc_up();
 
-    gtk_widget_set_visible(
-        g_c.pcble_settings,
-        selected_pcble);
+    if (selected_pcble) {
+        gtk_widget_set_no_show_all(
+            g_c.pcble_settings,
+            FALSE);
+        gtk_widget_show_all(
+            g_c.pcble_settings);
+        gtk_widget_set_no_show_all(
+            g_c.pcble_settings,
+            TRUE);
+    } else {
+        gtk_widget_hide(
+            g_c.pcble_settings);
+    }
 
     if (g_c.titan_settings) {
-        gtk_widget_set_visible(
-            g_c.titan_settings,
-            backend == titan);
+        if (backend == titan) {
+            gtk_widget_set_no_show_all(
+                g_c.titan_settings,
+                FALSE);
+            gtk_widget_show_all(
+                g_c.titan_settings);
+            gtk_widget_set_no_show_all(
+                g_c.titan_settings,
+                TRUE);
+        } else {
+            gtk_widget_hide(
+                g_c.titan_settings);
+        }
     }
 
     if (!selected_pcble) {
@@ -2033,7 +2053,7 @@ static void build_settings_window(GtkShell *shell) {
         add_section_header(
             g_c.pcble_settings,
             pr++,
-            "Nintendo Bluetooth backend");
+            "pcble2gamepad");
 
         g_c.pcble_controller =
             gtk_combo_box_text_new();

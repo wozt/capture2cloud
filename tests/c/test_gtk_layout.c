@@ -72,7 +72,7 @@ const char *gamepad_bridge_backend_name_at(int i) {
 const char *gamepad_bridge_backend_label(int i) {
     static const char *const L[] = {
         "Titan / ConsoleTuner USB",
-        "Nintendo Bluetooth (Pro Controller / Joy-Con)",
+        "pcble2gamepad",
         "JOCP / Pico 2 W",
     };
     return (i >= 0 && i < 3) ? L[i] : "?";
