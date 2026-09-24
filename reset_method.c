@@ -1017,6 +1017,337 @@ int reset_method_capture_bluetooth_beacon(
     return ok;
 }
 
+static int reset_bt_load_beacon(
+    uint8_t controller[6],
+    uint8_t target_switch[6],
+    uint8_t advertisement[RESET_BT_BEACON_MAX_ADV],
+    size_t *advertisement_size,
+    char *message,
+    size_t message_size)
+{
+    if (advertisement_size) {
+        *advertisement_size = 0;
+    }
+
+    const char *data_home =
+        g_get_user_data_dir();
+
+    char *path =
+        g_build_filename(
+            data_home,
+            "capture2cloud",
+            "reset",
+            "switch2-beacon.bin",
+            NULL);
+
+    if (!path) {
+        return 0;
+    }
+
+    FILE *f =
+        fopen(
+            path,
+            "rb");
+
+    if (!f) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "No captured beacon found at %s",
+                path);
+        }
+
+        g_free(path);
+        return 0;
+    }
+
+    uint8_t magic[8];
+    uint8_t version = 0;
+    uint8_t adv_size = 0;
+    uint8_t padded_adv[
+        RESET_BT_BEACON_MAX_ADV];
+
+    int ok =
+        fread(
+            magic,
+            1,
+            sizeof(magic),
+            f) ==
+            sizeof(magic) &&
+
+        fread(
+            &version,
+            1,
+            1,
+            f) == 1 &&
+
+        fread(
+            &adv_size,
+            1,
+            1,
+            f) == 1 &&
+
+        fread(
+            controller,
+            1,
+            6,
+            f) == 6 &&
+
+        fread(
+            target_switch,
+            1,
+            6,
+            f) == 6 &&
+
+        fread(
+            padded_adv,
+            1,
+            sizeof(padded_adv),
+            f) ==
+            sizeof(padded_adv);
+
+    int trailing =
+        fgetc(f);
+
+    fclose(f);
+
+    if (!ok ||
+        trailing != EOF ||
+        memcmp(
+            magic,
+            RESET_BT_BEACON_MAGIC,
+            sizeof(magic)) != 0 ||
+        version != RESET_BT_BEACON_VERSION ||
+        adv_size == 0 ||
+        adv_size > RESET_BT_BEACON_MAX_ADV) {
+
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Saved Switch 2 beacon file is invalid or unsupported.");
+        }
+
+        g_free(path);
+        return 0;
+    }
+
+    memcpy(
+        advertisement,
+        padded_adv,
+        adv_size);
+
+    if (advertisement_size) {
+        *advertisement_size =
+            adv_size;
+    }
+
+    g_free(path);
+    return 1;
+}
+
+static void reset_bt_format_mac(
+    const uint8_t address[6],
+    char out[18])
+{
+    snprintf(
+        out,
+        18,
+        "%02X:%02X:%02X:%02X:%02X:%02X",
+        address[0],
+        address[1],
+        address[2],
+        address[3],
+        address[4],
+        address[5]);
+}
+
+static void reset_bt_encode_hex(
+    const uint8_t *data,
+    size_t size,
+    char *out,
+    size_t out_size)
+{
+    static const char hex[] =
+        "0123456789ABCDEF";
+
+    if (!out || out_size == 0) {
+        return;
+    }
+
+    out[0] = '\0';
+
+    if (!data ||
+        out_size < size * 2 + 1) {
+        return;
+    }
+
+    for (size_t i = 0; i < size; i++) {
+        out[i * 2] =
+            hex[data[i] >> 4];
+
+        out[i * 2 + 1] =
+            hex[data[i] & 0x0F];
+    }
+
+    out[size * 2] = '\0';
+}
+
+int reset_method_test_bluetooth_beacon(
+    const char *adapter_id,
+    char *message,
+    size_t message_size)
+{
+    if (message && message_size) {
+        message[0] = '\0';
+    }
+
+    if (!reset_bt_hci_id_valid(
+            adapter_id)) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Invalid Bluetooth adapter id");
+        }
+        return 0;
+    }
+
+    uint8_t controller[6];
+    uint8_t target_switch[6];
+
+    uint8_t advertisement[
+        RESET_BT_BEACON_MAX_ADV];
+
+    size_t advertisement_size = 0;
+
+    if (!reset_bt_load_beacon(
+            controller,
+            target_switch,
+            advertisement,
+            &advertisement_size,
+            message,
+            message_size)) {
+        return 0;
+    }
+
+    char controller_text[18];
+    char switch_text[18];
+
+    reset_bt_format_mac(
+        controller,
+        controller_text);
+
+    reset_bt_format_mac(
+        target_switch,
+        switch_text);
+
+    char advertisement_hex[
+        RESET_BT_BEACON_MAX_ADV * 2 + 1];
+
+    reset_bt_encode_hex(
+        advertisement,
+        advertisement_size,
+        advertisement_hex,
+        sizeof(advertisement_hex));
+
+    if (!advertisement_hex[0]) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Saved beacon advertisement could not be encoded.");
+        }
+        return 0;
+    }
+
+    const char *argv[] = {
+        "pkexec",
+        RESET_BT_RUNNER,
+        adapter_id,
+        "--wake-send",
+        controller_text,
+        advertisement_hex,
+        NULL
+    };
+
+    GError *error = NULL;
+
+    GSubprocess *process =
+        g_subprocess_newv(
+            argv,
+            G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+            G_SUBPROCESS_FLAGS_STDERR_MERGE,
+            &error);
+
+    if (!process) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "%s",
+                error
+                    ? error->message
+                    : "Could not start Switch 2 wake beacon transmission");
+        }
+
+        g_clear_error(&error);
+        return 0;
+    }
+
+    gchar *output = NULL;
+
+    gboolean communicated =
+        g_subprocess_communicate_utf8(
+            process,
+            NULL,
+            NULL,
+            &output,
+            NULL,
+            &error);
+
+    int ok =
+        communicated &&
+        g_subprocess_get_successful(
+            process);
+
+    if (ok) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Wake beacon transmitted to Switch 2 %s.",
+                switch_text);
+        }
+    } else if (message && message_size) {
+        if (output && *output) {
+            g_strstrip(output);
+
+            snprintf(
+                message,
+                message_size,
+                "%s",
+                output);
+        } else {
+            snprintf(
+                message,
+                message_size,
+                "%s",
+                error
+                    ? error->message
+                    : "Switch 2 wake beacon transmission failed");
+        }
+    }
+
+    g_free(output);
+    g_clear_error(&error);
+    g_object_unref(process);
+
+    return ok;
+}
+
+
 
 static int script_wake_thread(void *arg)
 {

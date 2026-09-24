@@ -79,6 +79,16 @@ int reset_method_capture_bluetooth_beacon(
     char *message,
     size_t message_size);
 
+
+/*
+ * Replays the saved Switch 2 wake advertisement through the selected
+ * runtime Bluetooth controller.
+ */
+int reset_method_test_bluetooth_beacon(
+    const char *adapter_id,
+    char *message,
+    size_t message_size);
+
 /*
  * Starts the configured console wake operation.
  *

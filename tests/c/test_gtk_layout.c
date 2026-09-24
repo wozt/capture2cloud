@@ -136,6 +136,24 @@ int reset_method_capture_bluetooth_beacon(
     return 1;
 }
 
+int reset_method_test_bluetooth_beacon(
+    const char *adapter_id,
+    char *message,
+    size_t message_size)
+{
+    (void)adapter_id;
+
+    if (message && message_size) {
+        snprintf(
+            message,
+            message_size,
+            "Transmitted");
+    }
+
+    return 1;
+}
+
+
 
 
 #include "../../gtk_shell.c"
