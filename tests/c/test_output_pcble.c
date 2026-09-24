@@ -119,10 +119,34 @@ static void test_reconnect_request(void)
         output_pcble_reconnect_pending(),
         1);
 
+    output_pcble_suspend_for_wake();
+
+    t_eq_int(
+        "wake suspend cancels reconnect",
+        output_pcble_reconnect_pending(),
+        0);
+
+    t_eq_int(
+        "wake suspend blocks helper auto-recovery",
+        SDL_AtomicGet(&g_wake_suspended),
+        1);
+
+    output_pcble_reset();
+
+    t_eq_int(
+        "post-wake reset resumes pcble",
+        SDL_AtomicGet(&g_wake_suspended),
+        0);
+
+    t_eq_int(
+        "post-wake reset queues reconnect",
+        output_pcble_reconnect_pending(),
+        1);
+
     output_pcble_clear_reconnect_request();
 
     t_eq_int(
-        "GTK can consume reconnect request",
+        "reconnect request can still be cleared",
         output_pcble_reconnect_pending(),
         0);
 }

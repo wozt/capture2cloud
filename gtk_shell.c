@@ -2823,7 +2823,7 @@ static void build_settings_window(GtkShell *shell) {
                 shell,
                 "wake console",
                 GTK_SHELL_ACTION_WAKE_CONSOLE,
-                "Runs the configured wake action."),
+                "Runs the configured wake action, then recovers controller output."),
             FALSE, FALSE, 0);
 
         add_row(grid, row++, "", actions);
@@ -4280,7 +4280,7 @@ static void build_settings_window(GtkShell *shell) {
             shell,
             "wake the console",
             GTK_SHELL_ACTION_WAKE_CONSOLE,
-            "Runs the configured console wake action."));
+            "Runs the configured console wake action, then recovers controller output."));
 
     /*
      * Controller-output maintenance is backend-specific.

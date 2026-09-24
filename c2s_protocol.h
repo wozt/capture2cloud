@@ -230,6 +230,8 @@ typedef enum {
      * backend recovery (USB re-enumeration for Titan, Bluetooth reconnect
      * for pcble, etc.). */
     C2S_MSG_KEYFRAME     = 22,
+    /* Host-configured console wake. The server chooses script/Bluetooth
+     * and owns any post-wake controller recovery. */
     C2S_MSG_WAKE         = 23,
     C2S_MSG_RESET_DONGLE = 24,
     /* Restarts the host program in place. Players only, like the two

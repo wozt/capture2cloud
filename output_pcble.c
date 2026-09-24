@@ -62,6 +62,7 @@ static int g_session_stopping;
  */
 static SDL_atomic_t g_reconnect_requested;
 static SDL_atomic_t g_reconnect_active;
+static SDL_atomic_t g_wake_suspended;
 
 /*
  * True only for a reconnect process launched by output_pcble_service().
@@ -691,6 +692,10 @@ static int output_pcble_init(void)
         0);
 
     SDL_AtomicSet(
+        &g_wake_suspended,
+        0);
+
+    SDL_AtomicSet(
         &g_recovery_launch_owned,
         0);
 
@@ -721,6 +726,13 @@ static void output_pcble_update(
 
 static void output_pcble_reset(void)
 {
+    /*
+     * A reset after console wake also resumes normal pcble ownership.
+     */
+    SDL_AtomicSet(
+        &g_wake_suspended,
+        0);
+
     /*
      * THIS is the single pcble recovery entry point.
      *
@@ -800,6 +812,10 @@ static double output_pcble_report_rate(void)
 
 static void output_pcble_shutdown(void)
 {
+    SDL_AtomicSet(
+        &g_wake_suspended,
+        0);
+
     if (!g_lock) {
         return;
     }
@@ -1250,7 +1266,8 @@ static gpointer launcher_wait_thread(gpointer data)
     g_clear_error(&error);
 
     if (recovery_owned &&
-        reconnect_never_connected) {
+        reconnect_never_connected &&
+        !SDL_AtomicGet(&g_wake_suspended)) {
         /*
          * g_subprocess_newv()/pkexec succeeded, but the actual helper
          * did not establish a Nintendo link.
@@ -1772,6 +1789,51 @@ static void output_pcble_service(void)
         0);
 
     g_reconnect_attempt = 0;
+}
+
+
+void output_pcble_suspend_for_wake(void)
+{
+    /*
+     * A console wake operation temporarily owns the Bluetooth stack.
+     *
+     * Clearing all recovery ownership BEFORE stopping the helper is
+     * important: launcher_wait_thread() must not interpret this
+     * intentional shutdown as a failed reconnect and immediately launch
+     * another helper.
+     */
+    SDL_AtomicSet(
+        &g_wake_suspended,
+        1);
+
+    SDL_AtomicSet(
+        &g_reconnect_requested,
+        0);
+
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        0);
+
+    SDL_AtomicSet(
+        &g_recovery_launch_owned,
+        0);
+
+    g_reconnect_attempt = 0;
+    g_reconnect_not_before = 0;
+
+    if (output_pcble_session_running() &&
+        !output_pcble_session_stopping()) {
+
+        fprintf(
+            stderr,
+            "pcble: suspending Bluetooth session for console wake\n");
+
+        output_pcble_stop_session();
+    } else {
+        fprintf(
+            stderr,
+            "pcble: controller recovery suspended for console wake\n");
+    }
 }
 
 

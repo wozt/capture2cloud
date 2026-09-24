@@ -3,6 +3,7 @@
 #include "reset_method.h"
 
 #include "app_config.h"
+#include "gamepad_bridge.h"
 #include "video_capture.h"
 
 #include <SDL2/SDL.h>
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define RESET_BT_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
 
@@ -27,6 +29,10 @@
 static const uint8_t RESET_BT_BEACON_MAGIC[8] = {
     'C', '2', 'C', 'S', '2', 'W', 'A', 'K'
 };
+
+
+/* Only one Bluetooth wake operation may own the host radio at a time. */
+static SDL_atomic_t g_bluetooth_wake_active;
 
 
 /*
@@ -1349,6 +1355,270 @@ int reset_method_test_bluetooth_beacon(
 
 
 
+
+typedef struct {
+    char adapter_id[16];
+} ResetBluetoothWakeJob;
+
+static int reset_bt_resolve_configured_adapter(
+    char *out,
+    size_t out_size,
+    char *message,
+    size_t message_size)
+{
+    if (!out || out_size == 0) {
+        return 0;
+    }
+
+    out[0] = '\0';
+
+    char wanted[32];
+
+    reset_method_get_bluetooth_adapter(
+        wanted,
+        sizeof(wanted));
+
+    if (!wanted[0]) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "No Bluetooth wake adapter is configured.");
+        }
+        return 0;
+    }
+
+    ResetBluetoothAdapter adapters[
+        RESET_METHOD_MAX_BT_ADAPTERS];
+
+    char scan_error[256];
+
+    int count =
+        reset_method_scan_bluetooth_adapters(
+            adapters,
+            scan_error,
+            sizeof(scan_error));
+
+    if (count < 0) {
+        if (message && message_size) {
+            snprintf(
+                message,
+                message_size,
+                "Could not resolve Bluetooth wake adapter: %s",
+                scan_error[0]
+                    ? scan_error
+                    : "BlueZ adapter scan failed");
+        }
+        return 0;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (strcasecmp(
+                wanted,
+                adapters[i].address) == 0) {
+
+            snprintf(
+                out,
+                out_size,
+                "%s",
+                adapters[i].id);
+
+            return 1;
+        }
+    }
+
+    if (message && message_size) {
+        snprintf(
+            message,
+            message_size,
+            "Configured Bluetooth adapter %s is not currently available.",
+            wanted);
+    }
+
+    return 0;
+}
+
+static int bluetooth_wake_thread(
+    void *userdata)
+{
+    ResetBluetoothWakeJob *job =
+        userdata;
+
+    /*
+     * pcble may currently own BlueZ, including an automatic reconnect
+     * helper. Suspend that whole recovery path first.
+     */
+    gamepad_bridge_prepare_console_wake();
+
+    /*
+     * output_pcble_session_running() stays true until the privileged
+     * runner has exited and restored normal BlueZ. Do not race the wake
+     * helper against that cleanup.
+     */
+    const Uint32 deadline =
+        SDL_GetTicks() + 10000;
+
+    while (!gamepad_bridge_console_wake_ready()) {
+        if ((Sint32)(
+                SDL_GetTicks() -
+                deadline) >= 0) {
+
+            fprintf(
+                stderr,
+                "reset_method: timed out waiting for controller Bluetooth "
+                "session to release BlueZ\n");
+
+            /*
+             * Never leave controller output deliberately suspended after
+             * a failed wake attempt.
+             */
+            gamepad_bridge_reset();
+
+            SDL_AtomicSet(
+                &g_bluetooth_wake_active,
+                0);
+
+            free(job);
+            return 0;
+        }
+
+        SDL_Delay(50);
+    }
+
+    char message[512];
+
+    int sent =
+        reset_method_test_bluetooth_beacon(
+            job->adapter_id,
+            message,
+            sizeof(message));
+
+    if (!sent) {
+        fprintf(
+            stderr,
+            "reset_method: Bluetooth wake failed: %s\n",
+            message[0]
+                ? message
+                : "unknown beacon transmission error");
+    } else {
+        fprintf(
+            stderr,
+            "reset_method: Bluetooth wake beacon sent; "
+            "controller recovery in 1 second\n");
+
+        /*
+         * The Switch 2 wake path becomes useful much sooner than the
+         * mains-power script path. One second after the completed beacon
+         * transmission is the chosen controller-reconnect point.
+         */
+        SDL_Delay(1000);
+    }
+
+    /*
+     * Use the existing backend recovery primitive in every case.
+     *
+     * On success this reconnects after wake. On failure it restores the
+     * controller backend we deliberately suspended above.
+     */
+    gamepad_bridge_reset();
+
+    SDL_AtomicSet(
+        &g_bluetooth_wake_active,
+        0);
+
+    free(job);
+    return 0;
+}
+
+static int bluetooth_wake(void)
+{
+    /*
+     * Resolve the stable configured MAC while BlueZ is still available.
+     * hciN is deliberately runtime-only and is never persisted.
+     */
+    if (!SDL_AtomicCAS(
+            &g_bluetooth_wake_active,
+            0,
+            1)) {
+        fprintf(
+            stderr,
+            "reset_method: Bluetooth wake is already in progress\n");
+        return -1;
+    }
+
+    char adapter_id[16];
+    char error[512];
+
+    if (!reset_bt_resolve_configured_adapter(
+            adapter_id,
+            sizeof(adapter_id),
+            error,
+            sizeof(error))) {
+
+        fprintf(
+            stderr,
+            "reset_method: %s\n",
+            error[0]
+                ? error
+                : "could not resolve Bluetooth wake adapter");
+
+        SDL_AtomicSet(
+            &g_bluetooth_wake_active,
+            0);
+
+        return -1;
+    }
+
+    ResetBluetoothWakeJob *job =
+        calloc(
+            1,
+            sizeof(*job));
+
+    if (!job) {
+        SDL_AtomicSet(
+            &g_bluetooth_wake_active,
+            0);
+        return -1;
+    }
+
+    snprintf(
+        job->adapter_id,
+        sizeof(job->adapter_id),
+        "%s",
+        adapter_id);
+
+    SDL_Thread *thread =
+        SDL_CreateThread(
+            bluetooth_wake_thread,
+            "wake-console-bt",
+            job);
+
+    if (!thread) {
+        fprintf(
+            stderr,
+            "reset_method: could not start Bluetooth wake thread: %s\n",
+            SDL_GetError());
+
+        free(job);
+
+        SDL_AtomicSet(
+            &g_bluetooth_wake_active,
+            0);
+
+        return -1;
+    }
+
+    SDL_DetachThread(thread);
+
+    fprintf(
+        stderr,
+        "reset_method: Bluetooth console wake accepted on %s\n",
+        adapter_id);
+
+    return 0;
+}
+
+
 static int script_wake_thread(void *arg)
 {
     char *cmd = arg;
@@ -1443,14 +1713,7 @@ int reset_method_wake(void)
         return script_wake();
 
     case RESET_METHOD_BLUETOOTH:
-        /*
-         * The selector exists before the Bluetooth implementation on
-         * purpose: UI/configuration can be built against a stable reset
-         * abstraction instead of teaching callers about each backend.
-         */
-        fprintf(stderr,
-                "reset_method: Bluetooth wake is selected but not configured yet\n");
-        return -1;
+        return bluetooth_wake();
 
     default:
         return -1;
