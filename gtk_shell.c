@@ -2,6 +2,7 @@
 
 #include "app_config.h"
 #include "gamepad_bridge.h" /* the output-protocol names shown in the combo */
+#include "output_pcble.h"
 #include "version.h"
 
 #include <SDL2/SDL.h>
@@ -84,6 +85,27 @@ typedef struct {
     GtkWidget *output_backend, *backend_status, *titan_settings;
     GtkWidget *adapter_sees;
 
+    GtkWidget *pcble_settings;
+    GtkWidget *pcble_controller;
+    GtkWidget *pcble_primary;
+    GtkWidget *pcble_secondary;
+    GtkWidget *pcble_paired;
+    GtkWidget *pcble_status;
+    GtkWidget *pcble_pair;
+    GtkWidget *pcble_reconnect;
+    GtkWidget *pcble_stop;
+    GtkWidget *pcble_refresh;
+    GtkWidget *pcble_body_color;
+    GtkWidget *pcble_button_color;
+    GtkWidget *pcble_left_grip_color;
+    GtkWidget *pcble_right_grip_color;
+    GtkWidget *pcble_verbose;
+
+    OutputPcbleAdapter pcble_adapters[OUTPUT_PCBLE_MAX_ADAPTERS];
+    int pcble_adapter_count;
+    char pcble_paired_switch[18];
+    char pcble_paired_adapter[18];
+
     GtkWidget *overview_status;
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
@@ -142,6 +164,802 @@ static void act(GtkShell *shell, GtkShellAction action) {
     if (shell->callbacks.on_action) {
         shell->callbacks.on_action(shell->callbacks.userdata, action);
     }
+}
+
+/* --- pcble Bluetooth controls --------------------------------------- */
+
+static int pcble_mac_valid(const char *s)
+{
+    if (!s || strlen(s) != 17) {
+        return 0;
+    }
+
+    for (int i = 0; i < 17; i++) {
+        if ((i + 1) % 3 == 0) {
+            if (s[i] != ':') {
+                return 0;
+            }
+        } else if (!g_ascii_isxdigit(s[i])) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static const char *pcble_profile(void)
+{
+    if (!g_c.pcble_controller) {
+        return "pro";
+    }
+
+    return gtk_combo_box_get_active(
+               GTK_COMBO_BOX(g_c.pcble_controller)) == 1
+        ? "joycon-pair"
+        : "pro";
+}
+
+static int pcble_selected_adapter(GtkWidget *combo)
+{
+    if (!combo) {
+        return -1;
+    }
+
+    int index =
+        gtk_combo_box_get_active(
+            GTK_COMBO_BOX(combo));
+
+    return index >= 0 &&
+           index < g_c.pcble_adapter_count
+        ? index
+        : -1;
+}
+
+static void pcble_color_hex(GtkWidget *button, char out[7])
+{
+    GdkRGBA rgba = {0};
+
+    gtk_color_chooser_get_rgba(
+        GTK_COLOR_CHOOSER(button),
+        &rgba);
+
+    int r = CLAMP((int)(rgba.red * 255.0 + 0.5), 0, 255);
+    int g = CLAMP((int)(rgba.green * 255.0 + 0.5), 0, 255);
+    int b = CLAMP((int)(rgba.blue * 255.0 + 0.5), 0, 255);
+
+    snprintf(out, 7, "%02X%02X%02X", r, g, b);
+}
+
+static void pcble_set_color_from_config(
+    GtkWidget *button,
+    const char *key,
+    const char *fallback)
+{
+    char buf[16];
+    const char *value =
+        config_get_str(
+            key,
+            buf,
+            sizeof(buf),
+            fallback);
+
+    char css[16];
+    snprintf(css, sizeof(css), "#%s", value);
+
+    GdkRGBA rgba;
+
+    if (!gdk_rgba_parse(&rgba, css)) {
+        snprintf(css, sizeof(css), "#%s", fallback);
+        gdk_rgba_parse(&rgba, css);
+    }
+
+    gtk_color_chooser_set_rgba(
+        GTK_COLOR_CHOOSER(button),
+        &rgba);
+}
+
+static void pcble_update_controls(GtkShell *shell)
+{
+    if (!g_c.pcble_settings) {
+        return;
+    }
+
+    int backend;
+
+    SDL_LockMutex(shell->lock);
+    backend = shell->settings.output_backend;
+    SDL_UnlockMutex(shell->lock);
+
+    const int pcble =
+        gamepad_bridge_backend_from_name("pcble");
+
+    const int titan =
+        gamepad_bridge_backend_from_name("titan");
+
+    const int selected_pcble =
+        backend == pcble;
+
+    const int pair =
+        strcmp(pcble_profile(), "joycon-pair") == 0;
+
+    const int running =
+        output_pcble_session_running() ||
+        output_pcble_ipc_up();
+
+    gtk_widget_set_visible(
+        g_c.pcble_settings,
+        selected_pcble);
+
+    if (g_c.titan_settings) {
+        gtk_widget_set_visible(
+            g_c.titan_settings,
+            backend == titan);
+    }
+
+    if (!selected_pcble) {
+        return;
+    }
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_controller,
+        !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_primary,
+        !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_secondary,
+        pair && !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_body_color,
+        !pair && !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_button_color,
+        !pair && !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_left_grip_color,
+        !pair && !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_right_grip_color,
+        !pair && !running);
+
+    int primary =
+        pcble_selected_adapter(
+            g_c.pcble_primary);
+
+    int secondary =
+        pcble_selected_adapter(
+            g_c.pcble_secondary);
+
+    int adapters_ok =
+        primary >= 0 &&
+        (!pair ||
+         (secondary >= 0 &&
+          secondary != primary));
+
+    int reconnect_ok = 0;
+
+    if (!pair &&
+        primary >= 0 &&
+        g_c.pcble_paired_switch[0] &&
+        g_c.pcble_paired_adapter[0]) {
+        reconnect_ok =
+            g_ascii_strcasecmp(
+                g_c.pcble_adapters[primary].address,
+                g_c.pcble_paired_adapter) == 0;
+    }
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_pair,
+        adapters_ok && !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_reconnect,
+        reconnect_ok && !running);
+
+    gtk_widget_set_sensitive(
+        g_c.pcble_stop,
+        running);
+}
+
+static void pcble_refresh_adapters(
+    GtkWidget *button,
+    gpointer user_data)
+{
+    (void)button;
+
+    GtkShell *shell = user_data;
+
+    char error[256];
+
+    int count =
+        output_pcble_scan_adapters(
+            g_c.pcble_adapters,
+            error,
+            sizeof(error));
+
+    if (count < 0) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            error);
+
+        gtk_shell_show_error(shell, error);
+        return;
+    }
+
+    g_c.pcble_adapter_count = count;
+
+    char preferred_primary[32] = {0};
+    char preferred_secondary[32] = {0};
+
+    config_get_str(
+        "PCBLE_PRIMARY_ADAPTER",
+        preferred_primary,
+        sizeof(preferred_primary),
+        "");
+
+    config_get_str(
+        "PCBLE_SECONDARY_ADAPTER",
+        preferred_secondary,
+        sizeof(preferred_secondary),
+        "");
+
+    if (!preferred_primary[0] &&
+        g_c.pcble_paired_adapter[0]) {
+        snprintf(
+            preferred_primary,
+            sizeof(preferred_primary),
+            "%s",
+            g_c.pcble_paired_adapter);
+    }
+
+    shell->loading = 1;
+
+    gtk_combo_box_text_remove_all(
+        GTK_COMBO_BOX_TEXT(g_c.pcble_primary));
+
+    gtk_combo_box_text_remove_all(
+        GTK_COMBO_BOX_TEXT(g_c.pcble_secondary));
+
+    int primary = -1;
+    int secondary = -1;
+
+    for (int i = 0; i < count; i++) {
+        char label[64];
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s · %s",
+            g_c.pcble_adapters[i].id,
+            g_c.pcble_adapters[i].address);
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_primary),
+            label);
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_secondary),
+            label);
+
+        if (preferred_primary[0] &&
+            g_ascii_strcasecmp(
+                preferred_primary,
+                g_c.pcble_adapters[i].address) == 0) {
+            primary = i;
+        }
+
+        if (preferred_secondary[0] &&
+            g_ascii_strcasecmp(
+                preferred_secondary,
+                g_c.pcble_adapters[i].address) == 0) {
+            secondary = i;
+        }
+    }
+
+    if (count == 0) {
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_primary),
+            "no Bluetooth adapter detected");
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_secondary),
+            "no Bluetooth adapter detected");
+
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.pcble_primary),
+            0);
+
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.pcble_secondary),
+            0);
+    } else {
+        if (primary < 0) {
+            primary = 0;
+        }
+
+        if (secondary < 0 ||
+            secondary == primary) {
+            secondary = primary;
+
+            for (int i = 0; i < count; i++) {
+                if (i != primary) {
+                    secondary = i;
+                    break;
+                }
+            }
+        }
+
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.pcble_primary),
+            primary);
+
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.pcble_secondary),
+            secondary);
+    }
+
+    shell->loading = 0;
+
+    pcble_update_controls(shell);
+}
+
+static void pcble_adapter_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    int index =
+        pcble_selected_adapter(widget);
+
+    if (index < 0) {
+        return;
+    }
+
+    const char *key =
+        widget == g_c.pcble_primary
+        ? "PCBLE_PRIMARY_ADAPTER"
+        : "PCBLE_SECONDARY_ADAPTER";
+
+    config_set_str(
+        key,
+        g_c.pcble_adapters[index].address);
+
+    pcble_update_controls(shell);
+}
+
+static void pcble_controller_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    const char *profile =
+        pcble_profile();
+
+    config_set_str(
+        "PCBLE_CONTROLLER",
+        profile);
+
+    output_pcble_set_controller(
+        profile);
+
+    pcble_update_controls(shell);
+}
+
+static void pcble_color_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    const char *key = NULL;
+
+    if (widget == g_c.pcble_body_color)
+        key = "PCBLE_BODY_COLOR";
+    else if (widget == g_c.pcble_button_color)
+        key = "PCBLE_BUTTON_COLOR";
+    else if (widget == g_c.pcble_left_grip_color)
+        key = "PCBLE_LEFT_GRIP_COLOR";
+    else if (widget == g_c.pcble_right_grip_color)
+        key = "PCBLE_RIGHT_GRIP_COLOR";
+
+    if (!key) {
+        return;
+    }
+
+    char hex[7];
+    pcble_color_hex(widget, hex);
+
+    config_set_str(key, hex);
+}
+
+static void pcble_verbose_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    config_set_int(
+        "PCBLE_VERBOSE",
+        gtk_toggle_button_get_active(
+            GTK_TOGGLE_BUTTON(widget))
+            ? 1
+            : 0);
+}
+
+static void pcble_start(
+    GtkShell *shell,
+    int reconnect)
+{
+    int primary =
+        pcble_selected_adapter(
+            g_c.pcble_primary);
+
+    if (primary < 0) {
+        gtk_shell_show_error(
+            shell,
+            "Select a Bluetooth adapter first.");
+        return;
+    }
+
+    const char *profile =
+        pcble_profile();
+
+    int pair =
+        strcmp(profile, "joycon-pair") == 0;
+
+    int secondary =
+        pcble_selected_adapter(
+            g_c.pcble_secondary);
+
+    if (pair &&
+        (secondary < 0 ||
+         secondary == primary)) {
+        gtk_shell_show_error(
+            shell,
+            "A Joy-Con pair requires two distinct Bluetooth adapters.");
+        return;
+    }
+
+    if (reconnect) {
+        if (pair) {
+            gtk_shell_show_error(
+                shell,
+                "Automatic reconnect is currently available for Pro Controller sessions.");
+            return;
+        }
+
+        if (!g_c.pcble_paired_switch[0]) {
+            gtk_shell_show_error(
+                shell,
+                "No paired Switch is stored yet. Use Pair / Sync new Switch first.");
+            return;
+        }
+
+        if (!g_c.pcble_paired_adapter[0] ||
+            g_ascii_strcasecmp(
+                g_c.pcble_paired_adapter,
+                g_c.pcble_adapters[primary].address) != 0) {
+            gtk_shell_show_error(
+                shell,
+                "Reconnect requires the Bluetooth adapter used for the original pairing.");
+            return;
+        }
+    }
+
+    char body[7];
+    char buttons[7];
+    char left[7];
+    char right[7];
+
+    pcble_color_hex(
+        g_c.pcble_body_color,
+        body);
+
+    pcble_color_hex(
+        g_c.pcble_button_color,
+        buttons);
+
+    pcble_color_hex(
+        g_c.pcble_left_grip_color,
+        left);
+
+    pcble_color_hex(
+        g_c.pcble_right_grip_color,
+        right);
+
+    config_set_str(
+        "PCBLE_CONTROLLER",
+        profile);
+
+    config_set_str(
+        "PCBLE_PRIMARY_ADAPTER",
+        g_c.pcble_adapters[primary].address);
+
+    if (pair) {
+        config_set_str(
+            "PCBLE_SECONDARY_ADAPTER",
+            g_c.pcble_adapters[secondary].address);
+    }
+
+    char error[256];
+
+    int ok =
+        output_pcble_start_session(
+            g_c.pcble_adapters[primary].id,
+            pair
+                ? g_c.pcble_adapters[secondary].id
+                : NULL,
+            profile,
+            reconnect
+                ? g_c.pcble_paired_switch
+                : NULL,
+            body,
+            buttons,
+            left,
+            right,
+            gtk_toggle_button_get_active(
+                GTK_TOGGLE_BUTTON(
+                    g_c.pcble_verbose)),
+            error,
+            sizeof(error));
+
+    if (!ok) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            error);
+
+        gtk_shell_show_error(
+            shell,
+            error);
+
+        return;
+    }
+
+    gtk_label_set_text(
+        GTK_LABEL(g_c.pcble_status),
+        reconnect
+            ? "reconnecting to paired Switch..."
+            : "waiting for pairing — open Controllers → Change Grip/Order on the Switch");
+
+    pcble_update_controls(shell);
+}
+
+static void pcble_pair_clicked(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+    pcble_start(user_data, 0);
+}
+
+static void pcble_reconnect_clicked(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+    pcble_start(user_data, 1);
+}
+
+static void pcble_stop_clicked(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+
+    GtkShell *shell = user_data;
+
+    output_pcble_stop_session();
+
+    gtk_label_set_text(
+        GTK_LABEL(g_c.pcble_status),
+        "stopping Bluetooth session...");
+
+    pcble_update_controls(shell);
+}
+
+static void pcble_load_config(GtkShell *shell)
+{
+    char profile[32];
+
+    config_get_str(
+        "PCBLE_CONTROLLER",
+        profile,
+        sizeof(profile),
+        "pro");
+
+    shell->loading = 1;
+
+    gtk_combo_box_set_active(
+        GTK_COMBO_BOX(g_c.pcble_controller),
+        strcmp(profile, "joycon-pair") == 0
+            ? 1
+            : 0);
+
+    config_get_str(
+        "PCBLE_SWITCH_ADDRESS",
+        g_c.pcble_paired_switch,
+        sizeof(g_c.pcble_paired_switch),
+        "");
+
+    config_get_str(
+        "PCBLE_PAIRED_ADAPTER",
+        g_c.pcble_paired_adapter,
+        sizeof(g_c.pcble_paired_adapter),
+        "");
+
+    gtk_label_set_text(
+        GTK_LABEL(g_c.pcble_paired),
+        g_c.pcble_paired_switch[0]
+            ? g_c.pcble_paired_switch
+            : "not paired yet");
+
+    pcble_set_color_from_config(
+        g_c.pcble_body_color,
+        "PCBLE_BODY_COLOR",
+        "828282");
+
+    pcble_set_color_from_config(
+        g_c.pcble_button_color,
+        "PCBLE_BUTTON_COLOR",
+        "0F0F0F");
+
+    pcble_set_color_from_config(
+        g_c.pcble_left_grip_color,
+        "PCBLE_LEFT_GRIP_COLOR",
+        "828282");
+
+    pcble_set_color_from_config(
+        g_c.pcble_right_grip_color,
+        "PCBLE_RIGHT_GRIP_COLOR",
+        "828282");
+
+    gtk_toggle_button_set_active(
+        GTK_TOGGLE_BUTTON(g_c.pcble_verbose),
+        config_get_int(
+            "PCBLE_VERBOSE",
+            0,
+            0,
+            1));
+
+    shell->loading = 0;
+
+    output_pcble_set_controller(
+        profile);
+
+    pcble_refresh_adapters(
+        NULL,
+        shell);
+
+    pcble_update_controls(shell);
+}
+
+static void pcble_refresh_status(GtkShell *shell)
+{
+    if (!g_c.pcble_status) {
+        return;
+    }
+
+    char peer[64] = {0};
+
+    output_pcble_peer(
+        peer,
+        sizeof(peer));
+
+    const int ipc =
+        output_pcble_ipc_up();
+
+    const int connected =
+        gamepad_bridge_link_up();
+
+    const int running =
+        output_pcble_session_running();
+
+    const char *profile =
+        pcble_profile();
+
+    if (ipc && connected) {
+        char text[128];
+
+        snprintf(
+            text,
+            sizeof(text),
+            peer[0]
+                ? "connected — %s"
+                : "connected",
+            peer);
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            text);
+
+        /*
+         * The Pro backend reports the real console Bluetooth address.
+         * Remember it together with the physical adapter identity so a
+         * later reconnect cannot accidentally use another dongle.
+         */
+        if (strcmp(profile, "pro") == 0 &&
+            pcble_mac_valid(peer)) {
+            int primary =
+                pcble_selected_adapter(
+                    g_c.pcble_primary);
+
+            if (primary >= 0) {
+                const char *adapter =
+                    g_c.pcble_adapters[primary].address;
+
+                if (g_ascii_strcasecmp(
+                        g_c.pcble_paired_switch,
+                        peer) != 0 ||
+                    g_ascii_strcasecmp(
+                        g_c.pcble_paired_adapter,
+                        adapter) != 0) {
+                    snprintf(
+                        g_c.pcble_paired_switch,
+                        sizeof(g_c.pcble_paired_switch),
+                        "%s",
+                        peer);
+
+                    snprintf(
+                        g_c.pcble_paired_adapter,
+                        sizeof(g_c.pcble_paired_adapter),
+                        "%s",
+                        adapter);
+
+                    config_set_str(
+                        "PCBLE_SWITCH_ADDRESS",
+                        peer);
+
+                    config_set_str(
+                        "PCBLE_PAIRED_ADAPTER",
+                        adapter);
+
+                    gtk_label_set_text(
+                        GTK_LABEL(g_c.pcble_paired),
+                        peer);
+                }
+            }
+        }
+    } else if (ipc) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "Bluetooth session active — waiting for Switch");
+    } else if (running) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "starting Bluetooth session / waiting for authorization...");
+    } else {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "offline");
+    }
+
+    pcble_update_controls(shell);
 }
 
 /* --- the controls ---------------------------------------------------- */
@@ -563,12 +1381,7 @@ static void load_controls(GtkShell *shell) {
             s.output_backend);
     }
 
-    if (g_c.titan_settings) {
-        const int titan = gamepad_bridge_backend_from_name("titan");
-        gtk_widget_set_sensitive(
-            g_c.titan_settings,
-            s.output_backend == titan);
-    }
+    pcble_update_controls(shell);
 
     if (s.output_protocol >= 0) {
         gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.output_protocol), s.output_protocol);
@@ -1138,11 +1951,10 @@ static void build_settings_window(GtkShell *shell) {
             make_scale(shell, 45, 100, 1, "%"));
     }
 
-    add_section_header(grid, row++, "Titan / ConsoleTuner backend");
-
     g_c.titan_settings = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(g_c.titan_settings), 8);
     gtk_grid_set_column_spacing(GTK_GRID(g_c.titan_settings), 14);
+    gtk_widget_set_no_show_all(g_c.titan_settings, TRUE);
     gtk_grid_attach(
         GTK_GRID(grid),
         g_c.titan_settings,
@@ -1153,6 +1965,11 @@ static void build_settings_window(GtkShell *shell) {
 
     {
         int tr = 0;
+
+        add_section_header(
+            g_c.titan_settings,
+            tr++,
+            "Titan / ConsoleTuner backend");
 
         g_c.output_protocol = gtk_combo_box_text_new();
 
@@ -1187,6 +2004,322 @@ static void build_settings_window(GtkShell *shell) {
             "Titan/ConsoleTuner only. Which controller protocol the adapter "
             "presents to the console.");
     }
+
+
+    /* --- Nintendo Bluetooth backend ------------------------------ */
+
+    g_c.pcble_settings = gtk_grid_new();
+    gtk_grid_set_row_spacing(
+        GTK_GRID(g_c.pcble_settings),
+        8);
+    gtk_grid_set_column_spacing(
+        GTK_GRID(g_c.pcble_settings),
+        14);
+    gtk_widget_set_no_show_all(
+        g_c.pcble_settings,
+        TRUE);
+
+    gtk_grid_attach(
+        GTK_GRID(grid),
+        g_c.pcble_settings,
+        0,
+        row++,
+        2,
+        1);
+
+    {
+        int pr = 0;
+
+        add_section_header(
+            g_c.pcble_settings,
+            pr++,
+            "Nintendo Bluetooth backend");
+
+        g_c.pcble_controller =
+            gtk_combo_box_text_new();
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Nintendo Switch Pro Controller");
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Nintendo Joy-Con Pair");
+
+        g_signal_connect(
+            g_c.pcble_controller,
+            "changed",
+            G_CALLBACK(pcble_controller_changed),
+            shell);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "emulated controller",
+            g_c.pcble_controller);
+
+        g_c.pcble_primary =
+            gtk_combo_box_text_new();
+
+        g_signal_connect(
+            g_c.pcble_primary,
+            "changed",
+            G_CALLBACK(pcble_adapter_changed),
+            shell);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "primary adapter",
+            g_c.pcble_primary);
+
+        gtk_widget_set_tooltip_text(
+            g_c.pcble_primary,
+            "Pro Controller, or left Joy-Con. "
+            "The physical Bluetooth address is saved because hci numbers "
+            "can change after reboot.");
+
+        g_c.pcble_secondary =
+            gtk_combo_box_text_new();
+
+        g_signal_connect(
+            g_c.pcble_secondary,
+            "changed",
+            G_CALLBACK(pcble_adapter_changed),
+            shell);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "right Joy-Con adapter",
+            g_c.pcble_secondary);
+
+        gtk_widget_set_tooltip_text(
+            g_c.pcble_secondary,
+            "Only used by the Joy-Con Pair profile. "
+            "It must be different from the primary adapter.");
+
+        g_c.pcble_paired =
+            gtk_label_new("not paired yet");
+
+        gtk_widget_set_halign(
+            g_c.pcble_paired,
+            GTK_ALIGN_START);
+
+        gtk_label_set_selectable(
+            GTK_LABEL(g_c.pcble_paired),
+            TRUE);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "paired Switch",
+            g_c.pcble_paired);
+
+        g_c.pcble_status =
+            gtk_label_new("offline");
+
+        gtk_widget_set_halign(
+            g_c.pcble_status,
+            GTK_ALIGN_START);
+
+        gtk_label_set_line_wrap(
+            GTK_LABEL(g_c.pcble_status),
+            TRUE);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "session",
+            g_c.pcble_status);
+
+        GtkWidget *buttons =
+            gtk_box_new(
+                GTK_ORIENTATION_HORIZONTAL,
+                8);
+
+        g_c.pcble_reconnect =
+            gtk_button_new_with_label(
+                "Reconnect paired Switch");
+
+        g_c.pcble_pair =
+            gtk_button_new_with_label(
+                "Pair / Sync new Switch");
+
+        g_c.pcble_stop =
+            gtk_button_new_with_label(
+                "Stop session");
+
+        g_c.pcble_refresh =
+            gtk_button_new_with_label(
+                "Refresh adapters");
+
+        g_signal_connect(
+            g_c.pcble_reconnect,
+            "clicked",
+            G_CALLBACK(pcble_reconnect_clicked),
+            shell);
+
+        g_signal_connect(
+            g_c.pcble_pair,
+            "clicked",
+            G_CALLBACK(pcble_pair_clicked),
+            shell);
+
+        g_signal_connect(
+            g_c.pcble_stop,
+            "clicked",
+            G_CALLBACK(pcble_stop_clicked),
+            shell);
+
+        g_signal_connect(
+            g_c.pcble_refresh,
+            "clicked",
+            G_CALLBACK(pcble_refresh_adapters),
+            shell);
+
+        gtk_box_pack_start(
+            GTK_BOX(buttons),
+            g_c.pcble_reconnect,
+            FALSE, FALSE, 0);
+
+        gtk_box_pack_start(
+            GTK_BOX(buttons),
+            g_c.pcble_pair,
+            FALSE, FALSE, 0);
+
+        gtk_box_pack_start(
+            GTK_BOX(buttons),
+            g_c.pcble_stop,
+            FALSE, FALSE, 0);
+
+        gtk_box_pack_start(
+            GTK_BOX(buttons),
+            g_c.pcble_refresh,
+            FALSE, FALSE, 0);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "Bluetooth session",
+            buttons);
+
+        {
+            GtkWidget *hint =
+                gtk_label_new(
+                    "For first pairing, press Pair / Sync and open "
+                    "Controllers → Change Grip/Order on the Switch. "
+                    "Reconnect uses the same Bluetooth adapter that performed "
+                    "the original pairing.");
+
+            gtk_widget_set_halign(
+                hint,
+                GTK_ALIGN_START);
+
+            gtk_label_set_line_wrap(
+                GTK_LABEL(hint),
+                TRUE);
+
+            gtk_label_set_max_width_chars(
+                GTK_LABEL(hint),
+                72);
+
+            gtk_style_context_add_class(
+                gtk_widget_get_style_context(hint),
+                "dim-label");
+
+            add_row(
+                g_c.pcble_settings,
+                pr++,
+                "",
+                hint);
+        }
+
+        add_section_header(
+            g_c.pcble_settings,
+            pr++,
+            "Pro Controller appearance");
+
+        g_c.pcble_body_color =
+            gtk_color_button_new();
+
+        g_c.pcble_button_color =
+            gtk_color_button_new();
+
+        g_c.pcble_left_grip_color =
+            gtk_color_button_new();
+
+        g_c.pcble_right_grip_color =
+            gtk_color_button_new();
+
+        GtkWidget *colors[] = {
+            g_c.pcble_body_color,
+            g_c.pcble_button_color,
+            g_c.pcble_left_grip_color,
+            g_c.pcble_right_grip_color,
+        };
+
+        for (unsigned i = 0;
+             i < sizeof(colors) / sizeof(colors[0]);
+             i++) {
+            gtk_color_button_set_use_alpha(
+                GTK_COLOR_BUTTON(colors[i]),
+                FALSE);
+
+            g_signal_connect(
+                colors[i],
+                "color-set",
+                G_CALLBACK(pcble_color_changed),
+                shell);
+        }
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "body",
+            g_c.pcble_body_color);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "buttons",
+            g_c.pcble_button_color);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "left grip",
+            g_c.pcble_left_grip_color);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "right grip",
+            g_c.pcble_right_grip_color);
+
+        add_section_header(
+            g_c.pcble_settings,
+            pr++,
+            "Diagnostics");
+
+        g_c.pcble_verbose =
+            gtk_check_button_new_with_label(
+                "detailed Bluetooth / HID logging");
+
+        g_signal_connect(
+            g_c.pcble_verbose,
+            "toggled",
+            G_CALLBACK(pcble_verbose_changed),
+            shell);
+
+        add_row(
+            g_c.pcble_settings,
+            pr++,
+            "logging",
+            g_c.pcble_verbose);
+    }
+
+    pcble_load_config(shell);
 
 
     /* ===============================================================
@@ -1778,6 +2911,8 @@ static gboolean on_tick(gpointer user_data) {
                 line);
         }
     }
+
+    pcble_refresh_status(shell);
 
     if (g_c.adapter_sees) {
         /* Read straight from the bridge every tick rather than pushed

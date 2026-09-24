@@ -295,7 +295,8 @@ int config_set_str(const char *key, const char *value) {
      * would need shell escaping rather than trying to invent quoting.
      */
     for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
-        if (!isalnum(*p) && *p != '_' && *p != '-' && *p != '.' && *p != '/') {
+        if (!isalnum(*p) && *p != '_' && *p != '-' && *p != '.' &&
+            *p != '/' && *p != ':') {
             fprintf(stderr, "config: refusing unsafe string value for %s\n", key);
             return -1;
         }

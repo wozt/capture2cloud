@@ -6,9 +6,12 @@
 #include "controller_state.h"
 
 #include <SDL2/SDL.h>
+#include <gio/gio.h>
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +44,13 @@ static unsigned g_rate_count;
 static double g_report_rate;
 
 static char g_socket_dir[256];
+static char g_peer[32];
+
+static GMutex g_session_lock;
+static GSubprocess *g_launcher;
+static int g_session_stopping;
+
+#define PCBLE_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
 
 static int pressed(const int8_t state[CONTROLLER_STATE_COUNT], int index)
 {
@@ -152,16 +162,50 @@ static int write_all(int fd, const char *data, size_t size)
     return 1;
 }
 
+static void reply_peer(
+    const char *reply,
+    char *out,
+    size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+
+    out[0] = '\0';
+
+    const char *p = strstr(reply, "\"peer\":\"");
+    if (!p) {
+        return;
+    }
+
+    p += strlen("\"peer\":\"");
+
+    size_t n = 0;
+    while (p[n] && p[n] != '"' && n + 1 < out_size) {
+        out[n] = p[n];
+        n++;
+    }
+
+    out[n] = '\0';
+}
+
 static int socket_request(
     const char *path,
     const char *request,
-    int *initialized)
+    int *initialized,
+    char *peer,
+    size_t peer_size)
 {
     if (initialized) {
         *initialized = 0;
     }
 
-    if (!path || !*path || strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+    if (peer && peer_size) {
+        peer[0] = '\0';
+    }
+
+    if (!path || !*path ||
+        strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
         return 0;
     }
 
@@ -203,7 +247,10 @@ static int socket_request(
     int complete = 0;
 
     while (used + 1 < PCBLE_REPLY_MAX) {
-        ssize_t n = read(fd, reply + used, PCBLE_REPLY_MAX - 1 - used);
+        ssize_t n = read(
+            fd,
+            reply + used,
+            PCBLE_REPLY_MAX - 1 - used);
 
         if (n < 0) {
             if (errno == EINTR) {
@@ -238,6 +285,10 @@ static int socket_request(
             strstr(reply, "\"initialized\":true") != NULL;
     }
 
+    if (ok && peer && peer_size) {
+        reply_peer(reply, peer, peer_size);
+    }
+
     free(reply);
     return ok;
 }
@@ -250,7 +301,10 @@ static void socket_path(char *out, size_t out_size, const char *name)
 static int send_input(
     const int8_t state[CONTROLLER_STATE_COUNT],
     int home_override,
-    int *initialized)
+    int pair_mode,
+    int *initialized,
+    char *peer,
+    size_t peer_size)
 {
     uint8_t buttons[3];
     uint16_t sticks[4];
@@ -283,15 +337,17 @@ static int send_input(
     socket_path(
         path,
         sizeof(path),
-        g_pair_mode ? "joycon-left.sock" : "pro.sock");
+        pair_mode ? "joycon-left.sock" : "pro.sock");
 
     int left_ok =
         socket_request(
             path,
             request,
-            &left_initialized);
+            &left_initialized,
+            peer,
+            peer_size);
 
-    if (!g_pair_mode) {
+    if (!pair_mode) {
         if (initialized) {
             *initialized = left_initialized;
         }
@@ -309,7 +365,9 @@ static int send_input(
         socket_request(
             path,
             request,
-            &right_initialized);
+            &right_initialized,
+            NULL,
+            0);
 
     if (initialized) {
         *initialized =
@@ -320,7 +378,7 @@ static int send_input(
     return left_ok && right_ok;
 }
 
-static void send_release(void)
+static void send_release(int pair_mode)
 {
     const char request[] =
         "{\"version\":1,\"method\":\"release\"}\n";
@@ -330,17 +388,17 @@ static void send_release(void)
     socket_path(
         path,
         sizeof(path),
-        g_pair_mode ? "joycon-left.sock" : "pro.sock");
+        pair_mode ? "joycon-left.sock" : "pro.sock");
 
-    socket_request(path, request, NULL);
+    socket_request(path, request, NULL, NULL, 0);
 
-    if (g_pair_mode) {
+    if (pair_mode) {
         socket_path(
             path,
             sizeof(path),
             "joycon-right.sock");
 
-        socket_request(path, request, NULL);
+        socket_request(path, request, NULL, NULL, 0);
     }
 }
 
@@ -352,6 +410,7 @@ static int worker(void *unused)
         int8_t state[CONTROLLER_STATE_COUNT];
         int should_send = 0;
         int home = 0;
+        int pair_mode = 0;
         int was_ipc_up = 0;
 
         Uint32 now = SDL_GetTicks();
@@ -376,6 +435,7 @@ static int worker(void *unused)
 
         if (should_send) {
             memcpy(state, g_state, sizeof(state));
+            pair_mode = g_pair_mode;
             home =
                 g_home_until != 0 &&
                 (Sint32)(g_home_until - now) > 0;
@@ -392,11 +452,16 @@ static int worker(void *unused)
         }
 
         int initialized = 0;
+        char peer[sizeof(g_peer)] = {0};
+
         int ok =
             send_input(
                 state,
                 home,
-                &initialized);
+                pair_mode,
+                &initialized,
+                peer,
+                sizeof(peer));
 
         now = SDL_GetTicks();
 
@@ -404,6 +469,12 @@ static int worker(void *unused)
 
         g_ipc_up = ok;
         g_link_up = ok && initialized;
+
+        if (ok && peer[0]) {
+            snprintf(g_peer, sizeof(g_peer), "%s", peer);
+        } else if (!ok) {
+            g_peer[0] = '\0';
+        }
 
         if (ok) {
             g_last_send = now;
@@ -492,6 +563,7 @@ static int output_pcble_init(void)
     g_dirty = 1;
     g_ipc_up = 0;
     g_link_up = 0;
+    g_peer[0] = '\0';
     g_home_until = 0;
     g_last_attempt = SDL_GetTicks() - PCBLE_RETRY_MS;
     g_last_send = 0;
@@ -623,10 +695,11 @@ static void output_pcble_shutdown(void)
     }
 
     /*
-     * Neutralise the controller before the helper's own five-second
-     * desktop lease expires.
+     * Capture2Cloud owns the Bluetooth session it started. Ask the helper
+     * for a clean shutdown so BlueZ is restored immediately.
      */
-    send_release();
+    send_release(g_pair_mode);
+    output_pcble_stop_session();
 
     SDL_DestroyMutex(g_lock);
     g_lock = NULL;
@@ -634,6 +707,505 @@ static void output_pcble_shutdown(void)
     g_ipc_up = 0;
     g_link_up = 0;
     g_report_rate = 0.0;
+}
+
+
+static int valid_hci(const char *id)
+{
+    if (!id || strncmp(id, "hci", 3) != 0 || !isdigit((unsigned char)id[3])) {
+        return 0;
+    }
+
+    for (const char *p = id + 3; *p; p++) {
+        if (!isdigit((unsigned char)*p)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int valid_mac(const char *address)
+{
+    if (!address || strlen(address) != 17) {
+        return 0;
+    }
+
+    for (int i = 0; i < 17; i++) {
+        if ((i + 1) % 3 == 0) {
+            if (address[i] != ':') {
+                return 0;
+            }
+        } else if (!isxdigit((unsigned char)address[i])) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int valid_color(const char *value)
+{
+    if (!value || strlen(value) != 6) {
+        return 0;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        if (!isxdigit((unsigned char)value[i])) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int output_pcble_scan_adapters(
+    OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS],
+    char *error,
+    size_t error_size)
+{
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+
+    GError *gerror = NULL;
+    GDBusConnection *bus =
+        g_bus_get_sync(
+            G_BUS_TYPE_SYSTEM,
+            NULL,
+            &gerror);
+
+    if (!bus) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                gerror ? gerror->message : "Could not open system D-Bus");
+        }
+        g_clear_error(&gerror);
+        return -1;
+    }
+
+    GVariant *reply =
+        g_dbus_connection_call_sync(
+            bus,
+            "org.bluez",
+            "/",
+            "org.freedesktop.DBus.ObjectManager",
+            "GetManagedObjects",
+            NULL,
+            G_VARIANT_TYPE("(a{oa{sa{sv}}})"),
+            0,
+            1500,
+            NULL,
+            &gerror);
+
+    g_object_unref(bus);
+
+    if (!reply) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                gerror ? gerror->message : "BlueZ did not answer");
+        }
+        g_clear_error(&gerror);
+        return -1;
+    }
+
+    GVariantIter *objects = NULL;
+    g_variant_get(reply, "(a{oa{sa{sv}}})", &objects);
+
+    int count = 0;
+    char *path = NULL;
+    GVariant *interfaces = NULL;
+
+    while (g_variant_iter_next(
+            objects,
+            "{o@a{sa{sv}}}",
+            &path,
+            &interfaces)) {
+        GVariant *props =
+            g_variant_lookup_value(
+                interfaces,
+                "org.bluez.Adapter1",
+                G_VARIANT_TYPE_VARDICT);
+
+        if (props && count < OUTPUT_PCBLE_MAX_ADAPTERS) {
+            const char *address = "";
+
+            g_variant_lookup(
+                props,
+                "Address",
+                "&s",
+                &address);
+
+            char *id = g_path_get_basename(path);
+
+            snprintf(
+                adapters[count].id,
+                sizeof(adapters[count].id),
+                "%s",
+                id);
+
+            snprintf(
+                adapters[count].address,
+                sizeof(adapters[count].address),
+                "%s",
+                address);
+
+            count++;
+
+            g_free(id);
+        }
+
+        if (props) {
+            g_variant_unref(props);
+        }
+
+        g_free(path);
+        g_variant_unref(interfaces);
+    }
+
+    g_variant_iter_free(objects);
+    g_variant_unref(reply);
+
+    return count;
+}
+
+int output_pcble_set_controller(const char *profile)
+{
+    int pair_mode;
+
+    if (!profile || strcmp(profile, "pro") == 0) {
+        pair_mode = 0;
+    } else if (strcmp(profile, "joycon-pair") == 0) {
+        pair_mode = 1;
+    } else {
+        return 0;
+    }
+
+    if (!g_lock) {
+        g_pair_mode = pair_mode;
+        return 1;
+    }
+
+    SDL_LockMutex(g_lock);
+
+    g_pair_mode = pair_mode;
+    g_ipc_up = 0;
+    g_link_up = 0;
+    g_peer[0] = '\0';
+    g_dirty = 1;
+
+    SDL_UnlockMutex(g_lock);
+
+    return 1;
+}
+
+static void launcher_finished(
+    GObject *source,
+    GAsyncResult *result,
+    gpointer unused)
+{
+    (void)unused;
+
+    GError *error = NULL;
+
+    if (!g_subprocess_wait_check_finish(
+            G_SUBPROCESS(source),
+            result,
+            &error)) {
+        g_mutex_lock(&g_session_lock);
+        int stopping = g_session_stopping;
+        g_mutex_unlock(&g_session_lock);
+
+        if (!stopping && error) {
+            fprintf(
+                stderr,
+                "pcble: session launcher exited: %s\n",
+                error->message);
+        }
+    }
+
+    g_clear_error(&error);
+
+    g_mutex_lock(&g_session_lock);
+
+    if (g_launcher == G_SUBPROCESS(source)) {
+        g_clear_object(&g_launcher);
+    }
+
+    g_session_stopping = 0;
+
+    g_mutex_unlock(&g_session_lock);
+}
+
+int output_pcble_start_session(
+    const char *primary_adapter,
+    const char *secondary_adapter,
+    const char *profile,
+    const char *reconnect_address,
+    const char *body_color,
+    const char *button_color,
+    const char *left_grip_color,
+    const char *right_grip_color,
+    int verbose,
+    char *error,
+    size_t error_size)
+{
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+
+    if (!valid_hci(primary_adapter)) {
+        if (error && error_size) {
+            snprintf(error, error_size, "Invalid primary Bluetooth adapter");
+        }
+        return 0;
+    }
+
+    const int pair_mode =
+        profile &&
+        strcmp(profile, "joycon-pair") == 0;
+
+    if (!profile ||
+        (strcmp(profile, "pro") != 0 && !pair_mode)) {
+        if (error && error_size) {
+            snprintf(error, error_size, "Invalid controller profile");
+        }
+        return 0;
+    }
+
+    if (pair_mode &&
+        (!valid_hci(secondary_adapter) ||
+         strcmp(primary_adapter, secondary_adapter) == 0)) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "Joy-Con pair requires two distinct Bluetooth adapters");
+        }
+        return 0;
+    }
+
+    if (reconnect_address &&
+        *reconnect_address &&
+        !valid_mac(reconnect_address)) {
+        if (error && error_size) {
+            snprintf(error, error_size, "Invalid paired Switch address");
+        }
+        return 0;
+    }
+
+    if (!pair_mode &&
+        (!valid_color(body_color) ||
+         !valid_color(button_color) ||
+         !valid_color(left_grip_color) ||
+         !valid_color(right_grip_color))) {
+        if (error && error_size) {
+            snprintf(error, error_size, "Invalid Pro Controller color");
+        }
+        return 0;
+    }
+
+    if (access(PCBLE_RUNNER, X_OK) != 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "Bluetooth backend is not installed. Run scripts/install_pcble_backend.sh");
+        }
+        return 0;
+    }
+
+    g_mutex_lock(&g_session_lock);
+
+    if (g_launcher) {
+        g_mutex_unlock(&g_session_lock);
+
+        if (error && error_size) {
+            snprintf(error, error_size, "A Bluetooth session is already running");
+        }
+        return 0;
+    }
+
+    const char *args[32];
+    int n = 0;
+
+    args[n++] = "pkexec";
+    args[n++] = PCBLE_RUNNER;
+    args[n++] = primary_adapter;
+    args[n++] = "--desktop";
+    args[n++] = "--profile";
+    args[n++] = profile;
+
+    if (pair_mode) {
+        args[n++] = "--secondary";
+        args[n++] = secondary_adapter;
+    } else {
+        args[n++] = "--body-color";
+        args[n++] = body_color;
+        args[n++] = "--button-color";
+        args[n++] = button_color;
+        args[n++] = "--left-grip-color";
+        args[n++] = left_grip_color;
+        args[n++] = "--right-grip-color";
+        args[n++] = right_grip_color;
+    }
+
+    if (reconnect_address && *reconnect_address) {
+        args[n++] = "--reconnect";
+        args[n++] = reconnect_address;
+    }
+
+    if (verbose) {
+        args[n++] = "--verbose";
+    }
+
+    args[n] = NULL;
+
+    GError *gerror = NULL;
+
+    g_launcher =
+        g_subprocess_newv(
+            args,
+            G_SUBPROCESS_FLAGS_NONE,
+            &gerror);
+
+    if (!g_launcher) {
+        g_mutex_unlock(&g_session_lock);
+
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                gerror ? gerror->message : "Could not start Bluetooth session");
+        }
+
+        g_clear_error(&gerror);
+        return 0;
+    }
+
+    g_session_stopping = 0;
+
+    g_subprocess_wait_check_async(
+        g_launcher,
+        NULL,
+        launcher_finished,
+        NULL);
+
+    g_mutex_unlock(&g_session_lock);
+
+    output_pcble_set_controller(profile);
+
+    fprintf(
+        stderr,
+        "pcble: starting %s session on %s%s%s\n",
+        profile,
+        primary_adapter,
+        pair_mode ? " + " : "",
+        pair_mode ? secondary_adapter : "");
+
+    return 1;
+}
+
+void output_pcble_stop_session(void)
+{
+    int pair_mode = 0;
+
+    if (g_lock) {
+        SDL_LockMutex(g_lock);
+        pair_mode = g_pair_mode;
+        SDL_UnlockMutex(g_lock);
+    } else {
+        pair_mode = g_pair_mode;
+    }
+
+    const char request[] =
+        "{\"version\":1,\"method\":\"stop\"}\n";
+
+    char path[320];
+
+    socket_path(
+        path,
+        sizeof(path),
+        pair_mode ? "joycon-left.sock" : "pro.sock");
+
+    int stopped =
+        socket_request(
+            path,
+            request,
+            NULL,
+            NULL,
+            0);
+
+    if (pair_mode) {
+        socket_path(
+            path,
+            sizeof(path),
+            "joycon-right.sock");
+
+        stopped |=
+            socket_request(
+                path,
+                request,
+                NULL,
+                NULL,
+                0);
+    }
+
+    g_mutex_lock(&g_session_lock);
+
+    g_session_stopping = 1;
+
+    if (!stopped && g_launcher) {
+        g_subprocess_send_signal(g_launcher, SIGTERM);
+    }
+
+    g_mutex_unlock(&g_session_lock);
+}
+
+int output_pcble_ipc_up(void)
+{
+    if (!g_lock) {
+        return 0;
+    }
+
+    SDL_LockMutex(g_lock);
+    int up = g_ipc_up;
+    SDL_UnlockMutex(g_lock);
+
+    return up;
+}
+
+int output_pcble_session_running(void)
+{
+    g_mutex_lock(&g_session_lock);
+    int running = g_launcher != NULL;
+    g_mutex_unlock(&g_session_lock);
+
+    return running;
+}
+
+void output_pcble_peer(char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+
+    out[0] = '\0';
+
+    if (!g_lock) {
+        return;
+    }
+
+    SDL_LockMutex(g_lock);
+    snprintf(out, out_size, "%s", g_peer);
+    SDL_UnlockMutex(g_lock);
 }
 
 const GamepadOutputBackend *output_pcble_backend(void)
