@@ -192,6 +192,84 @@ int main(void) {
             gtk_label_get_text(GTK_LABEL(g_c.overview_status)),
             "starting...") != 0);
 
+    /*
+     * Backend-specific controls must really appear when pcble is selected.
+     * Merely constructing them is not enough: a previous regression left
+     * the whole panel hidden while the backend itself worked correctly.
+     */
+    s.output_backend = 1;
+    gtk_shell_update(sh, &s);
+    sleep(1);
+
+    t_ok(
+        "pcble panel is visible when pcble2gamepad is selected",
+        g_c.pcble_settings &&
+        gtk_widget_get_visible(g_c.pcble_settings));
+
+    t_ok(
+        "pcble Pair / Sync button is visible",
+        g_c.pcble_pair &&
+        gtk_widget_get_visible(g_c.pcble_pair));
+
+    t_ok(
+        "Titan panel is hidden while pcble is selected",
+        g_c.titan_settings &&
+        !gtk_widget_get_visible(g_c.titan_settings));
+
+    s.output_backend = 0;
+    gtk_shell_update(sh, &s);
+    sleep(1);
+
+    t_ok(
+        "pcble panel hides again when Titan is selected",
+        g_c.pcble_settings &&
+        !gtk_widget_get_visible(g_c.pcble_settings));
+
+    /*
+     * Pin the two distinct shaping paths to the widgets themselves.
+     * This catches the easy regression where a slider is visible but its
+     * on_scale() branch was forgotten.
+     */
+    gtk_range_set_value(
+        GTK_RANGE(g_c.range[0]),
+        73);
+
+    gtk_range_set_value(
+        GTK_RANGE(g_c.output_range[0]),
+        84);
+
+    gtk_toggle_button_set_active(
+        GTK_TOGGLE_BUTTON(g_c.output_invert_ry),
+        TRUE);
+
+    SDL_LockMutex(sh->lock);
+
+    int input_range =
+        sh->settings.stick_range[0];
+
+    int output_range =
+        sh->settings.output_stick_range[0];
+
+    int output_invert =
+        sh->settings.output_invert_ry;
+
+    SDL_UnlockMutex(sh->lock);
+
+    t_eq_int(
+        "Input shaping slider updates local input settings",
+        input_range,
+        73);
+
+    t_eq_int(
+        "Output shaping slider updates final output settings",
+        output_range,
+        84);
+
+    t_eq_int(
+        "Output shaping toggle updates final output settings",
+        output_invert,
+        1);
+
     /* A second pass with different values, because a combo box with no
      * matching row and a scale outside its range both warn. */
     s.wiiu_console_height = 1080;

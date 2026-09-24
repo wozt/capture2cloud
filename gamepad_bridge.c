@@ -26,6 +26,9 @@ static GamepadSource g_sources[GAMEPAD_MAX_SOURCES];
 static SDL_mutex *g_sources_mutex;
 static const GamepadOutputBackend *g_backend;
 
+static ControllerShaping g_output_shaping =
+    CONTROLLER_SHAPING_OUTPUT_DEFAULTS;
+
 static int is_axis(int i)
 {
     return i == CONTROLLER_RX || i == CONTROLLER_RY ||
@@ -63,6 +66,24 @@ static void recombine(int8_t merged[CONTROLLER_STATE_COUNT])
             }
         }
     }
+
+    /*
+     * Every source is now in the same ControllerState coordinate space.
+     * This is therefore the one correct place for OUTPUT calibration:
+     * browser, native client and local SDL pad all receive exactly the
+     * same final treatment before a backend sees them.
+     */
+    int8_t shaped[CONTROLLER_STATE_COUNT];
+
+    controller_shape_state(
+        &g_output_shaping,
+        merged,
+        shaped);
+
+    memcpy(
+        merged,
+        shaped,
+        sizeof(shaped));
 }
 
 typedef const GamepadOutputBackend *(*BackendFactory)(void);
@@ -331,6 +352,42 @@ void gamepad_bridge_press_home(void)
 {
     if (g_backend && g_backend->press_home) {
         g_backend->press_home();
+    }
+}
+
+void gamepad_bridge_set_output_shaping(
+    const ControllerShaping *shaping)
+{
+    if (!shaping) {
+        return;
+    }
+
+    /*
+     * Startup can configure this even if no output backend could be
+     * opened. Remember it either way.
+     */
+    if (!g_sources_mutex) {
+        g_output_shaping = *shaping;
+        return;
+    }
+
+    int8_t merged[CONTROLLER_STATE_COUNT];
+
+    SDL_LockMutex(g_sources_mutex);
+
+    g_output_shaping = *shaping;
+
+    /*
+     * Recombine NOW, rather than waiting for another controller event.
+     * Holding a stick still while moving a calibration slider therefore
+     * changes what the console sees immediately.
+     */
+    recombine(merged);
+
+    SDL_UnlockMutex(g_sources_mutex);
+
+    if (g_backend && g_backend->update) {
+        g_backend->update(merged);
     }
 }
 

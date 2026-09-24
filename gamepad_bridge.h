@@ -2,6 +2,7 @@
 #define GAMEPAD_BRIDGE_H
 
 #include "controller_state.h"
+#include "controller_shaping.h"
 
 /*
  * Stable input-source IDs.
@@ -27,6 +28,14 @@ void gamepad_bridge_press_home(void);
 
 int gamepad_bridge_link_up(void);
 double gamepad_bridge_report_rate(void);
+
+/*
+ * Applied after all input sources have been merged and immediately before
+ * the selected console-output backend. Updating it also re-sends the
+ * currently held state, so calibration changes are visible live.
+ */
+void gamepad_bridge_set_output_shaping(
+    const ControllerShaping *shaping);
 
 const char *gamepad_bridge_backend_name(void);
 

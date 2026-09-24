@@ -1,6 +1,7 @@
 #include "local_pad.h"
 
 #include "gamepad_bridge.h"
+#include "controller_shaping.h"
 
 #include <SDL2/SDL.h>
 #include <math.h>
@@ -44,52 +45,6 @@ int local_pad_list(const char **names, int max_names) {
         n++;
     }
     return n;
-}
-
-/* Both axes together, and the limits applied to the LENGTH of the
- * vector rather than to each axis -- the same reasoning, and the same
- * arithmetic, as the page and the console client. A stick is round:
- * judged per axis, a corner reads as three quarters of a push whatever
- * the limits are. The result is scaled so the larger component reaches
- * 100, so a full corner is 100/100. */
-static void stick_to_wire(float x, float y, int dead_pct, int range_pct, int diagonal_pct,
-                          int8_t *out_x, int8_t *out_y) {
-    *out_x = 0;
-    *out_y = 0;
-
-    const float mag = sqrtf(x * x + y * y);
-    if (mag < 0.0001f) {
-        return;
-    }
-    const float ax = fabsf(x), ay = fabsf(y);
-    const float peak = ax > ay ? ax : ay;
-    const float least = ax > ay ? ay : ax;
-    const float diagonality = peak > 0.0001f ? least / peak : 0.0f;
-
-    const float dead = dead_pct / 100.0f;
-    if (mag <= dead) {
-        return;
-    }
-    const float sat_axis = range_pct / 100.0f;
-    const float sat_diag = diagonal_pct / 100.0f;
-    float sat = sat_axis + (sat_diag - sat_axis) * diagonality;
-    if (sat <= dead) {
-        sat = dead + 0.1f;
-    }
-
-    float t = (mag - dead) / (sat - dead);
-    if (t > 1.0f) {
-        t = 1.0f;
-    }
-    const float scale = t * 100.0f / peak;
-    int px = (int)(x * scale + (x < 0 ? -0.5f : 0.5f));
-    int py = (int)(y * scale + (y < 0 ? -0.5f : 0.5f));
-    if (px > 100) px = 100;
-    if (px < -100) px = -100;
-    if (py > 100) py = 100;
-    if (py < -100) py = -100;
-    *out_x = (int8_t)px;
-    *out_y = (int8_t)py;
 }
 
 static int8_t button(SDL_GameController *c, SDL_GameControllerButton b) {
@@ -172,15 +127,24 @@ void local_pad_poll(const AppSettings *s) {
     pad[GAMEPAD_XB360_LT] = lt > s->lt_threshold / 100.0f ? 100 : 0;
     pad[GAMEPAD_XB360_RT] = rt > s->rt_threshold / 100.0f ? 100 : 0;
 
-    stick_to_wire(SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_LEFTX) / STICK_MAX,
-                  SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_LEFTY) / STICK_MAX,
-                  s->stick_deadzone[0], s->stick_range[0], s->stick_diagonal[0],
-                  &pad[GAMEPAD_XB360_LX], &pad[GAMEPAD_XB360_LY]);
+    controller_shape_stick(
+        SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_LEFTX) / STICK_MAX,
+        SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_LEFTY) / STICK_MAX,
+        s->stick_deadzone[0],
+        s->stick_range[0],
+        s->stick_diagonal[0],
+        &pad[GAMEPAD_XB360_LX],
+        &pad[GAMEPAD_XB360_LY]);
 
     int8_t rx = 0, ry = 0;
-    stick_to_wire(SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_RIGHTX) / STICK_MAX,
-                  SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_RIGHTY) / STICK_MAX,
-                  s->stick_deadzone[1], s->stick_range[1], s->stick_diagonal[1], &rx, &ry);
+    controller_shape_stick(
+        SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_RIGHTX) / STICK_MAX,
+        SDL_GameControllerGetAxis(g_open, SDL_CONTROLLER_AXIS_RIGHTY) / STICK_MAX,
+        s->stick_deadzone[1],
+        s->stick_range[1],
+        s->stick_diagonal[1],
+        &rx,
+        &ry);
     pad[GAMEPAD_XB360_RX] = rx;
     pad[GAMEPAD_XB360_RY] = s->invert_ry ? (int8_t)(-ry) : ry;
 

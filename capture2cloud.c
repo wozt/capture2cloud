@@ -628,14 +628,173 @@ static void on_settings(void *userdata, const AppSettings *want) {
         }
     }
 
-    have->invert_ry = want->invert_ry;
-    have->lt_threshold = want->lt_threshold;
-    have->rt_threshold = want->rt_threshold;
-    for (int i = 0; i < 2; i++) {
-        have->stick_deadzone[i] = want->stick_deadzone[i];
-        have->stick_range[i] = want->stick_range[i];
-        have->stick_diagonal[i] = want->stick_diagonal[i];
+    /*
+     * LOCAL SDL input shaping.
+     *
+     * local_pad_poll() reads g_settings every pass, so assigning these
+     * values is the live application. Persist only the individual value
+     * that moved; dragging one slider must not rewrite the .env dozens
+     * of unnecessary times.
+     */
+    if (want->invert_ry != have->invert_ry) {
+        have->invert_ry = want->invert_ry;
+        config_set_int("INPUT_INVERT_RY", have->invert_ry);
     }
+
+    if (want->lt_threshold != have->lt_threshold) {
+        have->lt_threshold = want->lt_threshold;
+        config_set_int("INPUT_LT_THRESHOLD", have->lt_threshold);
+    }
+
+    if (want->rt_threshold != have->rt_threshold) {
+        have->rt_threshold = want->rt_threshold;
+        config_set_int("INPUT_RT_THRESHOLD", have->rt_threshold);
+    }
+
+    static const char *const INPUT_DEADZONE_KEY[2] = {
+        "INPUT_LEFT_STICK_DEADZONE",
+        "INPUT_RIGHT_STICK_DEADZONE",
+    };
+
+    static const char *const INPUT_RANGE_KEY[2] = {
+        "INPUT_LEFT_STICK_RANGE",
+        "INPUT_RIGHT_STICK_RANGE",
+    };
+
+    static const char *const INPUT_DIAGONAL_KEY[2] = {
+        "INPUT_LEFT_STICK_DIAGONAL",
+        "INPUT_RIGHT_STICK_DIAGONAL",
+    };
+
+    for (int i = 0; i < 2; i++) {
+        if (want->stick_deadzone[i] != have->stick_deadzone[i]) {
+            have->stick_deadzone[i] = want->stick_deadzone[i];
+            config_set_int(
+                INPUT_DEADZONE_KEY[i],
+                have->stick_deadzone[i]);
+        }
+
+        if (want->stick_range[i] != have->stick_range[i]) {
+            have->stick_range[i] = want->stick_range[i];
+            config_set_int(
+                INPUT_RANGE_KEY[i],
+                have->stick_range[i]);
+        }
+
+        if (want->stick_diagonal[i] != have->stick_diagonal[i]) {
+            have->stick_diagonal[i] = want->stick_diagonal[i];
+            config_set_int(
+                INPUT_DIAGONAL_KEY[i],
+                have->stick_diagonal[i]);
+        }
+    }
+
+    /*
+     * FINAL output shaping.
+     *
+     * Unlike local input shaping, this affects every source. The bridge
+     * recombines and sends the currently-held state immediately when one
+     * of these values changes.
+     */
+    int output_shaping_changed = 0;
+
+    if (want->output_invert_ry != have->output_invert_ry) {
+        have->output_invert_ry = want->output_invert_ry;
+        config_set_int("OUTPUT_INVERT_RY", have->output_invert_ry);
+        output_shaping_changed = 1;
+    }
+
+    if (want->output_lt_threshold != have->output_lt_threshold) {
+        have->output_lt_threshold = want->output_lt_threshold;
+        config_set_int(
+            "OUTPUT_LT_THRESHOLD",
+            have->output_lt_threshold);
+        output_shaping_changed = 1;
+    }
+
+    if (want->output_rt_threshold != have->output_rt_threshold) {
+        have->output_rt_threshold = want->output_rt_threshold;
+        config_set_int(
+            "OUTPUT_RT_THRESHOLD",
+            have->output_rt_threshold);
+        output_shaping_changed = 1;
+    }
+
+    static const char *const OUTPUT_DEADZONE_KEY[2] = {
+        "OUTPUT_LEFT_STICK_DEADZONE",
+        "OUTPUT_RIGHT_STICK_DEADZONE",
+    };
+
+    static const char *const OUTPUT_RANGE_KEY[2] = {
+        "OUTPUT_LEFT_STICK_RANGE",
+        "OUTPUT_RIGHT_STICK_RANGE",
+    };
+
+    static const char *const OUTPUT_DIAGONAL_KEY[2] = {
+        "OUTPUT_LEFT_STICK_DIAGONAL",
+        "OUTPUT_RIGHT_STICK_DIAGONAL",
+    };
+
+    for (int i = 0; i < 2; i++) {
+        if (want->output_stick_deadzone[i] !=
+            have->output_stick_deadzone[i]) {
+            have->output_stick_deadzone[i] =
+                want->output_stick_deadzone[i];
+
+            config_set_int(
+                OUTPUT_DEADZONE_KEY[i],
+                have->output_stick_deadzone[i]);
+
+            output_shaping_changed = 1;
+        }
+
+        if (want->output_stick_range[i] !=
+            have->output_stick_range[i]) {
+            have->output_stick_range[i] =
+                want->output_stick_range[i];
+
+            config_set_int(
+                OUTPUT_RANGE_KEY[i],
+                have->output_stick_range[i]);
+
+            output_shaping_changed = 1;
+        }
+
+        if (want->output_stick_diagonal[i] !=
+            have->output_stick_diagonal[i]) {
+            have->output_stick_diagonal[i] =
+                want->output_stick_diagonal[i];
+
+            config_set_int(
+                OUTPUT_DIAGONAL_KEY[i],
+                have->output_stick_diagonal[i]);
+
+            output_shaping_changed = 1;
+        }
+    }
+
+    if (output_shaping_changed) {
+        ControllerShaping shaping = {
+            .invert_ry = have->output_invert_ry,
+            .lt_threshold = have->output_lt_threshold,
+            .rt_threshold = have->output_rt_threshold,
+            .stick_deadzone = {
+                have->output_stick_deadzone[0],
+                have->output_stick_deadzone[1],
+            },
+            .stick_range = {
+                have->output_stick_range[0],
+                have->output_stick_range[1],
+            },
+            .stick_diagonal = {
+                have->output_stick_diagonal[0],
+                have->output_stick_diagonal[1],
+            },
+        };
+
+        gamepad_bridge_set_output_shaping(&shaping);
+    }
+
     have->brightness = want->brightness;
     have->contrast = want->contrast;
     have->vsync = want->vsync;
@@ -911,6 +1070,81 @@ int main(int argc, char **argv) {
     {
         const int configured = gamepad_bridge_backend_configured_index();
         g_settings.output_backend = configured >= 0 ? configured : 0;
+    }
+
+    /*
+     * Local-input shaping and final-output shaping are two deliberately
+     * different calibration stages.
+     *
+     * Both are ordinary live settings. The .env only provides their
+     * startup values; changing a slider does NOT restart the process.
+     */
+    g_settings.invert_ry =
+        (int)config_get_int("INPUT_INVERT_RY", 0, 0, 1);
+
+    g_settings.lt_threshold =
+        (int)config_get_int("INPUT_LT_THRESHOLD", 30, 0, 100);
+
+    g_settings.rt_threshold =
+        (int)config_get_int("INPUT_RT_THRESHOLD", 30, 0, 100);
+
+    g_settings.stick_deadzone[0] =
+        (int)config_get_int("INPUT_LEFT_STICK_DEADZONE", 5, 0, 40);
+    g_settings.stick_range[0] =
+        (int)config_get_int("INPUT_LEFT_STICK_RANGE", 100, 45, 100);
+    g_settings.stick_diagonal[0] =
+        (int)config_get_int("INPUT_LEFT_STICK_DIAGONAL", 100, 45, 100);
+
+    g_settings.stick_deadzone[1] =
+        (int)config_get_int("INPUT_RIGHT_STICK_DEADZONE", 5, 0, 40);
+    g_settings.stick_range[1] =
+        (int)config_get_int("INPUT_RIGHT_STICK_RANGE", 100, 45, 100);
+    g_settings.stick_diagonal[1] =
+        (int)config_get_int("INPUT_RIGHT_STICK_DIAGONAL", 100, 45, 100);
+
+    g_settings.output_invert_ry =
+        (int)config_get_int("OUTPUT_INVERT_RY", 0, 0, 1);
+
+    g_settings.output_lt_threshold =
+        (int)config_get_int("OUTPUT_LT_THRESHOLD", 0, 0, 100);
+
+    g_settings.output_rt_threshold =
+        (int)config_get_int("OUTPUT_RT_THRESHOLD", 0, 0, 100);
+
+    g_settings.output_stick_deadzone[0] =
+        (int)config_get_int("OUTPUT_LEFT_STICK_DEADZONE", 0, 0, 40);
+    g_settings.output_stick_range[0] =
+        (int)config_get_int("OUTPUT_LEFT_STICK_RANGE", 100, 45, 100);
+    g_settings.output_stick_diagonal[0] =
+        (int)config_get_int("OUTPUT_LEFT_STICK_DIAGONAL", 100, 45, 100);
+
+    g_settings.output_stick_deadzone[1] =
+        (int)config_get_int("OUTPUT_RIGHT_STICK_DEADZONE", 0, 0, 40);
+    g_settings.output_stick_range[1] =
+        (int)config_get_int("OUTPUT_RIGHT_STICK_RANGE", 100, 45, 100);
+    g_settings.output_stick_diagonal[1] =
+        (int)config_get_int("OUTPUT_RIGHT_STICK_DIAGONAL", 100, 45, 100);
+
+    {
+        ControllerShaping shaping = {
+            .invert_ry = g_settings.output_invert_ry,
+            .lt_threshold = g_settings.output_lt_threshold,
+            .rt_threshold = g_settings.output_rt_threshold,
+            .stick_deadzone = {
+                g_settings.output_stick_deadzone[0],
+                g_settings.output_stick_deadzone[1],
+            },
+            .stick_range = {
+                g_settings.output_stick_range[0],
+                g_settings.output_stick_range[1],
+            },
+            .stick_diagonal = {
+                g_settings.output_stick_diagonal[0],
+                g_settings.output_stick_diagonal[1],
+            },
+        };
+
+        gamepad_bridge_set_output_shaping(&shaping);
     }
 
     /* What the adapter should pretend to be to the console. Asked for

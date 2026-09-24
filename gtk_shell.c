@@ -107,8 +107,15 @@ typedef struct {
     char pcble_paired_adapter[18];
 
     GtkWidget *overview_status;
+
+    /* Local SDL input calibration. */
     GtkWidget *lt_threshold, *rt_threshold;
     GtkWidget *deadzone[2], *range[2], *diagonal[2];
+
+    /* Final merged-state calibration. */
+    GtkWidget *output_invert_ry;
+    GtkWidget *output_lt_threshold, *output_rt_threshold;
+    GtkWidget *output_deadzone[2], *output_range[2], *output_diagonal[2];
     GtkWidget *muted, *volume, *direct_sink, *brightness, *contrast, *vsync;
     GtkWidget *status_label;
     GtkWidget *wiiu_status;
@@ -994,6 +1001,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     else if (w == g_c.wiiu_console_enabled) shell->settings.wiiu_console_enabled = on;
     else if (w == g_c.gamepad_enabled) shell->settings.gamepad_enabled = on;
     else if (w == g_c.invert_ry)       shell->settings.invert_ry = on;
+    else if (w == g_c.output_invert_ry) shell->settings.output_invert_ry = on;
     else if (w == g_c.direct_sink)     shell->settings.local_direct_sink = on;
     else if (w == g_c.muted)           shell->settings.local_muted = on;
     else if (w == g_c.vsync)           shell->settings.vsync = on;
@@ -1026,6 +1034,14 @@ static void on_scale(GtkWidget *w, gpointer user_data) {
     else if (w == g_c.range[1])     shell->settings.stick_range[1] = v;
     else if (w == g_c.diagonal[0])  shell->settings.stick_diagonal[0] = v;
     else if (w == g_c.diagonal[1])  shell->settings.stick_diagonal[1] = v;
+    else if (w == g_c.output_lt_threshold) shell->settings.output_lt_threshold = v;
+    else if (w == g_c.output_rt_threshold) shell->settings.output_rt_threshold = v;
+    else if (w == g_c.output_deadzone[0]) shell->settings.output_stick_deadzone[0] = v;
+    else if (w == g_c.output_deadzone[1]) shell->settings.output_stick_deadzone[1] = v;
+    else if (w == g_c.output_range[0]) shell->settings.output_stick_range[0] = v;
+    else if (w == g_c.output_range[1]) shell->settings.output_stick_range[1] = v;
+    else if (w == g_c.output_diagonal[0]) shell->settings.output_stick_diagonal[0] = v;
+    else if (w == g_c.output_diagonal[1]) shell->settings.output_stick_diagonal[1] = v;
     else if (w == g_c.volume)       shell->settings.local_volume = v;
     else if (w == g_c.brightness)   shell->settings.brightness = v;
     else if (w == g_c.contrast)     shell->settings.contrast = v;
@@ -1413,7 +1429,31 @@ static void load_controls(GtkShell *shell) {
         gtk_range_set_value(GTK_RANGE(g_c.deadzone[i]), s.stick_deadzone[i]);
         gtk_range_set_value(GTK_RANGE(g_c.range[i]), s.stick_range[i]);
         gtk_range_set_value(GTK_RANGE(g_c.diagonal[i]), s.stick_diagonal[i]);
+
+        gtk_range_set_value(
+            GTK_RANGE(g_c.output_deadzone[i]),
+            s.output_stick_deadzone[i]);
+
+        gtk_range_set_value(
+            GTK_RANGE(g_c.output_range[i]),
+            s.output_stick_range[i]);
+
+        gtk_range_set_value(
+            GTK_RANGE(g_c.output_diagonal[i]),
+            s.output_stick_diagonal[i]);
     }
+
+    gtk_toggle_button_set_active(
+        GTK_TOGGLE_BUTTON(g_c.output_invert_ry),
+        s.output_invert_ry);
+
+    gtk_range_set_value(
+        GTK_RANGE(g_c.output_lt_threshold),
+        s.output_lt_threshold);
+
+    gtk_range_set_value(
+        GTK_RANGE(g_c.output_rt_threshold),
+        s.output_rt_threshold);
 
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.muted), s.local_muted);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.direct_sink), s.local_direct_sink);
@@ -1896,81 +1936,6 @@ static void build_settings_window(GtkShell *shell) {
      * packed twice. The overview is the dashboard, this page contains
      * the controls. */
 
-    add_section_header(grid, row++, "Local controller input");
-
-    g_c.gamepad_enabled = add_row(
-        grid,
-        row++,
-        "local controller",
-        make_check(shell, "send input from this machine"));
-
-    g_c.gamepad_device = gtk_combo_box_text_new();
-    g_signal_connect(
-        g_c.gamepad_device,
-        "changed",
-        G_CALLBACK(on_combo),
-        shell);
-    add_row(grid, row++, "device", g_c.gamepad_device);
-
-    add_section_header(grid, row++, "Input shaping");
-
-    g_c.invert_ry = add_row(
-        grid,
-        row++,
-        "right stick",
-        make_check(shell, "invert up/down"));
-
-    g_c.lt_threshold = add_row(
-        grid,
-        row++,
-        "LT threshold (%)",
-        make_scale(shell, 0, 100, 5, "%"));
-
-    g_c.rt_threshold = add_row(
-        grid,
-        row++,
-        "RT threshold (%)",
-        make_scale(shell, 0, 100, 5, "%"));
-
-    static const char *SIDE[2] = {"left", "right"};
-
-    for (int i = 0; i < 2; i++) {
-        char label[48];
-
-        snprintf(
-            label,
-            sizeof(label),
-            "%s stick deadzone (%%)",
-            SIDE[i]);
-        g_c.deadzone[i] = add_row(
-            grid,
-            row++,
-            label,
-            make_scale(shell, 0, 40, 1, "%"));
-
-        snprintf(
-            label,
-            sizeof(label),
-            "%s stick range (%%)",
-            SIDE[i]);
-        g_c.range[i] = add_row(
-            grid,
-            row++,
-            label,
-            make_scale(shell, 45, 100, 1, "%"));
-
-        snprintf(
-            label,
-            sizeof(label),
-            "%s stick diagonals (%%)",
-            SIDE[i]);
-        g_c.diagonal[i] = add_row(
-            grid,
-            row++,
-            label,
-            make_scale(shell, 45, 100, 1, "%"));
-    }
-
     g_c.titan_settings = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(g_c.titan_settings), 8);
     gtk_grid_set_column_spacing(GTK_GRID(g_c.titan_settings), 14);
@@ -2342,6 +2307,274 @@ static void build_settings_window(GtkShell *shell) {
     pcble_load_config(shell);
 
 
+    /* --- final merged output calibration ----------------------- */
+
+    add_section_header(
+        grid,
+        row++,
+        "Output shaping");
+
+    {
+        GtkWidget *note =
+            gtk_label_new(
+                "Applied after browser, native and local-controller inputs "
+                "are merged, immediately before the selected backend. "
+                "Changes take effect live; no restart is required.");
+
+        gtk_widget_set_halign(
+            note,
+            GTK_ALIGN_START);
+
+        gtk_label_set_line_wrap(
+            GTK_LABEL(note),
+            TRUE);
+
+        gtk_label_set_max_width_chars(
+            GTK_LABEL(note),
+            72);
+
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(note),
+            "dim-label");
+
+        add_row(
+            grid,
+            row++,
+            "",
+            note);
+    }
+
+    g_c.output_invert_ry = add_row(
+        grid,
+        row++,
+        "right stick",
+        make_check(
+            shell,
+            "invert up/down"));
+
+    g_c.output_lt_threshold = add_row(
+        grid,
+        row++,
+        "LT threshold (%)",
+        make_scale(
+            shell,
+            0,
+            100,
+            5,
+            "%"));
+
+    gtk_widget_set_tooltip_text(
+        g_c.output_lt_threshold,
+        "0 preserves the incoming trigger value. "
+        "A positive value turns it into a digital 0/100 press.");
+
+    g_c.output_rt_threshold = add_row(
+        grid,
+        row++,
+        "RT threshold (%)",
+        make_scale(
+            shell,
+            0,
+            100,
+            5,
+            "%"));
+
+    gtk_widget_set_tooltip_text(
+        g_c.output_rt_threshold,
+        "0 preserves the incoming trigger value. "
+        "A positive value turns it into a digital 0/100 press.");
+
+    static const char *OUTPUT_SIDE[2] = {
+        "left",
+        "right"
+    };
+
+    for (int i = 0; i < 2; i++) {
+        char label[64];
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick deadzone (%%)",
+            OUTPUT_SIDE[i]);
+
+        g_c.output_deadzone[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(
+                shell,
+                0,
+                40,
+                1,
+                "%"));
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick range (%%)",
+            OUTPUT_SIDE[i]);
+
+        g_c.output_range[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(
+                shell,
+                45,
+                100,
+                1,
+                "%"));
+
+        gtk_widget_set_tooltip_text(
+            g_c.output_range[i],
+            "Cardinal-axis saturation point. For example, 90% means an "
+            "incoming 90% push along X or Y is sent to the console as 100%.");
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick diagonal (%%)",
+            OUTPUT_SIDE[i]);
+
+        g_c.output_diagonal[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(
+                shell,
+                45,
+                100,
+                1,
+                "%"));
+
+        gtk_widget_set_tooltip_text(
+            g_c.output_diagonal[i],
+            "45-degree saturation point. This is separate from range because "
+            "many physical stick gates reach a different radius in corners.");
+    }
+
+
+    /* ===============================================================
+     * LOCAL CONTROLLER INPUT
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "local-controller-input",
+        "Local controller input",
+        "Only the physical SDL controller connected to this computer. "
+        "These settings are applied before its state joins browser and "
+        "native-client input.",
+        &grid);
+
+    row = 0;
+
+    add_section_header(grid, row++, "Source controller");
+
+    g_c.gamepad_enabled = add_row(
+        grid,
+        row++,
+        "local controller",
+        make_check(shell, "send input from this machine"));
+
+    g_c.gamepad_device = gtk_combo_box_text_new();
+    g_signal_connect(
+        g_c.gamepad_device,
+        "changed",
+        G_CALLBACK(on_combo),
+        shell);
+    add_row(grid, row++, "device", g_c.gamepad_device);
+
+    add_section_header(grid, row++, "Input shaping");
+
+    {
+        GtkWidget *note =
+            gtk_label_new(
+                "These controls affect only the local SDL controller. "
+                "For calibration shared by every source, use Output shaping "
+                "on the Controller output page.");
+
+        gtk_widget_set_halign(
+            note,
+            GTK_ALIGN_START);
+
+        gtk_label_set_line_wrap(
+            GTK_LABEL(note),
+            TRUE);
+
+        gtk_label_set_max_width_chars(
+            GTK_LABEL(note),
+            72);
+
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(note),
+            "dim-label");
+
+        add_row(
+            grid,
+            row++,
+            "",
+            note);
+    }
+
+    g_c.invert_ry = add_row(
+        grid,
+        row++,
+        "right stick",
+        make_check(shell, "invert up/down"));
+
+    g_c.lt_threshold = add_row(
+        grid,
+        row++,
+        "LT threshold (%)",
+        make_scale(shell, 0, 100, 5, "%"));
+
+    g_c.rt_threshold = add_row(
+        grid,
+        row++,
+        "RT threshold (%)",
+        make_scale(shell, 0, 100, 5, "%"));
+
+    static const char *SIDE[2] = {"left", "right"};
+
+    for (int i = 0; i < 2; i++) {
+        char label[48];
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick deadzone (%%)",
+            SIDE[i]);
+        g_c.deadzone[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(shell, 0, 40, 1, "%"));
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick range (%%)",
+            SIDE[i]);
+        g_c.range[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(shell, 45, 100, 1, "%"));
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s stick diagonals (%%)",
+            SIDE[i]);
+        g_c.diagonal[i] = add_row(
+            grid,
+            row++,
+            label,
+            make_scale(shell, 45, 100, 1, "%"));
+    }
+
+
     /* ===============================================================
      * CAPTURE
      * =============================================================== */
@@ -2587,6 +2820,7 @@ static gboolean debug_show_cb(gpointer user_data) {
     if (shell->settings_window) {
         load_controls(shell);
         gtk_widget_show_all(shell->settings_window);
+        pcble_update_controls(shell);
         gtk_window_present(GTK_WINDOW(shell->settings_window));
     }
     return G_SOURCE_REMOVE;
@@ -2604,6 +2838,12 @@ static void on_menu_settings(GtkMenuItem *item, gpointer user_data) {
     GtkShell *shell = user_data;
     load_controls(shell);
     gtk_widget_show_all(shell->settings_window);
+
+    /* show_all() walks the entire window. Restore the backend-specific
+     * visibility afterwards so only the selected backend's controls are
+     * visible. */
+    pcble_update_controls(shell);
+
     gtk_window_present(GTK_WINDOW(shell->settings_window));
 }
 
