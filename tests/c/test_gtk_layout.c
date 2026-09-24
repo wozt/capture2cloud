@@ -28,6 +28,80 @@
 /* The .c files are #included the way the other C tests do it, so the
  * window under test is the real one and not a copy. */
 #include "../../app_config.c"
+#include "../../reset_method.h"
+
+/* Reset-method backend is stubbed here: this test validates GTK layout
+ * and wiring, not HCI operations. */
+static ResetMethod g_test_reset_method = RESET_METHOD_SCRIPT;
+
+ResetMethod reset_method_current(void)
+{
+    return g_test_reset_method;
+}
+
+const char *reset_method_name(ResetMethod method)
+{
+    return method == RESET_METHOD_BLUETOOTH
+        ? "bluetooth"
+        : "script";
+}
+
+int reset_method_set(ResetMethod method)
+{
+    g_test_reset_method = method;
+    return 0;
+}
+
+void reset_method_get_script(char *out, size_t out_size)
+{
+    snprintf(out, out_size, "scripts/wake_console.sh");
+}
+
+int reset_method_set_script(const char *path)
+{
+    return path && *path ? 0 : -1;
+}
+
+void reset_method_get_bluetooth_target(char *out, size_t out_size)
+{
+    snprintf(out, out_size, "switch2");
+}
+
+int reset_method_set_bluetooth_target(const char *target)
+{
+    return target && strcmp(target, "switch2") == 0 ? 0 : -1;
+}
+
+void reset_method_get_bluetooth_adapter(char *out, size_t out_size)
+{
+    snprintf(out, out_size, "E0:AD:47:40:70:D9");
+}
+
+int reset_method_set_bluetooth_adapter(const char *address)
+{
+    return address && *address ? 0 : -1;
+}
+
+int reset_method_scan_bluetooth_adapters(
+    ResetBluetoothAdapter adapters[RESET_METHOD_MAX_BT_ADAPTERS],
+    char *error,
+    size_t error_size)
+{
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+
+    snprintf(adapters[0].id, sizeof(adapters[0].id), "hci0");
+    snprintf(adapters[0].address, sizeof(adapters[0].address),
+             "00:1A:7D:DA:71:13");
+
+    snprintf(adapters[1].id, sizeof(adapters[1].id), "hci1");
+    snprintf(adapters[1].address, sizeof(adapters[1].address),
+             "E0:AD:47:40:70:D9");
+
+    return 2;
+}
+
 #include "../../gtk_shell.c"
 
 #include "test_util.h"
@@ -184,6 +258,57 @@ int main(void) {
     gtk_shell_update(sh, &s);
     gtk_shell_debug_show_settings(sh);
     sleep(2);
+
+    t_ok(
+        "Reset method selector exists",
+        g_c.reset_method != NULL);
+
+    t_ok(
+        "Reset method page has script controls",
+        g_c.reset_script != NULL &&
+        g_c.reset_script_panel != NULL);
+
+    t_eq_int(
+        "Reset method defaults to script in the layout test",
+        gtk_combo_box_get_active(
+            GTK_COMBO_BOX(g_c.reset_method)),
+        0);
+
+    gtk_combo_box_set_active(
+        GTK_COMBO_BOX(g_c.reset_method),
+        1);
+
+    sleep(1);
+
+    t_eq_int(
+        "Selecting Bluetooth persists through reset_method_set",
+        g_test_reset_method,
+        RESET_METHOD_BLUETOOTH);
+
+    t_ok(
+        "Bluetooth reset panel becomes visible",
+        g_c.reset_bt_panel &&
+        gtk_widget_get_visible(g_c.reset_bt_panel));
+
+    t_ok(
+        "Bluetooth target selector exists",
+        g_c.reset_bt_target != NULL);
+
+    t_ok(
+        "Bluetooth adapter selector exists",
+        g_c.reset_bt_adapter != NULL);
+
+    t_ok(
+        "Test dongle button exists",
+        g_c.reset_bt_test_adapter != NULL);
+
+    t_ok(
+        "Capture wake beacon button exists",
+        g_c.reset_bt_capture != NULL);
+
+    t_ok(
+        "Test beacon button exists",
+        g_c.reset_bt_test_beacon != NULL);
 
     t_ok(
         "overview receives the live server status",
