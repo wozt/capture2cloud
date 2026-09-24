@@ -104,7 +104,7 @@ static const BackendEntry BACKENDS[] = {
     },
     {
         "pcble",
-        "Nintendo Bluetooth (Pro Controller / Joy-Con)",
+        "pcble2gamepad",
         NULL,
         NULL,
         output_pcble_backend,
