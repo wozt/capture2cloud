@@ -63,6 +63,18 @@ static SDL_atomic_t g_reconnect_requested;
 static SDL_atomic_t g_reconnect_active;
 
 /*
+ * True only for a reconnect process launched by output_pcble_service().
+ *
+ * This distinction matters because successfully spawning pkexec is NOT
+ * the same thing as successfully reconnecting the Switch. If a managed
+ * helper exits before link_up, backend recovery must retry.
+ *
+ * A reconnect started manually from GTK is deliberately not managed
+ * here: the manual path remains exactly as it is today.
+ */
+static SDL_atomic_t g_recovery_launch_owned;
+
+/*
  * BlueZ/systemd need a short settling period after run-classic.sh
  * restores the normal Bluetooth service.
  *
@@ -516,8 +528,21 @@ static int worker(void *unused)
         g_link_up = ok && initialized;
 
         if (g_link_up) {
+            /*
+             * THIS is recovery success.
+             *
+             * Spawning pkexec/run-classic.sh is only an attempt.
+             */
             SDL_AtomicSet(
                 &g_reconnect_active,
+                0);
+
+            SDL_AtomicSet(
+                &g_recovery_launch_owned,
+                0);
+
+            SDL_AtomicSet(
+                &g_reconnect_requested,
                 0);
 
             g_reconnect_attempt = 0;
@@ -665,6 +690,10 @@ static int output_pcble_init(void)
         &g_reconnect_active,
         0);
 
+    SDL_AtomicSet(
+        &g_recovery_launch_owned,
+        0);
+
     g_reconnect_not_before = 0;
     g_reconnect_attempt = 0;
 
@@ -697,9 +726,8 @@ static void output_pcble_reset(void)
      * land here.
      *
      * Do not start/stop pkexec here: callers may be HTTP/native-client
-     * threads or the application's startup thread. The GTK tick consumes
-     * this and invokes pcble_start(shell, 1), exactly like the working
-     * manual button.
+     * threads or the application's startup thread. Capture2Cloud's main
+     * loop consumes this through output_pcble_service().
      */
     SDL_AtomicSet(
         &g_reconnect_requested,
@@ -778,6 +806,10 @@ static void output_pcble_shutdown(void)
 
     SDL_AtomicSet(
         &g_reconnect_active,
+        0);
+
+    SDL_AtomicSet(
+        &g_recovery_launch_owned,
         0);
 
     g_reconnect_attempt = 0;
@@ -1019,6 +1051,25 @@ static gpointer launcher_wait_thread(gpointer data)
 
     int stopping = 0;
 
+    /*
+     * Snapshot this BEFORE clearing the session. The worker clears
+     * g_reconnect_active as soon as the Nintendo link really comes up.
+     *
+     * Therefore:
+     *
+     *   owned && active
+     *
+     * means "this was an automatic recovery helper and it died before
+     * the Switch ever connected".
+     */
+    const int recovery_owned =
+        SDL_AtomicGet(
+            &g_recovery_launch_owned);
+
+    const int reconnect_never_connected =
+        SDL_AtomicGet(
+            &g_reconnect_active);
+
     g_mutex_lock(&g_session_lock);
 
     stopping =
@@ -1044,9 +1095,49 @@ static gpointer launcher_wait_thread(gpointer data)
 
     g_clear_error(&error);
 
-    SDL_AtomicSet(
-        &g_reconnect_active,
-        0);
+    if (recovery_owned &&
+        reconnect_never_connected) {
+        /*
+         * g_subprocess_newv()/pkexec succeeded, but the actual helper
+         * did not establish a Nintendo link.
+         *
+         * This is the case the previous retry logic completely missed.
+         */
+        SDL_AtomicSet(
+            &g_recovery_launch_owned,
+            0);
+
+        SDL_AtomicSet(
+            &g_reconnect_requested,
+            1);
+
+        SDL_AtomicSet(
+            &g_reconnect_active,
+            1);
+
+        g_reconnect_not_before =
+            SDL_GetTicks() + 1000;
+
+        fprintf(
+            stderr,
+            "pcble: recovery helper exited before link-up; retry queued\n");
+    } else {
+        SDL_AtomicSet(
+            &g_recovery_launch_owned,
+            0);
+
+        /*
+         * If another recovery request is already pending, this was the
+         * old session we intentionally stopped. Keep the UI in recovery
+         * state while service() waits to launch the replacement.
+         */
+        if (!SDL_AtomicGet(
+                &g_reconnect_requested)) {
+            SDL_AtomicSet(
+                &g_reconnect_active,
+                0);
+        }
+    }
 
     g_object_unref(process);
 
@@ -1415,7 +1506,8 @@ static void output_pcble_service(void)
     }
 
     /*
-     * First release any session that currently owns BlueZ.
+     * A pre-existing helper owns BlueZ. Stop it first, but do NOT consume
+     * the recovery request.
      */
     if (output_pcble_session_running()) {
         if (!output_pcble_session_stopping()) {
@@ -1425,10 +1517,6 @@ static void output_pcble_service(void)
 
             output_pcble_stop_session();
 
-            /*
-             * The waiter thread will clear g_launcher once
-             * run-classic.sh has really exited.
-             */
             g_reconnect_not_before =
                 SDL_GetTicks() + 1000;
         }
@@ -1439,13 +1527,32 @@ static void output_pcble_service(void)
     const Uint32 now =
         SDL_GetTicks();
 
-    /*
-     * run-classic.sh calls `systemctl restart bluetooth` during cleanup.
-     * The command returning does not mean every BlueZ/HCI object is
-     * instantly usable. Give it the same grace period a human gives it
-     * before clicking Reconnect.
-     */
     if ((Sint32)(now - g_reconnect_not_before) < 0) {
+        return;
+    }
+
+    /*
+     * Eight REAL helper launches, not eight failures to execute pkexec.
+     */
+    if (g_reconnect_attempt >= 8) {
+        fprintf(
+            stderr,
+            "pcble: recovery failed after %d helper attempts without link-up\n",
+            g_reconnect_attempt);
+
+        SDL_AtomicSet(
+            &g_reconnect_requested,
+            0);
+
+        SDL_AtomicSet(
+            &g_reconnect_active,
+            0);
+
+        SDL_AtomicSet(
+            &g_recovery_launch_owned,
+            0);
+
+        g_reconnect_attempt = 0;
         return;
     }
 
@@ -1458,29 +1565,47 @@ static void output_pcble_service(void)
 
     char error[256];
 
+    /*
+     * Mark ownership BEFORE spawning. The waiter can theoretically see a
+     * very short-lived child before output_pcble_start_session() returns.
+     */
+    SDL_AtomicSet(
+        &g_recovery_launch_owned,
+        1);
+
     if (output_pcble_start_saved_reconnect(
             error,
             sizeof(error))) {
+        /*
+         * Stop asking service() to launch another helper while this one
+         * is alive.
+         *
+         * IMPORTANT: g_reconnect_active remains set until g_link_up.
+         * If this helper exits first, launcher_wait_thread() re-arms
+         * g_reconnect_requested.
+         */
         SDL_AtomicSet(
             &g_reconnect_requested,
             0);
 
         fprintf(
             stderr,
-            "pcble: recovery: paired-Switch reconnect launched\n");
+            "pcble: recovery: helper launched; waiting for Nintendo link-up\n");
 
         return;
     }
 
     /*
-     * Startup may race the previous process/helper cleanup, and a fresh
-     * BlueZ restart may briefly expose no usable adapter. Retry instead
-     * of turning that transient condition into a permanent failure.
+     * We never got as far as creating a helper.
      */
+    SDL_AtomicSet(
+        &g_recovery_launch_owned,
+        0);
+
     if (g_reconnect_attempt < 8) {
         fprintf(
             stderr,
-            "pcble: recovery attempt %d failed: %s; retrying in 1 second\n",
+            "pcble: recovery attempt %d could not launch: %s; retrying in 1 second\n",
             g_reconnect_attempt,
             error[0]
                 ? error
