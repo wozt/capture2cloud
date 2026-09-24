@@ -51,15 +51,16 @@ static GSubprocess *g_launcher;
 static int g_session_stopping;
 
 /*
- * Maintenance recovery:
+ * Recovery is requested from arbitrary threads (GTK, HTTP, native C2C,
+ * startup). Only the GTK thread consumes the request and launches the
+ * Bluetooth session.
  *
- * If a pcble helper is still alive, stop it first and let
- * run-classic.sh restore BlueZ completely. launcher_finished() then
- * performs the exact same fresh --reconnect launch used by the working
- * GTK reconnect path.
+ * That is intentional: the known-good manual reconnect runs from GTK,
+ * and keeping every reconnect there also keeps GSubprocess/pkexec on the
+ * same GLib main context.
  */
-static int g_reconnect_after_stop;
-static int g_pcble_shutting_down;
+static SDL_atomic_t g_reconnect_requested;
+static SDL_atomic_t g_reconnect_active;
 
 #define PCBLE_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
 
@@ -504,6 +505,12 @@ static int worker(void *unused)
         g_ipc_up = ok;
         g_link_up = ok && initialized;
 
+        if (g_link_up) {
+            SDL_AtomicSet(
+                &g_reconnect_active,
+                0);
+        }
+
         if (ok && peer[0]) {
             snprintf(g_peer, sizeof(g_peer), "%s", peer);
         } else if (!ok) {
@@ -637,10 +644,13 @@ static int output_pcble_init(void)
      * later, after SDL/GTK startup, through the same recovery operation
      * used by Maintenance.
      */
-    g_mutex_lock(&g_session_lock);
-    g_reconnect_after_stop = 0;
-    g_pcble_shutting_down = 0;
-    g_mutex_unlock(&g_session_lock);
+    SDL_AtomicSet(
+        &g_reconnect_requested,
+        0);
+
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        0);
 
     return 1;
 }
@@ -666,48 +676,22 @@ static void output_pcble_update(
 
 static void output_pcble_reset(void)
 {
-    int running;
+    /*
+     * Historical C2S_MSG_RESET_DONGLE and every generic backend recovery
+     * land here.
+     *
+     * Do not start/stop pkexec here: callers may be HTTP/native-client
+     * threads or the application's startup thread. The GTK tick consumes
+     * this and invokes pcble_start(shell, 1), exactly like the working
+     * manual button.
+     */
+    SDL_AtomicSet(
+        &g_reconnect_requested,
+        1);
 
-    g_mutex_lock(&g_session_lock);
-
-    running = g_launcher != NULL;
-
-    if (running) {
-        g_reconnect_after_stop = 1;
-    }
-
-    g_mutex_unlock(&g_session_lock);
-
-    if (running) {
-        /*
-         * Do the equivalent of:
-         *
-         *   Stop session
-         *   Reconnect paired Switch
-         *
-         * launcher_finished() performs the second half only after
-         * run-classic.sh has completely restored BlueZ.
-         */
-        fprintf(
-            stderr,
-            "pcble: recovery: stopping current session before reconnect\n");
-
-        output_pcble_stop_session();
-        return;
-    }
-
-    char error[256];
-
-    if (!output_pcble_reconnect_saved(
-            error,
-            sizeof(error))) {
-        fprintf(
-            stderr,
-            "pcble: recovery failed: %s\n",
-            error[0]
-                ? error
-                : "unknown reconnect error");
-    }
+    fprintf(
+        stderr,
+        "pcble: paired-Switch reconnect queued\n");
 }
 
 static void output_pcble_press_home(void)
@@ -759,10 +743,13 @@ static void output_pcble_shutdown(void)
         return;
     }
 
-    g_mutex_lock(&g_session_lock);
-    g_pcble_shutting_down = 1;
-    g_reconnect_after_stop = 0;
-    g_mutex_unlock(&g_session_lock);
+    SDL_AtomicSet(
+        &g_reconnect_requested,
+        0);
+
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        0);
 
     SDL_LockMutex(g_lock);
     g_running = 0;
@@ -955,203 +942,6 @@ int output_pcble_scan_adapters(
 }
 
 
-int output_pcble_reconnect_saved(
-    char *error,
-    size_t error_size)
-{
-    if (error && error_size) {
-        error[0] = '\0';
-    }
-
-    char profile[32];
-    char peer[32];
-    char paired_adapter[32];
-
-    config_get_str(
-        "PCBLE_CONTROLLER",
-        profile,
-        sizeof(profile),
-        "pro");
-
-    if (strcmp(profile, "pro") != 0) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "Automatic reconnect is currently available for Pro Controller sessions only");
-        }
-
-        return 0;
-    }
-
-    config_get_str(
-        "PCBLE_SWITCH_ADDRESS",
-        peer,
-        sizeof(peer),
-        "none");
-
-    config_get_str(
-        "PCBLE_PAIRED_ADAPTER",
-        paired_adapter,
-        sizeof(paired_adapter),
-        "none");
-
-    if (!valid_mac(peer)) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "No paired Switch is stored yet");
-        }
-
-        return 0;
-    }
-
-    if (!valid_mac(paired_adapter)) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "The Bluetooth adapter used for pairing is not stored");
-        }
-
-        return 0;
-    }
-
-    /*
-     * A fresh reconnect requires ownership of BlueZ.
-     *
-     * Never try another reconnect implementation here. The proven path
-     * is output_pcble_start_session(..., reconnect_address), exactly as
-     * used by the GTK "Reconnect paired Switch" button.
-     */
-    if (output_pcble_session_running()) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "Bluetooth session is still running");
-        }
-
-        return 0;
-    }
-
-    OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS];
-
-    char scan_error[256];
-
-    const int count =
-        output_pcble_scan_adapters(
-            adapters,
-            scan_error,
-            sizeof(scan_error));
-
-    if (count < 0) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "%s",
-                scan_error[0]
-                    ? scan_error
-                    : "Could not scan Bluetooth adapters");
-        }
-
-        return 0;
-    }
-
-    int selected = -1;
-
-    for (int i = 0; i < count; i++) {
-        if (g_ascii_strcasecmp(
-                adapters[i].address,
-                paired_adapter) == 0) {
-            selected = i;
-            break;
-        }
-    }
-
-    if (selected < 0) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "The Bluetooth adapter used for pairing is not currently present");
-        }
-
-        return 0;
-    }
-
-    char body[16];
-    char buttons[16];
-    char left[16];
-    char right[16];
-    char verbose[16];
-
-    config_get_str(
-        "PCBLE_BODY_COLOR",
-        body,
-        sizeof(body),
-        "828282");
-
-    config_get_str(
-        "PCBLE_BUTTON_COLOR",
-        buttons,
-        sizeof(buttons),
-        "0F0F0F");
-
-    config_get_str(
-        "PCBLE_LEFT_GRIP_COLOR",
-        left,
-        sizeof(left),
-        "828282");
-
-    config_get_str(
-        "PCBLE_RIGHT_GRIP_COLOR",
-        right,
-        sizeof(right),
-        "828282");
-
-    config_get_str(
-        "PCBLE_VERBOSE",
-        verbose,
-        sizeof(verbose),
-        "0");
-
-    const int ok =
-        output_pcble_start_session(
-            adapters[selected].id,
-            NULL,
-            "pro",
-            peer,
-            body,
-            buttons,
-            left,
-            right,
-            atoi(verbose) != 0,
-            error,
-            error_size);
-
-    if (ok) {
-        /*
-         * Keep the GTK preferred adapter aligned with the one that
-         * actually owns this pairing.
-         */
-        config_set_str(
-            "PCBLE_PRIMARY_ADAPTER",
-            paired_adapter);
-
-        fprintf(
-            stderr,
-            "pcble: reconnecting paired Switch %s on %s (%s)\\n",
-            peer,
-            adapters[selected].id,
-            adapters[selected].address);
-    }
-
-    return ok;
-}
-
 int output_pcble_set_controller(const char *profile)
 {
     int pair_mode;
@@ -1209,8 +999,6 @@ static void launcher_finished(
 
     g_clear_error(&error);
 
-    int reconnect = 0;
-
     g_mutex_lock(&g_session_lock);
 
     if (g_launcher == G_SUBPROCESS(source)) {
@@ -1219,40 +1007,13 @@ static void launcher_finished(
 
     g_session_stopping = 0;
 
-    if (g_reconnect_after_stop &&
-        !g_pcble_shutting_down) {
-        reconnect = 1;
-        g_reconnect_after_stop = 0;
-    }
-
     g_mutex_unlock(&g_session_lock);
 
-    if (reconnect) {
-        /*
-         * run-classic.sh has now exited, therefore its EXIT trap has
-         * restored the normal BlueZ service.
-         *
-         * Start the exact same --reconnect session as the working GTK
-         * reconnect button.
-         */
-        char reconnect_error[256];
-
-        fprintf(
-            stderr,
-            "pcble: recovery: BlueZ restored; launching paired-Switch reconnect\n");
-
-        if (!output_pcble_reconnect_saved(
-                reconnect_error,
-                sizeof(reconnect_error))) {
-            fprintf(
-                stderr,
-                "pcble: recovery reconnect failed: %s\n",
-                reconnect_error[0]
-                    ? reconnect_error
-                    : "unknown error");
-        }
-    }
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        0);
 }
+
 
 int output_pcble_start_session(
     const char *primary_adapter,
@@ -1403,6 +1164,11 @@ int output_pcble_start_session(
 
     g_session_stopping = 0;
 
+    SDL_AtomicSet(
+        &g_reconnect_active,
+        reconnect_address &&
+        *reconnect_address);
+
     g_subprocess_wait_check_async(
         g_launcher,
         NULL,
@@ -1480,6 +1246,25 @@ void output_pcble_stop_session(void)
     g_mutex_unlock(&g_session_lock);
 }
 
+int output_pcble_reconnect_pending(void)
+{
+    return SDL_AtomicGet(
+        &g_reconnect_requested);
+}
+
+void output_pcble_clear_reconnect_request(void)
+{
+    SDL_AtomicSet(
+        &g_reconnect_requested,
+        0);
+}
+
+int output_pcble_reconnect_active(void)
+{
+    return SDL_AtomicGet(
+        &g_reconnect_active);
+}
+
 int output_pcble_ipc_up(void)
 {
     if (!g_lock) {
@@ -1500,6 +1285,18 @@ int output_pcble_session_running(void)
     g_mutex_unlock(&g_session_lock);
 
     return running;
+}
+
+int output_pcble_session_stopping(void)
+{
+    g_mutex_lock(&g_session_lock);
+
+    int stopping =
+        g_session_stopping;
+
+    g_mutex_unlock(&g_session_lock);
+
+    return stopping;
 }
 
 void output_pcble_peer(char *out, size_t out_size)

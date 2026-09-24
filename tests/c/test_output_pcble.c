@@ -101,6 +101,32 @@ static void test_axes(void)
     t_eq_int("right Y down", sticks[3], 482);
 }
 
+static void test_reconnect_request(void)
+{
+    t_begin("pcble generic recovery request");
+
+    output_pcble_clear_reconnect_request();
+
+    t_eq_int(
+        "no reconnect initially pending",
+        output_pcble_reconnect_pending(),
+        0);
+
+    output_pcble_reset();
+
+    t_eq_int(
+        "backend reset queues reconnect",
+        output_pcble_reconnect_pending(),
+        1);
+
+    output_pcble_clear_reconnect_request();
+
+    t_eq_int(
+        "GTK can consume reconnect request",
+        output_pcble_reconnect_pending(),
+        0);
+}
+
 static void test_home_override(void)
 {
     t_begin("pcble HOME pulse");
@@ -119,6 +145,7 @@ int main(void)
     test_neutral();
     test_buttons();
     test_axes();
+    test_reconnect_request();
     test_home_override();
 
     return t_report();
