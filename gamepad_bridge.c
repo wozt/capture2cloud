@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "output_backend.h"
 #include "output_titan.h"
+#include "output_pcble.h"
 
 #include <SDL2/SDL.h>
 
@@ -102,11 +103,11 @@ static const BackendEntry BACKENDS[] = {
         output_titan_backend,
     },
     {
-        "pcble2joycon2",
-        "Joy-Con 2 Bluetooth (pcble2joycon2)",
+        "pcble",
+        "Nintendo Bluetooth (Pro Controller / Joy-Con)",
         NULL,
         NULL,
-        NULL,
+        output_pcble_backend,
     },
     {
         "jocp",
