@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Capture2Cloud</vendor>
+  <vendor_url>https://github.com/wozt/capture2cloud</vendor_url>
+
+  <action id="io.github.wozt.capture2cloud.pcble">
+    <description>Start the Capture2Cloud Bluetooth controller backend</description>
+    <message>Authentication is required to control the Bluetooth adapter</message>
+
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/libexec/capture2cloud/pcble/run-classic.sh</annotate>
+  </action>
+</policyconfig>

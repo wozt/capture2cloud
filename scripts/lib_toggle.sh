@@ -48,6 +48,27 @@ C2C_HEADERS=(
 C2C_BIN="$C2C_DIR/capture2cloud"
 C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0 glib-2.0"
 
+# Vendored Classic Bluetooth controller backend.
+#
+# This is built as a separate process because it temporarily owns BlueZ
+# and requires privileges that the capture/streaming process itself
+# should never have.
+C2C_PCBLE_DIR="$C2C_DIR/pcble_backend"
+C2C_PCBLE_BIN="$C2C_PCBLE_DIR/capture2cloud-pcble-backend"
+C2C_PCBLE_SOURCES=(
+    "$C2C_PCBLE_DIR/poc/pro-controller.c"
+    "$C2C_PCBLE_DIR/poc/protocol.c"
+    "$C2C_PCBLE_DIR/poc/control.c"
+    "$C2C_PCBLE_DIR/src/ipc.c"
+)
+C2C_PCBLE_HEADERS=(
+    "$C2C_PCBLE_DIR/poc/protocol.h"
+    "$C2C_PCBLE_DIR/poc/control.h"
+    "$C2C_PCBLE_DIR/src/ipc.h"
+    "$C2C_PCBLE_DIR/src/core.h"
+)
+C2C_PCBLE_PKGCONFIG_DEPS="gio-unix-2.0 json-glib-1.0 bluez"
+
 # The launchers read the same .env the app itself does, so a different
 # capture card is configured in one place.
 c2c_load_env() {
@@ -78,8 +99,45 @@ c2c_check_devices() {
     fi
 }
 
+# Rebuilds the vendored Bluetooth helper only when needed.
+c2c_build_pcble_if_needed() {
+    local need=0
+
+    if [ ! -x "$C2C_PCBLE_BIN" ]; then
+        need=1
+    else
+        local f
+        for f in "${C2C_PCBLE_SOURCES[@]}" "${C2C_PCBLE_HEADERS[@]}"; do
+            if [ "$f" -nt "$C2C_PCBLE_BIN" ]; then
+                need=1
+                break
+            fi
+        done
+    fi
+
+    [ "$need" -eq 0 ] && return 0
+
+    if ! command -v gcc >/dev/null 2>&1 ||
+       ! command -v pkg-config >/dev/null 2>&1; then
+        echo "Error: gcc/pkg-config required to compile the pcble backend"
+        return 1
+    fi
+
+    if ! pkg-config --exists $C2C_PCBLE_PKGCONFIG_DEPS; then
+        echo "Error: missing pcble dependencies. Run: $C2C_DIR/scripts/install_deps.sh"
+        return 1
+    fi
+
+    echo "Building Capture2Cloud pcble backend..."
+
+    gcc -O2 -Wall -Wextra -Werror -std=c11         -o "$C2C_PCBLE_BIN"         "${C2C_PCBLE_SOURCES[@]}"         $(pkg-config --cflags --libs $C2C_PCBLE_PKGCONFIG_DEPS)
+}
+
 # Rebuilds only when a source or header is newer than the binary.
 c2c_build_if_needed() {
+    # The privileged helper is part of the project build, but remains a
+    # separate executable at runtime.
+    c2c_build_pcble_if_needed || return 1
     local need=0
     if [ ! -x "$C2C_BIN" ]; then
         need=1

@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define ROOT "/io/github/wozt/pcble2gamepad/pro_poc"
+#define ROOT "/io/github/wozt/capture2cloud/pcble"
 static GDBusConnection *bus;
 static ProControl *desktop;
 static gboolean mock_mode;
@@ -35,7 +35,7 @@ static bdaddr_t selected_local_address;
 static gboolean have_selected_local_address;
 
 /*
- * pcble2gamepad owns a small persistent BR/EDR pairing store because some
+ * Capture2Cloud owns a small persistent BR/EDR pairing store because some
  * Nintendo-style pairing flows generate a valid kernel Link Key with
  * store_hint=0. BlueZ then exposes Paired=true for the live session but does
  * not persist the key for the next bluetoothd/host restart.
@@ -218,15 +218,16 @@ static char *pairing_store_path(const char *remote,gboolean create) {
     g_autofree char *local_safe=pairing_safe_address(pairing_local_address);
     g_autofree char *remote_safe=pairing_safe_address(remote);
     g_autofree char *base=g_strdup_printf(
-        "/var/lib/pcble2gamepad/pairings/%u",
+        "/var/lib/capture2cloud/pcble/pairings/%u",
         (unsigned)pairing_owner);
 
     if(create) {
         if(g_mkdir_with_parents(base,0700)<0)
             return NULL;
 
-        g_chmod("/var/lib/pcble2gamepad",0700);
-        g_chmod("/var/lib/pcble2gamepad/pairings",0700);
+        g_chmod("/var/lib/capture2cloud",0700);
+        g_chmod("/var/lib/capture2cloud/pcble",0700);
+        g_chmod("/var/lib/capture2cloud/pcble/pairings",0700);
         g_chmod(base,0700);
     }
 

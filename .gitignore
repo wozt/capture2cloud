@@ -8,6 +8,7 @@
 # newer, so there is never a reason to commit it.
 /capture2cloud
 *.o
+/pcble_backend/capture2cloud-pcble-backend
 
 # Secrets: never commit real tokens/credentials (HA_TOKEN,
 # PLAYER_PASSWORD). Copy scripts/.env.example to scripts/.env and fill it
