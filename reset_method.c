@@ -7,6 +7,7 @@
 
 #include <SDL2/SDL.h>
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,196 @@ int reset_method_set(ResetMethod method)
     return config_set_str("RESET_METHOD", name);
 }
 
+
+static int safe_path_token(const char *value)
+{
+    if (!value || !*value) {
+        return 0;
+    }
+
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (!isalnum(*p) &&
+            *p != '_' &&
+            *p != '-' &&
+            *p != '.' &&
+            *p != '/' &&
+            *p != ':') {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+void reset_method_get_script(char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+
+    config_get_str(
+        "RESET_SCRIPT",
+        out,
+        out_size,
+        "scripts/wake_console.sh");
+}
+
+int reset_method_set_script(const char *path)
+{
+    if (!safe_path_token(path)) {
+        return -1;
+    }
+
+    return config_set_str("RESET_SCRIPT", path);
+}
+
+void reset_method_get_bluetooth_target(char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+
+    config_get_str(
+        "RESET_BT_CONSOLE",
+        out,
+        out_size,
+        "switch2");
+}
+
+int reset_method_set_bluetooth_target(const char *target)
+{
+    /*
+     * The selector is deliberately extensible, but Switch 2 is the only
+     * wake protocol implemented/planned in the first version.
+     */
+    if (!target || strcmp(target, "switch2") != 0) {
+        return -1;
+    }
+
+    return config_set_str("RESET_BT_CONSOLE", target);
+}
+
+void reset_method_get_bluetooth_adapter(char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+
+    config_get_str(
+        "RESET_BT_ADAPTER",
+        out,
+        out_size,
+        "");
+}
+
+int reset_method_set_bluetooth_adapter(const char *address)
+{
+    if (!address || strlen(address) != 17) {
+        return -1;
+    }
+
+    return config_set_str("RESET_BT_ADAPTER", address);
+}
+
+int reset_method_scan_bluetooth_adapters(
+    ResetBluetoothAdapter adapters[RESET_METHOD_MAX_BT_ADAPTERS],
+    char *error,
+    size_t error_size)
+{
+    if (error && error_size) {
+        error[0] = '\0';
+    }
+
+    if (!adapters) {
+        if (error && error_size) {
+            snprintf(error, error_size, "Invalid adapter output buffer");
+        }
+        return -1;
+    }
+
+    memset(
+        adapters,
+        0,
+        sizeof(ResetBluetoothAdapter) * RESET_METHOD_MAX_BT_ADAPTERS);
+
+    /*
+     * btmgmt gives us both pieces needed here without taking ownership
+     * of BlueZ: current hciN runtime id and the stable controller MAC.
+     *
+     * Example:
+     *   hci1:   Primary controller
+     *           addr E0:AD:47:40:70:D9 ...
+     */
+    FILE *pipe = popen("btmgmt info 2>/dev/null", "r");
+
+    if (!pipe) {
+        if (error && error_size) {
+            snprintf(error, error_size, "Unable to run btmgmt");
+        }
+        return -1;
+    }
+
+    char line[512];
+    char current_id[16] = {0};
+    int count = 0;
+
+    while (fgets(line, sizeof(line), pipe)) {
+        char id[16];
+
+        if (sscanf(line, "%15[^:]:", id) == 1 &&
+            strncmp(id, "hci", 3) == 0) {
+            snprintf(
+                current_id,
+                sizeof(current_id),
+                "%s",
+                id);
+            continue;
+        }
+
+        if (!current_id[0]) {
+            continue;
+        }
+
+        char address[18];
+
+        if (sscanf(line, " addr %17s", address) != 1) {
+            continue;
+        }
+
+        if (count < RESET_METHOD_MAX_BT_ADAPTERS) {
+            snprintf(
+                adapters[count].id,
+                sizeof(adapters[count].id),
+                "%s",
+                current_id);
+
+            snprintf(
+                adapters[count].address,
+                sizeof(adapters[count].address),
+                "%s",
+                address);
+
+            count++;
+        }
+
+        current_id[0] = '\0';
+    }
+
+    int status = pclose(pipe);
+
+    if (status != 0 && count == 0) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "btmgmt could not enumerate Bluetooth adapters");
+        }
+        return -1;
+    }
+
+    return count;
+}
+
 static int script_wake_thread(void *arg)
 {
     char *cmd = arg;
@@ -101,8 +292,31 @@ static int script_wake_thread(void *arg)
 
 static int script_wake(void)
 {
+    char configured[PATH_MAX];
+    reset_method_get_script(
+        configured,
+        sizeof(configured));
+
+    if (!safe_path_token(configured)) {
+        fprintf(stderr,
+                "reset_method: unsafe RESET_SCRIPT path rejected\n");
+        return -1;
+    }
+
     char script[PATH_MAX];
-    app_path(script, sizeof(script), "scripts/wake_console.sh");
+
+    if (configured[0] == '/') {
+        snprintf(
+            script,
+            sizeof(script),
+            "%s",
+            configured);
+    } else {
+        app_path(
+            script,
+            sizeof(script),
+            configured);
+    }
 
     if (!script[0]) {
         return -1;

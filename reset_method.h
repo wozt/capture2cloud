@@ -1,6 +1,8 @@
 #ifndef CAPTURE2CLOUD_RESET_METHOD_H
 #define CAPTURE2CLOUD_RESET_METHOD_H
 
+#include <stddef.h>
+
 /*
  * Console wake/reset mechanism.
  *
@@ -28,6 +30,33 @@ const char *reset_method_name(ResetMethod method);
 
 /* Saves the selected method to scripts/.env. */
 int reset_method_set(ResetMethod method);
+
+#define RESET_METHOD_MAX_BT_ADAPTERS 8
+
+typedef struct {
+    char id[16];
+    char address[18];
+} ResetBluetoothAdapter;
+
+/* Script method configuration. */
+void reset_method_get_script(char *out, size_t out_size);
+int reset_method_set_script(const char *path);
+
+/* Bluetooth wake configuration. */
+void reset_method_get_bluetooth_target(char *out, size_t out_size);
+int reset_method_set_bluetooth_target(const char *target);
+
+void reset_method_get_bluetooth_adapter(char *out, size_t out_size);
+int reset_method_set_bluetooth_adapter(const char *address);
+
+/*
+ * Enumerates BlueZ controllers. The stable address is what gets saved;
+ * hciN is only the controller's current runtime name.
+ */
+int reset_method_scan_bluetooth_adapters(
+    ResetBluetoothAdapter adapters[RESET_METHOD_MAX_BT_ADAPTERS],
+    char *error,
+    size_t error_size);
 
 /*
  * Starts the configured console wake operation.

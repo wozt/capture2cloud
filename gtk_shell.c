@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "gamepad_bridge.h" /* the output-protocol names shown in the combo */
 #include "output_pcble.h"
+#include "reset_method.h"
 #include "version.h"
 
 #include <SDL2/SDL.h>
@@ -110,6 +111,23 @@ typedef struct {
 
     GtkWidget *overview_status;
 
+    /* Console wake/reset method. */
+    GtkWidget *reset_method;
+    GtkWidget *reset_script_panel;
+    GtkWidget *reset_script;
+    GtkWidget *reset_bt_panel;
+    GtkWidget *reset_bt_target;
+    GtkWidget *reset_bt_adapter;
+    GtkWidget *reset_bt_refresh;
+    GtkWidget *reset_bt_test_adapter;
+    GtkWidget *reset_bt_capture;
+    GtkWidget *reset_bt_test_beacon;
+    GtkWidget *reset_bt_status;
+
+    ResetBluetoothAdapter
+        reset_bt_adapters[RESET_METHOD_MAX_BT_ADAPTERS];
+    int reset_bt_adapter_count;
+
     /* Local SDL input calibration. */
     GtkWidget *input_stick_preview[2];
     GtkWidget *lt_threshold, *rt_threshold;
@@ -176,6 +194,378 @@ static void act(GtkShell *shell, GtkShellAction action) {
         shell->callbacks.on_action(shell->callbacks.userdata, action);
     }
 }
+
+/* --- console reset / wake controls ---------------------------------- */
+
+static int reset_selected_adapter(void)
+{
+    if (!g_c.reset_bt_adapter) {
+        return -1;
+    }
+
+    int index =
+        gtk_combo_box_get_active(
+            GTK_COMBO_BOX(g_c.reset_bt_adapter));
+
+    return index >= 0 &&
+           index < g_c.reset_bt_adapter_count
+        ? index
+        : -1;
+}
+
+static void reset_update_controls(GtkShell *shell)
+{
+    (void)shell;
+
+    if (!g_c.reset_method) {
+        return;
+    }
+
+    ResetMethod method =
+        gtk_combo_box_get_active(
+            GTK_COMBO_BOX(g_c.reset_method)) == 1
+            ? RESET_METHOD_BLUETOOTH
+            : RESET_METHOD_SCRIPT;
+
+    if (g_c.reset_script_panel) {
+        if (method == RESET_METHOD_SCRIPT) {
+            gtk_widget_set_no_show_all(
+                g_c.reset_script_panel,
+                FALSE);
+            gtk_widget_show_all(
+                g_c.reset_script_panel);
+            gtk_widget_set_no_show_all(
+                g_c.reset_script_panel,
+                TRUE);
+        } else {
+            gtk_widget_hide(
+                g_c.reset_script_panel);
+        }
+    }
+
+    if (g_c.reset_bt_panel) {
+        if (method == RESET_METHOD_BLUETOOTH) {
+            gtk_widget_set_no_show_all(
+                g_c.reset_bt_panel,
+                FALSE);
+            gtk_widget_show_all(
+                g_c.reset_bt_panel);
+            gtk_widget_set_no_show_all(
+                g_c.reset_bt_panel,
+                TRUE);
+        } else {
+            gtk_widget_hide(
+                g_c.reset_bt_panel);
+        }
+    }
+}
+
+static void reset_method_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    ResetMethod method =
+        gtk_combo_box_get_active(
+            GTK_COMBO_BOX(widget)) == 1
+            ? RESET_METHOD_BLUETOOTH
+            : RESET_METHOD_SCRIPT;
+
+    if (reset_method_set(method) != 0) {
+        gtk_shell_show_error(
+            shell,
+            "Unable to save RESET_METHOD.");
+        return;
+    }
+
+    reset_update_controls(shell);
+}
+
+static void reset_script_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    const char *value =
+        gtk_entry_get_text(
+            GTK_ENTRY(widget));
+
+    if (!value || !*value) {
+        return;
+    }
+
+    if (reset_method_set_script(value) != 0) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Script path contains unsupported characters.");
+    }
+}
+
+static void reset_target_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    /*
+     * Only one target exists today, but keep the selection explicit so
+     * adding another console later does not change the config shape.
+     */
+    if (gtk_combo_box_get_active(
+            GTK_COMBO_BOX(widget)) == 0) {
+        reset_method_set_bluetooth_target(
+            "switch2");
+    }
+}
+
+static void reset_adapter_changed(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+
+    GtkShell *shell = user_data;
+
+    if (shell->loading) {
+        return;
+    }
+
+    int index =
+        reset_selected_adapter();
+
+    if (index < 0) {
+        return;
+    }
+
+    if (reset_method_set_bluetooth_adapter(
+            g_c.reset_bt_adapters[index].address) != 0) {
+        gtk_shell_show_error(
+            shell,
+            "Unable to save the Bluetooth wake adapter.");
+    }
+}
+
+static void reset_refresh_adapters(
+    GtkWidget *button,
+    gpointer user_data)
+{
+    (void)button;
+
+    GtkShell *shell = user_data;
+
+    char error[256];
+
+    int count =
+        reset_method_scan_bluetooth_adapters(
+            g_c.reset_bt_adapters,
+            error,
+            sizeof(error));
+
+    if (count < 0) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            error[0]
+                ? error
+                : "Unable to enumerate Bluetooth adapters.");
+        return;
+    }
+
+    g_c.reset_bt_adapter_count = count;
+
+    char preferred[32];
+    reset_method_get_bluetooth_adapter(
+        preferred,
+        sizeof(preferred));
+
+    shell->loading = 1;
+
+    gtk_combo_box_text_remove_all(
+        GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter));
+
+    int selected = -1;
+
+    for (int i = 0; i < count; i++) {
+        char label[64];
+
+        snprintf(
+            label,
+            sizeof(label),
+            "%s · %s",
+            g_c.reset_bt_adapters[i].id,
+            g_c.reset_bt_adapters[i].address);
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter),
+            label);
+
+        if (preferred[0] &&
+            g_ascii_strcasecmp(
+                preferred,
+                g_c.reset_bt_adapters[i].address) == 0) {
+            selected = i;
+        }
+    }
+
+    if (count == 0) {
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter),
+            "no Bluetooth adapter detected");
+
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.reset_bt_adapter),
+            0);
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "No Bluetooth adapter detected.");
+    } else {
+        if (selected < 0) {
+            selected = 0;
+        }
+
+        gtk_combo_box_set_active(
+            GTK_COMBO_BOX(g_c.reset_bt_adapter),
+            selected);
+
+        /*
+         * If no saved adapter existed, make the visible default real
+         * configuration immediately.
+         */
+        if (!preferred[0]) {
+            reset_method_set_bluetooth_adapter(
+                g_c.reset_bt_adapters[selected].address);
+        }
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Bluetooth adapter ready for configuration.");
+    }
+
+    shell->loading = 0;
+}
+
+static void reset_test_adapter_clicked(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+    (void)user_data;
+
+    int index =
+        reset_selected_adapter();
+
+    if (index < 0) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Select a Bluetooth adapter first.");
+        return;
+    }
+
+    /*
+     * The UI is complete now. The actual HCI compatibility probe must
+     * run through the privileged helper; doing raw HCI from the GTK
+     * process would undo the privilege separation used by pcble.
+     */
+    gtk_label_set_text(
+        GTK_LABEL(g_c.reset_bt_status),
+        "Dongle test ready — privileged HCI backend not connected yet.");
+}
+
+static void reset_capture_clicked(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+    (void)user_data;
+
+    int index =
+        reset_selected_adapter();
+
+    if (index < 0) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Select a Bluetooth adapter first.");
+        return;
+    }
+
+    gtk_label_set_text(
+        GTK_LABEL(g_c.reset_bt_status),
+        "Beacon capture ready — privileged HCI backend not connected yet.");
+}
+
+static void reset_test_beacon_clicked(
+    GtkWidget *widget,
+    gpointer user_data)
+{
+    (void)widget;
+    (void)user_data;
+
+    int index =
+        reset_selected_adapter();
+
+    if (index < 0) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Select a Bluetooth adapter first.");
+        return;
+    }
+
+    gtk_label_set_text(
+        GTK_LABEL(g_c.reset_bt_status),
+        "Beacon test ready — privileged HCI backend not connected yet.");
+}
+
+static void reset_load_config(GtkShell *shell)
+{
+    shell->loading = 1;
+
+    gtk_combo_box_set_active(
+        GTK_COMBO_BOX(g_c.reset_method),
+        reset_method_current() == RESET_METHOD_BLUETOOTH
+            ? 1
+            : 0);
+
+    char script[512];
+    reset_method_get_script(
+        script,
+        sizeof(script));
+
+    gtk_entry_set_text(
+        GTK_ENTRY(g_c.reset_script),
+        script);
+
+    char target[32];
+    reset_method_get_bluetooth_target(
+        target,
+        sizeof(target));
+
+    gtk_combo_box_set_active(
+        GTK_COMBO_BOX(g_c.reset_bt_target),
+        0);
+
+    shell->loading = 0;
+
+    reset_refresh_adapters(
+        NULL,
+        shell);
+
+    reset_update_controls(shell);
+}
+
 
 /* --- pcble Bluetooth controls --------------------------------------- */
 
@@ -3118,6 +3508,345 @@ static void build_settings_window(GtkShell *shell) {
 
 
     /* ===============================================================
+     * RESET METHOD
+     * =============================================================== */
+    make_stack_page(
+        stack,
+        "reset-method",
+        "Reset method",
+        "Choose how Capture2Cloud wakes the target console. This is "
+        "independent from the controller-output backend.",
+        &grid);
+
+    row = 0;
+
+    add_section_header(
+        grid,
+        row++,
+        "Wake method");
+
+    g_c.reset_method =
+        gtk_combo_box_text_new();
+
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.reset_method),
+        "Bash script");
+
+    gtk_combo_box_text_append_text(
+        GTK_COMBO_BOX_TEXT(g_c.reset_method),
+        "Bluetooth beacon");
+
+    g_signal_connect(
+        g_c.reset_method,
+        "changed",
+        G_CALLBACK(reset_method_changed),
+        shell);
+
+    add_row(
+        grid,
+        row++,
+        "method",
+        g_c.reset_method);
+
+
+    /* --- script method --------------------------------------------- */
+
+    g_c.reset_script_panel =
+        gtk_grid_new();
+
+    gtk_grid_set_row_spacing(
+        GTK_GRID(g_c.reset_script_panel),
+        8);
+
+    gtk_grid_set_column_spacing(
+        GTK_GRID(g_c.reset_script_panel),
+        14);
+
+    gtk_widget_set_no_show_all(
+        g_c.reset_script_panel,
+        TRUE);
+
+    gtk_grid_attach(
+        GTK_GRID(grid),
+        g_c.reset_script_panel,
+        0,
+        row++,
+        2,
+        1);
+
+    {
+        int rr = 0;
+
+        add_section_header(
+            g_c.reset_script_panel,
+            rr++,
+            "Bash script");
+
+        g_c.reset_script =
+            gtk_entry_new();
+
+        gtk_entry_set_placeholder_text(
+            GTK_ENTRY(g_c.reset_script),
+            "scripts/wake_console.sh");
+
+        g_signal_connect(
+            g_c.reset_script,
+            "changed",
+            G_CALLBACK(reset_script_changed),
+            shell);
+
+        add_row(
+            g_c.reset_script_panel,
+            rr++,
+            "script",
+            g_c.reset_script);
+
+        GtkWidget *note =
+            gtk_label_new(
+                "The bundled wake_console.sh keeps the existing Home "
+                "Assistant power-cycle method. Relative paths are resolved "
+                "from the Capture2Cloud directory.");
+
+        gtk_widget_set_halign(
+            note,
+            GTK_ALIGN_START);
+
+        gtk_label_set_line_wrap(
+            GTK_LABEL(note),
+            TRUE);
+
+        gtk_label_set_max_width_chars(
+            GTK_LABEL(note),
+            72);
+
+        gtk_style_context_add_class(
+            gtk_widget_get_style_context(note),
+            "dim-label");
+
+        add_row(
+            g_c.reset_script_panel,
+            rr++,
+            "",
+            note);
+    }
+
+
+    /* --- Bluetooth beacon method --------------------------------- */
+
+    g_c.reset_bt_panel =
+        gtk_grid_new();
+
+    gtk_grid_set_row_spacing(
+        GTK_GRID(g_c.reset_bt_panel),
+        8);
+
+    gtk_grid_set_column_spacing(
+        GTK_GRID(g_c.reset_bt_panel),
+        14);
+
+    gtk_widget_set_no_show_all(
+        g_c.reset_bt_panel,
+        TRUE);
+
+    gtk_grid_attach(
+        GTK_GRID(grid),
+        g_c.reset_bt_panel,
+        0,
+        row++,
+        2,
+        1);
+
+    {
+        int rr = 0;
+
+        add_section_header(
+            g_c.reset_bt_panel,
+            rr++,
+            "Bluetooth wake beacon");
+
+        g_c.reset_bt_target =
+            gtk_combo_box_text_new();
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.reset_bt_target),
+            "Nintendo Switch 2");
+
+        g_signal_connect(
+            g_c.reset_bt_target,
+            "changed",
+            G_CALLBACK(reset_target_changed),
+            shell);
+
+        add_row(
+            g_c.reset_bt_panel,
+            rr++,
+            "target console",
+            g_c.reset_bt_target);
+
+        g_c.reset_bt_adapter =
+            gtk_combo_box_text_new();
+
+        g_signal_connect(
+            g_c.reset_bt_adapter,
+            "changed",
+            G_CALLBACK(reset_adapter_changed),
+            shell);
+
+        add_row(
+            g_c.reset_bt_panel,
+            rr++,
+            "Bluetooth adapter",
+            g_c.reset_bt_adapter);
+
+        {
+            GtkWidget *buttons =
+                gtk_box_new(
+                    GTK_ORIENTATION_HORIZONTAL,
+                    8);
+
+            g_c.reset_bt_refresh =
+                gtk_button_new_with_label(
+                    "Refresh adapters");
+
+            g_c.reset_bt_test_adapter =
+                gtk_button_new_with_label(
+                    "Test dongle");
+
+            g_signal_connect(
+                g_c.reset_bt_refresh,
+                "clicked",
+                G_CALLBACK(reset_refresh_adapters),
+                shell);
+
+            g_signal_connect(
+                g_c.reset_bt_test_adapter,
+                "clicked",
+                G_CALLBACK(reset_test_adapter_clicked),
+                shell);
+
+            gtk_box_pack_start(
+                GTK_BOX(buttons),
+                g_c.reset_bt_refresh,
+                FALSE, FALSE, 0);
+
+            gtk_box_pack_start(
+                GTK_BOX(buttons),
+                g_c.reset_bt_test_adapter,
+                FALSE, FALSE, 0);
+
+            add_row(
+                g_c.reset_bt_panel,
+                rr++,
+                "adapter tools",
+                buttons);
+        }
+
+        add_section_header(
+            g_c.reset_bt_panel,
+            rr++,
+            "Wake beacon");
+
+        {
+            GtkWidget *buttons =
+                gtk_box_new(
+                    GTK_ORIENTATION_HORIZONTAL,
+                    8);
+
+            g_c.reset_bt_capture =
+                gtk_button_new_with_label(
+                    "Capture wake beacon");
+
+            g_c.reset_bt_test_beacon =
+                gtk_button_new_with_label(
+                    "Test beacon");
+
+            g_signal_connect(
+                g_c.reset_bt_capture,
+                "clicked",
+                G_CALLBACK(reset_capture_clicked),
+                shell);
+
+            g_signal_connect(
+                g_c.reset_bt_test_beacon,
+                "clicked",
+                G_CALLBACK(reset_test_beacon_clicked),
+                shell);
+
+            gtk_box_pack_start(
+                GTK_BOX(buttons),
+                g_c.reset_bt_capture,
+                FALSE, FALSE, 0);
+
+            gtk_box_pack_start(
+                GTK_BOX(buttons),
+                g_c.reset_bt_test_beacon,
+                FALSE, FALSE, 0);
+
+            add_row(
+                g_c.reset_bt_panel,
+                rr++,
+                "beacon",
+                buttons);
+        }
+
+        {
+            GtkWidget *hint =
+                gtk_label_new(
+                    "Capture listens for the wake advertisement of an "
+                    "already-paired Switch 2 controller. The captured beacon "
+                    "will be stored locally and can then be replayed without "
+                    "the physical controller.");
+
+            gtk_widget_set_halign(
+                hint,
+                GTK_ALIGN_START);
+
+            gtk_label_set_line_wrap(
+                GTK_LABEL(hint),
+                TRUE);
+
+            gtk_label_set_max_width_chars(
+                GTK_LABEL(hint),
+                72);
+
+            gtk_style_context_add_class(
+                gtk_widget_get_style_context(hint),
+                "dim-label");
+
+            add_row(
+                g_c.reset_bt_panel,
+                rr++,
+                "",
+                hint);
+        }
+
+        g_c.reset_bt_status =
+            gtk_label_new(
+                "Bluetooth wake not configured.");
+
+        gtk_widget_set_halign(
+            g_c.reset_bt_status,
+            GTK_ALIGN_START);
+
+        gtk_label_set_selectable(
+            GTK_LABEL(g_c.reset_bt_status),
+            TRUE);
+
+        gtk_label_set_line_wrap(
+            GTK_LABEL(g_c.reset_bt_status),
+            TRUE);
+
+        add_row(
+            g_c.reset_bt_panel,
+            rr++,
+            "status",
+            g_c.reset_bt_status);
+    }
+
+    reset_load_config(shell);
+
+
+    /* ===============================================================
      * MAINTENANCE
      * =============================================================== */
     make_stack_page(
@@ -3282,6 +4011,7 @@ static gboolean debug_show_cb(gpointer user_data) {
         load_controls(shell);
         gtk_widget_show_all(shell->settings_window);
         pcble_update_controls(shell);
+        reset_update_controls(shell);
         gtk_window_present(GTK_WINDOW(shell->settings_window));
     }
     return G_SOURCE_REMOVE;
@@ -3304,6 +4034,7 @@ static void on_menu_settings(GtkMenuItem *item, gpointer user_data) {
      * visibility afterwards so only the selected backend's controls are
      * visible. */
     pcble_update_controls(shell);
+    reset_update_controls(shell);
 
     gtk_window_present(GTK_WINDOW(shell->settings_window));
 }
