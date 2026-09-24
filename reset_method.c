@@ -6,6 +6,7 @@
 #include "video_capture.h"
 
 #include <SDL2/SDL.h>
+#include <gio/gio.h>
 
 #include <ctype.h>
 #include <limits.h>
@@ -187,63 +188,114 @@ int reset_method_scan_bluetooth_adapters(
             RESET_METHOD_MAX_BT_ADAPTERS);
 
     /*
-     * Bluetooth adapter discovery must remain passive.
+     * Passive BlueZ discovery.
      *
-     * Do not spawn btmgmt/bluetoothctl here. Capture2Cloud already owns
-     * live video/audio file descriptors and a child process can inherit
-     * them. If Capture2Cloud then exits unexpectedly, that child can
-     * keep the capture device open.
+     * Do not spawn btmgmt or bluetoothctl from the Capture2Cloud
+     * process: child processes can inherit live video/audio descriptors
+     * and keep hardware busy if the parent exits unexpectedly.
      *
-     * Linux already exposes both pieces required by the UI:
-     *
-     *   /sys/class/bluetooth/hciN/address
-     *
-     * hciN is the temporary runtime name. The MAC address is the stable
-     * identity persisted in RESET_BT_ADAPTER.
+     * This is the same BlueZ ObjectManager path already used by pcble.
      */
-    int count = 0;
+    GError *gerror = NULL;
 
-    /*
-     * HCI indexes are small in practice but may contain gaps after
-     * unplug/replug cycles. Walk a generous range rather than assuming
-     * hci0..hciN are contiguous.
-     */
-    for (int index = 0;
-         index < 256 &&
-         count < RESET_METHOD_MAX_BT_ADAPTERS;
-         index++) {
+    GDBusConnection *bus =
+        g_bus_get_sync(
+            G_BUS_TYPE_SYSTEM,
+            NULL,
+            &gerror);
 
-        char path[PATH_MAX];
-
-        snprintf(
-            path,
-            sizeof(path),
-            "/sys/class/bluetooth/hci%d/address",
-            index);
-
-        FILE *f = fopen(path, "r");
-
-        if (!f) {
-            continue;
+    if (!bus) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                gerror
+                    ? gerror->message
+                    : "Could not open system D-Bus");
         }
 
-        char address[32] = {0};
+        g_clear_error(&gerror);
+        return -1;
+    }
 
-        if (fgets(
-                address,
-                sizeof(address),
-                f)) {
-            address[
-                strcspn(
-                    address,
-                    "\r\n")] = '\0';
+    GVariant *reply =
+        g_dbus_connection_call_sync(
+            bus,
+            "org.bluez",
+            "/",
+            "org.freedesktop.DBus.ObjectManager",
+            "GetManagedObjects",
+            NULL,
+            G_VARIANT_TYPE("(a{oa{sa{sv}}})"),
+            G_DBUS_CALL_FLAGS_NONE,
+            1500,
+            NULL,
+            &gerror);
 
-            if (strlen(address) == 17) {
+    g_object_unref(bus);
+
+    if (!reply) {
+        if (error && error_size) {
+            snprintf(
+                error,
+                error_size,
+                "%s",
+                gerror
+                    ? gerror->message
+                    : "BlueZ did not answer");
+        }
+
+        g_clear_error(&gerror);
+        return -1;
+    }
+
+    GVariantIter *objects = NULL;
+
+    g_variant_get(
+        reply,
+        "(a{oa{sa{sv}}})",
+        &objects);
+
+    int count = 0;
+    char *path = NULL;
+    GVariant *interfaces = NULL;
+
+    while (g_variant_iter_next(
+            objects,
+            "{o@a{sa{sv}}}",
+            &path,
+            &interfaces)) {
+
+        GVariant *props =
+            g_variant_lookup_value(
+                interfaces,
+                "org.bluez.Adapter1",
+                G_VARIANT_TYPE_VARDICT);
+
+        if (props &&
+            count < RESET_METHOD_MAX_BT_ADAPTERS) {
+
+            const char *address = "";
+
+            g_variant_lookup(
+                props,
+                "Address",
+                "&s",
+                &address);
+
+            char *id =
+                g_path_get_basename(path);
+
+            if (id &&
+                strncmp(id, "hci", 3) == 0 &&
+                strlen(address) == 17) {
+
                 snprintf(
                     adapters[count].id,
                     sizeof(adapters[count].id),
-                    "hci%d",
-                    index);
+                    "%s",
+                    id);
 
                 snprintf(
                     adapters[count].address,
@@ -253,10 +305,23 @@ int reset_method_scan_bluetooth_adapters(
 
                 count++;
             }
+
+            g_free(id);
         }
 
-        fclose(f);
+        if (props) {
+            g_variant_unref(props);
+        }
+
+        g_free(path);
+        g_variant_unref(interfaces);
+
+        path = NULL;
+        interfaces = NULL;
     }
+
+    g_variant_iter_free(objects);
+    g_variant_unref(reply);
 
     return count;
 }
