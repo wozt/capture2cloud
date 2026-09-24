@@ -1381,6 +1381,14 @@ int main(int argc, char **argv) {
          * so several hands combine rather than fight. Polled in both
          * modes -- headless turns it off through the settings, not by
          * never looking. */
+        /*
+         * Backend maintenance is asynchronous. In particular pcble
+         * recovery may have to stop its privileged helper, wait for that
+         * helper to restore BlueZ, then launch a fresh --reconnect
+         * session. Never make the HTTP/native-client thread wait for it.
+         */
+        gamepad_bridge_service();
+
         local_pad_poll(&g_settings);
 
         /* The list the settings window offers. Cheap, and SDL's joystick
