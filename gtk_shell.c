@@ -557,11 +557,57 @@ static void reset_load_config(GtkShell *shell)
         GTK_COMBO_BOX(g_c.reset_bt_target),
         0);
 
-    shell->loading = 0;
+    /*
+     * Do not probe Bluetooth while the GTK shell is being constructed.
+     *
+     * The tray icon is created only after build_settings_window()
+     * returns. Running btmgmt here can block or disturb the Bluetooth
+     * stack before GTK has even reached tray-icon creation.
+     *
+     * Show the saved adapter, if any, and enumerate controllers only
+     * when the user explicitly presses Refresh adapters.
+     */
+    char saved_adapter[32];
+    reset_method_get_bluetooth_adapter(
+        saved_adapter,
+        sizeof(saved_adapter));
 
-    reset_refresh_adapters(
-        NULL,
-        shell);
+    gtk_combo_box_text_remove_all(
+        GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter));
+
+    if (saved_adapter[0]) {
+        char label[80];
+
+        snprintf(
+            label,
+            sizeof(label),
+            "saved · %s — press Refresh adapters",
+            saved_adapter);
+
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter),
+            label);
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Saved Bluetooth adapter loaded. Press Refresh adapters to enumerate controllers.");
+    } else {
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter),
+            "press Refresh adapters");
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Press Refresh adapters to enumerate Bluetooth controllers.");
+    }
+
+    gtk_combo_box_set_active(
+        GTK_COMBO_BOX(g_c.reset_bt_adapter),
+        0);
+
+    g_c.reset_bt_adapter_count = 0;
+
+    shell->loading = 0;
 
     reset_update_controls(shell);
 }
