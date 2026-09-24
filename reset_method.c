@@ -172,7 +172,10 @@ int reset_method_scan_bluetooth_adapters(
 
     if (!adapters) {
         if (error && error_size) {
-            snprintf(error, error_size, "Invalid adapter output buffer");
+            snprintf(
+                error,
+                error_size,
+                "Invalid adapter output buffer");
         }
         return -1;
     }
@@ -180,81 +183,79 @@ int reset_method_scan_bluetooth_adapters(
     memset(
         adapters,
         0,
-        sizeof(ResetBluetoothAdapter) * RESET_METHOD_MAX_BT_ADAPTERS);
+        sizeof(ResetBluetoothAdapter) *
+            RESET_METHOD_MAX_BT_ADAPTERS);
 
     /*
-     * btmgmt gives us both pieces needed here without taking ownership
-     * of BlueZ: current hciN runtime id and the stable controller MAC.
+     * Bluetooth adapter discovery must remain passive.
      *
-     * Example:
-     *   hci1:   Primary controller
-     *           addr E0:AD:47:40:70:D9 ...
+     * Do not spawn btmgmt/bluetoothctl here. Capture2Cloud already owns
+     * live video/audio file descriptors and a child process can inherit
+     * them. If Capture2Cloud then exits unexpectedly, that child can
+     * keep the capture device open.
+     *
+     * Linux already exposes both pieces required by the UI:
+     *
+     *   /sys/class/bluetooth/hciN/address
+     *
+     * hciN is the temporary runtime name. The MAC address is the stable
+     * identity persisted in RESET_BT_ADAPTER.
      */
-    FILE *pipe = popen("btmgmt info 2>/dev/null", "r");
-
-    if (!pipe) {
-        if (error && error_size) {
-            snprintf(error, error_size, "Unable to run btmgmt");
-        }
-        return -1;
-    }
-
-    char line[512];
-    char current_id[16] = {0};
     int count = 0;
 
-    while (fgets(line, sizeof(line), pipe)) {
-        char id[16];
+    /*
+     * HCI indexes are small in practice but may contain gaps after
+     * unplug/replug cycles. Walk a generous range rather than assuming
+     * hci0..hciN are contiguous.
+     */
+    for (int index = 0;
+         index < 256 &&
+         count < RESET_METHOD_MAX_BT_ADAPTERS;
+         index++) {
 
-        if (sscanf(line, "%15[^:]:", id) == 1 &&
-            strncmp(id, "hci", 3) == 0) {
-            snprintf(
-                current_id,
-                sizeof(current_id),
-                "%s",
-                id);
+        char path[PATH_MAX];
+
+        snprintf(
+            path,
+            sizeof(path),
+            "/sys/class/bluetooth/hci%d/address",
+            index);
+
+        FILE *f = fopen(path, "r");
+
+        if (!f) {
             continue;
         }
 
-        if (!current_id[0]) {
-            continue;
+        char address[32] = {0};
+
+        if (fgets(
+                address,
+                sizeof(address),
+                f)) {
+            address[
+                strcspn(
+                    address,
+                    "\r\n")] = '\0';
+
+            if (strlen(address) == 17) {
+                snprintf(
+                    adapters[count].id,
+                    sizeof(adapters[count].id),
+                    "hci%d",
+                    index);
+
+                snprintf(
+                    adapters[count].address,
+                    sizeof(adapters[count].address),
+                    "%s",
+                    address);
+
+                count++;
+            }
         }
 
-        char address[18];
-
-        if (sscanf(line, " addr %17s", address) != 1) {
-            continue;
-        }
-
-        if (count < RESET_METHOD_MAX_BT_ADAPTERS) {
-            snprintf(
-                adapters[count].id,
-                sizeof(adapters[count].id),
-                "%s",
-                current_id);
-
-            snprintf(
-                adapters[count].address,
-                sizeof(adapters[count].address),
-                "%s",
-                address);
-
-            count++;
-        }
-
-        current_id[0] = '\0';
-    }
-
-    int status = pclose(pipe);
-
-    if (status != 0 && count == 0) {
-        if (error && error_size) {
-            snprintf(
-                error,
-                error_size,
-                "btmgmt could not enumerate Bluetooth adapters");
-        }
-        return -1;
+        fclose(f);
     }
 
     return count;
