@@ -70,6 +70,22 @@ typedef struct {
     int stick_deadzone[2];  /* left, right; percent */
     int stick_range[2];     /* percent that counts as fully pushed */
     int stick_diagonal[2];  /* the same, for the corners */
+
+    /*
+     * Final output calibration, applied after ALL sources have been
+     * merged. These are intentionally separate from the values above:
+     * those calibrate only the physical SDL controller plugged into this
+     * host, while these calibrate what the real console finally receives.
+     *
+     * An output trigger threshold of zero preserves the incoming value.
+     */
+    int output_invert_ry;
+    int output_lt_threshold;
+    int output_rt_threshold;
+    int output_stick_deadzone[2];
+    int output_stick_range[2];
+    int output_stick_diagonal[2];
+
     /* Which controller the adapter pretends to be to the console, in the
      * numbering of gamepad_protocol_name(): 0 auto, 2 xb360, 6 switch...
      * -1 means "leave the adapter as it is". This one is not really the
@@ -101,7 +117,11 @@ typedef struct {
         .bitrate_mbps = 12, .capture_mjpeg = 0, .gamepad_enabled = 1,          \
         .gamepad_index = -1, .output_backend = 0, .invert_ry = 0, .lt_threshold = 30,               \
         .rt_threshold = 30, .stick_deadzone = {5, 5}, .stick_range = {100, 100},\
-        .stick_diagonal = {100, 100}, .output_protocol = -1,                   \
+        .stick_diagonal = {100, 100},                                         \
+        .output_invert_ry = 0, .output_lt_threshold = 0,                      \
+        .output_rt_threshold = 0, .output_stick_deadzone = {0, 0},            \
+        .output_stick_range = {100, 100},                                     \
+        .output_stick_diagonal = {100, 100}, .output_protocol = -1,           \
         .local_muted = 0, .local_direct_sink = 0, .local_volume = 13,                                  \
         .brightness = 100, .contrast = 100, .vsync = 1,                        \
     }

@@ -16,6 +16,7 @@ C2C_SOURCES=(
     "$C2C_DIR/web_stream.c"
     "$C2C_DIR/gst_webrtc.c"
     "$C2C_DIR/gamepad_bridge.c"
+    "$C2C_DIR/controller_shaping.c"
     "$C2C_DIR/output_titan.c"
     "$C2C_DIR/output_pcble.c"
     "$C2C_DIR/wiiu_pad.c"
@@ -34,6 +35,7 @@ C2C_HEADERS=(
     "$C2C_DIR/gst_webrtc.h"
     "$C2C_DIR/gamepad_bridge.h"
     "$C2C_DIR/controller_state.h"
+    "$C2C_DIR/controller_shaping.h"
     "$C2C_DIR/output_backend.h"
     "$C2C_DIR/output_titan.h"
     "$C2C_DIR/output_pcble.h"
@@ -48,7 +50,7 @@ C2C_HEADERS=(
     "$C2C_DIR/local_pad.h"
 )
 C2C_BIN="$C2C_DIR/capture2cloud"
-C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0 glib-2.0"
+C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libswscale libusb-1.0 glib-2.0 gio-2.0"
 
 # Vendored Classic Bluetooth controller backend.
 #

@@ -108,7 +108,8 @@ run_c_test() {
 # The C tests #include the .c file under test, so they see its static
 # functions; the pkg-config sets below are just that file's own deps.
 timed "C: gamepad bridge"  run_c_test test_gamepad_bridge "libusb-1.0 sdl2"
-timed "C: pcble output"     run_c_test test_output_pcble "sdl2"
+timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
+timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
 # glib because web_stream.c now answers a WebSocket upgrade, whose
 # handshake is a SHA-1 and a base64 -- both GLib's.
 timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 glib-2.0"
