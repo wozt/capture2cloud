@@ -25,6 +25,14 @@ typedef struct {
     void (*reset)(void);
     void (*press_home)(void);
 
+    /*
+     * Optional non-blocking maintenance state machine.
+     *
+     * reset() may only request recovery; service() advances it from the
+     * application's main loop without blocking a network/client thread.
+     */
+    void (*service)(void);
+
     int    (*link_up)(void);
     double (*report_rate)(void);
 

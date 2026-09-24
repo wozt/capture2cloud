@@ -743,6 +743,22 @@ static void pcble_start(
             g_c.pcble_adapters[secondary].address);
     }
 
+    /*
+     * Reconnect is intentionally routed through the generic backend
+     * recovery operation. This is the SAME path used by Maintenance,
+     * native C2C RESET_DONGLE requests and automatic startup recovery.
+     */
+    if (reconnect) {
+        gamepad_bridge_reset();
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "reconnecting to paired Switch...");
+
+        pcble_update_controls(shell);
+        return;
+    }
+
     char error[256];
 
     int ok =
@@ -752,9 +768,7 @@ static void pcble_start(
                 ? g_c.pcble_adapters[secondary].id
                 : NULL,
             profile,
-            reconnect
-                ? g_c.pcble_paired_switch
-                : NULL,
+            NULL,
             body,
             buttons,
             left,
@@ -779,9 +793,7 @@ static void pcble_start(
 
     gtk_label_set_text(
         GTK_LABEL(g_c.pcble_status),
-        reconnect
-            ? "reconnecting to paired Switch..."
-            : "waiting for pairing — open Controllers → Change Grip/Order on the Switch");
+        "waiting for pairing — open Controllers → Change Grip/Order on the Switch");
 
     pcble_update_controls(shell);
 }
