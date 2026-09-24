@@ -1330,6 +1330,28 @@ int main(int argc, char **argv) {
         publish_server_status();
     }
 
+    /*
+     * Automatic pcble reconnect happens here rather than from
+     * output_pcble_init().
+     *
+     * SDL and the desktop environment are now initialised, matching the
+     * environment in which manually pressing "Reconnect paired Switch"
+     * is known to work.
+     *
+     * gamepad_bridge_reset() maps to output_pcble_reset() for pcble.
+     * With no existing session at startup that directly launches the
+     * saved --reconnect session.
+     */
+    if (strcmp(
+            gamepad_bridge_backend_name(),
+            "pcble") == 0) {
+        fprintf(
+            stderr,
+            "pcble: attempting automatic paired-Switch reconnect\n");
+
+        gamepad_bridge_reset();
+    }
+
     if (!g_headless && open_capture_window() != 0) {
         SDL_Quit();
         gtk_shell_stop(g_shell);
@@ -1381,14 +1403,6 @@ int main(int argc, char **argv) {
          * so several hands combine rather than fight. Polled in both
          * modes -- headless turns it off through the settings, not by
          * never looking. */
-        /*
-         * Backend maintenance is asynchronous. In particular pcble
-         * recovery may have to stop its privileged helper, wait for that
-         * helper to restore BlueZ, then launch a fresh --reconnect
-         * session. Never make the HTTP/native-client thread wait for it.
-         */
-        gamepad_bridge_service();
-
         local_pad_poll(&g_settings);
 
         /* The list the settings window offers. Cheap, and SDL's joystick

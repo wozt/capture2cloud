@@ -127,9 +127,10 @@ static const BackendEntry BACKENDS[] = {
         "pcble",
         "pcble2gamepad",
         "reconnect paired Switch",
-        "Stops any existing pcble session, waits for BlueZ to be "
-        "restored, then starts the same fresh paired-Switch reconnect "
-        "session used by the Controller output Reconnect button.",
+        "Reconnects the paired Switch using its saved Bluetooth adapter. "
+        "If a pcble session is already running, it is stopped first so "
+        "BlueZ is fully restored, then the same fresh reconnect used by "
+        "the Controller output button is launched.",
         output_pcble_backend,
     },
     {
@@ -347,13 +348,6 @@ void gamepad_bridge_reset(void)
 {
     if (g_backend && g_backend->reset) {
         g_backend->reset();
-    }
-}
-
-void gamepad_bridge_service(void)
-{
-    if (g_backend && g_backend->service) {
-        g_backend->service();
     }
 }
 
