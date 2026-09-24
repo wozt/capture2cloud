@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /*
  * Current legacy reset method: execute scripts/wake_console.sh.
@@ -21,6 +22,52 @@
  *
  * Bluetooth wake will become a second reset method behind this API.
  */
+
+
+const char *reset_method_name(ResetMethod method)
+{
+    switch (method) {
+    case RESET_METHOD_SCRIPT:
+        return "script";
+    case RESET_METHOD_BLUETOOTH:
+        return "bluetooth";
+    default:
+        return NULL;
+    }
+}
+
+ResetMethod reset_method_current(void)
+{
+    char value[32];
+    const char *name = config_get_str(
+        "RESET_METHOD",
+        value,
+        sizeof(value),
+        "script");
+
+    if (strcmp(name, "bluetooth") == 0) {
+        return RESET_METHOD_BLUETOOTH;
+    }
+
+    if (strcmp(name, "script") != 0) {
+        fprintf(stderr,
+                "reset_method: unknown RESET_METHOD '%s', using script\n",
+                name);
+    }
+
+    return RESET_METHOD_SCRIPT;
+}
+
+int reset_method_set(ResetMethod method)
+{
+    const char *name = reset_method_name(method);
+
+    if (!name) {
+        return -1;
+    }
+
+    return config_set_str("RESET_METHOD", name);
+}
 
 static int script_wake_thread(void *arg)
 {
@@ -88,10 +135,21 @@ static int script_wake(void)
 
 int reset_method_wake(void)
 {
-    /*
-     * Step one of the reset-method abstraction deliberately preserves
-     * the old behaviour exactly. The configurable script/Bluetooth
-     * selector is added on top of this interface next.
-     */
-    return script_wake();
+    switch (reset_method_current()) {
+    case RESET_METHOD_SCRIPT:
+        return script_wake();
+
+    case RESET_METHOD_BLUETOOTH:
+        /*
+         * The selector exists before the Bluetooth implementation on
+         * purpose: UI/configuration can be built against a stable reset
+         * abstraction instead of teaching callers about each backend.
+         */
+        fprintf(stderr,
+                "reset_method: Bluetooth wake is selected but not configured yet\n");
+        return -1;
+
+    default:
+        return -1;
+    }
 }
