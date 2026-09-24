@@ -85,7 +85,11 @@ const char *gamepad_bridge_backend_maintenance_help(int i) {
 }
 int gamepad_bridge_backend_available(int i) { return i == 0 || i == 1; }
 int gamepad_bridge_backend_from_name(const char *name) {
-    return name && strcmp(name, "titan") == 0 ? 0 : -1;
+    if (!name) return -1;
+    if (strcmp(name, "titan") == 0) return 0;
+    if (strcmp(name, "pcble") == 0) return 1;
+    if (strcmp(name, "jocp") == 0) return 2;
+    return -1;
 }
 int gamepad_bridge_backend_configured_index(void) { return 0; }
 const char *gamepad_protocol_label(int i) {
@@ -93,6 +97,59 @@ const char *gamepad_protocol_label(int i) {
     return (i >= 0 && i < 7) ? L[i] : "?";
 }
 int gamepad_protocol_count(void) { return 7; }
+
+/* pcble session controls are stubbed: this is a GTK layout test, not a
+ * Bluetooth integration test. */
+int output_pcble_scan_adapters(
+    OutputPcbleAdapter adapters[OUTPUT_PCBLE_MAX_ADAPTERS],
+    char *error,
+    size_t error_size)
+{
+    (void)adapters;
+    if (error && error_size) error[0] = '\0';
+    return 0;
+}
+
+int output_pcble_set_controller(const char *profile)
+{
+    (void)profile;
+    return 1;
+}
+
+int output_pcble_start_session(
+    const char *primary_adapter,
+    const char *secondary_adapter,
+    const char *profile,
+    const char *reconnect_address,
+    const char *body_color,
+    const char *button_color,
+    const char *left_grip_color,
+    const char *right_grip_color,
+    int verbose,
+    char *error,
+    size_t error_size)
+{
+    (void)primary_adapter;
+    (void)secondary_adapter;
+    (void)profile;
+    (void)reconnect_address;
+    (void)body_color;
+    (void)button_color;
+    (void)left_grip_color;
+    (void)right_grip_color;
+    (void)verbose;
+    if (error && error_size) error[0] = '\0';
+    return 1;
+}
+
+void output_pcble_stop_session(void) {}
+int output_pcble_ipc_up(void) { return 0; }
+int output_pcble_session_running(void) { return 0; }
+
+void output_pcble_peer(char *out, size_t out_size)
+{
+    if (out && out_size) out[0] = '\0';
+}
 
 int main(void) {
     if (!getenv("DISPLAY")) {
