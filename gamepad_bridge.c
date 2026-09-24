@@ -126,8 +126,11 @@ static const BackendEntry BACKENDS[] = {
     {
         "pcble",
         "pcble2gamepad",
-        NULL,
-        NULL,
+        "reconnect paired Switch",
+        "Attempts to reconnect the paired Switch using the Bluetooth "
+        "adapter that owns the saved pairing. If the pcble helper is "
+        "already running it reuses that session; otherwise it starts a "
+        "new reconnect session automatically.",
         output_pcble_backend,
     },
     {

@@ -583,8 +583,37 @@ static void on_settings(void *userdata, const AppSettings *want) {
 
     /* The rest are read where they are used -- the controller poll, the
      * drawing -- so storing them is applying them. */
-    have->gamepad_enabled = want->gamepad_enabled;
-    have->gamepad_index = want->gamepad_index;
+    if (want->gamepad_enabled != have->gamepad_enabled) {
+        have->gamepad_enabled = want->gamepad_enabled;
+
+        config_set_int(
+            "LOCAL_GAMEPAD_ENABLED",
+            have->gamepad_enabled);
+    }
+
+    if (want->gamepad_index != have->gamepad_index) {
+        have->gamepad_index = want->gamepad_index;
+
+        char guid[64];
+
+        if (have->gamepad_index >= 0 &&
+            local_pad_guid_for_slot(
+                have->gamepad_index,
+                guid,
+                sizeof(guid))) {
+            config_set_str(
+                "LOCAL_GAMEPAD_GUID",
+                guid);
+        } else {
+            /*
+             * config_set_str() deliberately refuses empty values, so use
+             * an explicit token for "no preferred local controller".
+             */
+            config_set_str(
+                "LOCAL_GAMEPAD_GUID",
+                "none");
+        }
+    }
 
     /*
      * Output backend is a startup choice: each implementation owns
@@ -1261,6 +1290,32 @@ int main(int argc, char **argv) {
      * happens over ssh. */
     local_pad_init();
 
+    /*
+     * Remember the physical controller, not its transient SDL slot.
+     * The slot is resolved again whenever SDL's device list changes.
+     */
+    g_settings.gamepad_enabled =
+        g_headless
+            ? 0
+            : (int)config_get_int(
+                  "LOCAL_GAMEPAD_ENABLED",
+                  1,
+                  0,
+                  1);
+
+    {
+        char saved_guid[64];
+
+        config_get_str(
+            "LOCAL_GAMEPAD_GUID",
+            saved_guid,
+            sizeof(saved_guid),
+            "none");
+
+        g_settings.gamepad_index =
+            local_pad_find_guid(saved_guid);
+    }
+
     GtkShellCallbacks shell_callbacks = {
         .on_settings = on_settings,
         .on_action = on_action,
@@ -1269,7 +1324,6 @@ int main(int argc, char **argv) {
     };
     g_settings.web_port = g_web_port;
     g_settings.capture_mjpeg = (video_capture_format(g_video) == VIDEO_FORMAT_MJPEG);
-    g_settings.gamepad_enabled = !g_headless;
     g_shell = gtk_shell_start(&g_settings, &shell_callbacks);
 
     if (g_shell) {
@@ -1338,6 +1392,32 @@ int main(int argc, char **argv) {
                 last_scan = now;
                 const char *names[8];
                 const int n = local_pad_list(names, 8);
+
+                /*
+                 * A replug can renumber SDL joystick indices. Resolve the
+                 * saved GUID every time the device list is refreshed so
+                 * the preferred controller follows the hardware.
+                 */
+                char saved_guid[64];
+
+                config_get_str(
+                    "LOCAL_GAMEPAD_GUID",
+                    saved_guid,
+                    sizeof(saved_guid),
+                    "none");
+
+                const int preferred =
+                    local_pad_find_guid(saved_guid);
+
+                if (preferred != g_settings.gamepad_index) {
+                    g_settings.gamepad_index =
+                        preferred;
+
+                    gtk_shell_update(
+                        g_shell,
+                        &g_settings);
+                }
+
                 gtk_shell_set_controllers(g_shell, names, n);
             }
         }

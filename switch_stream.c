@@ -1417,7 +1417,7 @@ static void handle_messages(SwitchStream *s, int index) {
                 break;
             case C2S_MSG_RESET_DONGLE:
                 if (c->may_control) {
-                    fprintf(stderr, "switch_stream: client %d asks for an adapter reset\n", index);
+                    fprintf(stderr, "switch_stream: client %d asks for controller-output recovery\n", index);
                     gamepad_bridge_reset();
                 }
                 break;

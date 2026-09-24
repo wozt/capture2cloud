@@ -673,7 +673,7 @@ static void handle_reset_dongle(WebStream *ws, int fd, const char *token) {
         send_all(fd, response, sizeof(response) - 1);
         return;
     }
-    fprintf(stderr, "web_stream: adapter reset requested from the page\n");
+    fprintf(stderr, "web_stream: controller-output recovery requested from the page\n");
     gamepad_bridge_reset();
     send_204(fd);
 }
