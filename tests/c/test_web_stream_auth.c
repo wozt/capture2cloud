@@ -12,6 +12,9 @@
  * under test here touches WebRTC at all. */
 #include "../../app_config.c"
 #include "../../ws_frame.c"
+
+int reset_method_wake(void) { return 0; }
+
 #include "../../web_stream.c"
 
 #include "test_util.h"

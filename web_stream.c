@@ -4,6 +4,7 @@
 
 #include "app_config.h"
 #include "gamepad_bridge.h"
+#include "reset_method.h"
 #include "switch_stream.h"
 #include "video_capture.h"
 #include "ws_frame.h"
@@ -989,71 +990,17 @@ static void handle_quality(WebStream *ws, int fd, long content_length, const cha
     send_204(fd);
 }
 
-/* Wakes the console from sleep by power-cycling its smart plug via the
- * standalone scripts/wake_console.sh -- kept as an external script
- * rather than reimplemented in C so the plug/service can be swapped
- * later without touching this file. Backgrounded with a trailing "&":
- * the script polls Home Assistant until each state change is confirmed
- * and can take several seconds, and this request must not hold the HTTP
- * response (or this connection's thread) open that long. Manually
- * triggered only (a button on the page), never automatic.
+/*
+ * Wake is a console-level operation, not an HTTP implementation detail.
  *
- * Players only: cutting the console's power is at least as disruptive as
- * pressing its buttons, so it sits behind the same gate as gamepad
- * input. Enforced here rather than only by hiding the button, for the
- * same reason as everywhere else -- anyone can POST to this endpoint
- * directly. */
-/* Runs the wake script to completion, then re-enumerates the adapter.
- *
- * The adapter last handshook with a console that was asleep, and coming
- * out of standby is not enough for it to be seen again -- it has to
- * re-enumerate, which is what a physical unplug/replug would do. Done
- * here, after the script returns, rather than by the script itself: the
- * adapter is held open by this process, so only this process can reset
- * it.
- *
- * On its own thread because the script polls Home Assistant until each
- * state change is confirmed and takes several seconds; the HTTP response
- * must not wait for that. */
-static int wake_then_reset_thread(void *arg) {
-    char *cmd = arg;
-    int rc = system(cmd);
-    free(cmd);
-    if (rc != 0) {
-        fprintf(stderr, "web_stream: wake_console.sh exited with %d\n", rc);
-    }
-    /* The adapter is NOT reset here. Resetting as soon as the script
-     * returned was too early: the console is still around ten seconds
-     * from drawing anything, the USB link came back while it was not
-     * listening, and the adapter never re-attached -- the gamepad simply
-     * did not come back. The capture loop resets it instead, on the
-     * frame where the picture stops being the "no signal" pattern. */
-    video_capture_watch_for_change();
-    return 0;
-}
-
-/* The wake itself, without the HTTP around it. Shared so the native
- * transport can offer the same button: there is no browser on the
- * console, and needing one to wake the console the client exists to show
- * would be a poor joke. Returns 0 when the work was started. */
-int web_stream_wake_console(WebStream *ws) {
+ * The reset-method layer decides whether that eventually means an
+ * external script, Bluetooth wake advertisement, or another mechanism.
+ * Keeping this wrapper preserves the API used by the native transports.
+ */
+int web_stream_wake_console(WebStream *ws)
+{
     (void)ws;
-    char script[PATH_MAX];
-    app_path(script, sizeof(script), "scripts/wake_console.sh");
-
-    char *cmd = malloc(PATH_MAX + 64);
-    if (!cmd) {
-        return -1;
-    }
-    snprintf(cmd, PATH_MAX + 64, "/bin/bash '%s' >/dev/null 2>&1", script);
-
-    SDL_Thread *t = SDL_CreateThread(wake_then_reset_thread, "wake-console", cmd);
-    if (!t) {
-        free(cmd);
-        return -1;
-    }
-    SDL_DetachThread(t);
-    return 0;
+    return reset_method_wake();
 }
 
 static void handle_wake(WebStream *ws, int fd, const char *token) {

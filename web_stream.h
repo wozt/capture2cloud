@@ -38,10 +38,9 @@ int web_stream_get_port(WebStream *ws);
  * carrying its own idea of who may drive the console -- two answers that
  * could disagree is exactly how an access check becomes decorative.
  * A NULL or empty token is a viewer unless no password is configured. */
-/* Wakes the console: runs scripts/wake_console.sh on its own thread and
- * arms the picture watch that re-enumerates the adapter afterwards. The
- * caller is responsible for deciding the requester may do this. Returns
- * 0 when the work was started. */
+/* Wakes the console through the configured reset method.
+ * The caller is responsible for deciding the requester may do this.
+ * Returns 0 when the asynchronous operation was started. */
 int web_stream_wake_console(WebStream *ws);
 
 /* How many non-browser clients are connected, and how many could be.
