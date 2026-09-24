@@ -127,10 +127,9 @@ static const BackendEntry BACKENDS[] = {
         "pcble",
         "pcble2gamepad",
         "reconnect paired Switch",
-        "Reconnects the paired Switch using its saved Bluetooth adapter. "
-        "If a pcble session is already running, it is stopped first so "
-        "BlueZ is fully restored, then the same fresh reconnect used by "
-        "the Controller output button is launched.",
+        "Queues the same Reconnect paired Switch action shown in "
+        "Controller output. Startup, Maintenance and remote C2C reset "
+        "requests all execute that action on the GTK thread.",
         output_pcble_backend,
     },
     {

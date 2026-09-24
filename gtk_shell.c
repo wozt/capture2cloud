@@ -85,6 +85,7 @@ typedef struct {
     GtkWidget *gamepad_enabled, *gamepad_device, *invert_ry, *output_protocol;
     GtkWidget *output_backend, *backend_status, *titan_settings;
     GtkWidget *adapter_sees;
+    GtkWidget *backend_recovery;
 
     GtkWidget *pcble_settings;
     GtkWidget *pcble_controller;
@@ -296,6 +297,24 @@ static void pcble_update_controls(GtkShell *shell)
         output_pcble_session_running() ||
         output_pcble_ipc_up();
 
+    const int recovery_pending =
+        output_pcble_reconnect_pending();
+
+    const int reconnect_active =
+        output_pcble_reconnect_active();
+
+    const int stopping =
+        output_pcble_session_stopping();
+
+    const int recovery_busy =
+        recovery_pending ||
+        reconnect_active ||
+        stopping;
+
+    const int busy =
+        running ||
+        recovery_busy;
+
     if (selected_pcble) {
         gtk_widget_set_no_show_all(
             g_c.pcble_settings,
@@ -332,31 +351,31 @@ static void pcble_update_controls(GtkShell *shell)
 
     gtk_widget_set_sensitive(
         g_c.pcble_controller,
-        !running);
+        !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_primary,
-        !running);
+        !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_secondary,
-        pair && !running);
+        pair && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_body_color,
-        !pair && !running);
+        !pair && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_button_color,
-        !pair && !running);
+        !pair && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_left_grip_color,
-        !pair && !running);
+        !pair && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_right_grip_color,
-        !pair && !running);
+        !pair && !busy);
 
     int primary =
         pcble_selected_adapter(
@@ -386,15 +405,38 @@ static void pcble_update_controls(GtkShell *shell)
 
     gtk_widget_set_sensitive(
         g_c.pcble_pair,
-        adapters_ok && !running);
+        adapters_ok && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_reconnect,
-        reconnect_ok && !running);
+        reconnect_ok && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_stop,
         running);
+
+    /*
+     * Make externally-triggered recovery visible in Controller output.
+     * A GtkButton is not a toggle, so the clearest persistent feedback is
+     * a changed label plus disabled state while the operation is active.
+     */
+    gtk_button_set_label(
+        GTK_BUTTON(g_c.pcble_reconnect),
+        recovery_busy
+            ? "Reconnecting paired Switch..."
+            : "Reconnect paired Switch");
+
+    if (g_c.backend_recovery) {
+        gtk_button_set_label(
+            GTK_BUTTON(g_c.backend_recovery),
+            recovery_busy
+                ? "reconnecting paired Switch..."
+                : "reconnect paired Switch");
+
+        gtk_widget_set_sensitive(
+            g_c.backend_recovery,
+            !recovery_busy);
+    }
 }
 
 static void pcble_refresh_adapters(
@@ -786,6 +828,68 @@ static void pcble_start(
     pcble_update_controls(shell);
 }
 
+static void pcble_process_reconnect_request(
+    GtkShell *shell)
+{
+    if (!output_pcble_reconnect_pending()) {
+        return;
+    }
+
+    if (strcmp(
+            gamepad_bridge_backend_name(),
+            "pcble") != 0) {
+        output_pcble_clear_reconnect_request();
+        return;
+    }
+
+    /*
+     * Reconnect is currently a Pro Controller operation.
+     */
+    if (strcmp(
+            pcble_profile(),
+            "pro") != 0) {
+        output_pcble_clear_reconnect_request();
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "automatic reconnect is currently available for Pro Controller only");
+
+        pcble_update_controls(shell);
+        return;
+    }
+
+    /*
+     * If a helper owns BlueZ already, first perform exactly what a user
+     * would do manually: Stop session.
+     *
+     * Keep the reconnect request armed. launcher_finished() will clear
+     * g_launcher on this same GTK main context; a later 200 ms tick then
+     * reaches the launch below.
+     */
+    if (output_pcble_session_running()) {
+        if (!output_pcble_session_stopping()) {
+            gtk_label_set_text(
+                GTK_LABEL(g_c.pcble_status),
+                "reconnect requested — stopping current Bluetooth session...");
+
+            output_pcble_stop_session();
+        }
+
+        pcble_update_controls(shell);
+        return;
+    }
+
+    /*
+     * No helper owns BlueZ now. Consume the request and call THE SAME
+     * implementation as clicking "Reconnect paired Switch".
+     */
+    output_pcble_clear_reconnect_request();
+
+    pcble_start(
+        shell,
+        1);
+}
+
 static void pcble_pair_clicked(
     GtkWidget *widget,
     gpointer user_data)
@@ -916,10 +1020,29 @@ static void pcble_refresh_status(GtkShell *shell)
     const int running =
         output_pcble_session_running();
 
+    const int recovery_pending =
+        output_pcble_reconnect_pending();
+
+    const int reconnect_active =
+        output_pcble_reconnect_active();
+
+    const int stopping =
+        output_pcble_session_stopping();
+
     const char *profile =
         pcble_profile();
 
-    if (ipc && connected) {
+    if (recovery_pending && running) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            stopping
+                ? "reconnect requested — stopping current Bluetooth session..."
+                : "reconnect requested...");
+    } else if (recovery_pending) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "reconnect queued...");
+    } else if (ipc && connected) {
         char text[128];
 
         snprintf(
@@ -981,6 +1104,10 @@ static void pcble_refresh_status(GtkShell *shell)
                 }
             }
         }
+    } else if (reconnect_active) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.pcble_status),
+            "reconnecting to paired Switch...");
     } else if (ipc) {
         gtk_label_set_text(
             GTK_LABEL(g_c.pcble_status),
@@ -3125,6 +3252,9 @@ static void build_settings_window(GtkShell *shell) {
                 ? help
                 : "This backend does not expose a maintenance action.");
 
+        g_c.backend_recovery =
+            button;
+
         gtk_widget_set_sensitive(
             button,
             gamepad_bridge_backend_available(backend) &&
@@ -3577,6 +3707,12 @@ static gboolean on_tick(gpointer user_data) {
                 line);
         }
     }
+
+    /*
+     * Generic backend recovery requests from startup, Maintenance, HTTP
+     * or native clients are deliberately executed here on the GTK thread.
+     */
+    pcble_process_reconnect_request(shell);
 
     pcble_refresh_status(shell);
 

@@ -45,18 +45,18 @@ int output_pcble_start_session(
 void output_pcble_stop_session(void);
 
 /*
- * Recover the Bluetooth output without any GUI knowledge.
- *
- * Uses the paired Switch address and the physical adapter identity saved
- * during pairing. This is also what the generic C2C "reset dongle"
- * operation maps to when pcble is the active output backend.
+ * Backend-independent recovery requests do not launch Bluetooth work
+ * themselves. They are consumed by the GTK thread, which then executes
+ * the exact same reconnect path as the "Reconnect paired Switch" button.
  */
-int output_pcble_reconnect_saved(
-    char *error,
-    size_t error_size);
+int output_pcble_reconnect_pending(void);
+void output_pcble_clear_reconnect_request(void);
+
+int output_pcble_reconnect_active(void);
 
 int output_pcble_ipc_up(void);
 int output_pcble_session_running(void);
+int output_pcble_session_stopping(void);
 void output_pcble_peer(char *out, size_t out_size);
 
 #endif
