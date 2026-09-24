@@ -598,6 +598,63 @@ static void reset_test_adapter_clicked(
     SDL_DetachThread(thread);
 }
 
+typedef struct {
+    char adapter[16];
+    int ok;
+    char message[512];
+} ResetCaptureJob;
+
+static gboolean reset_capture_finished(
+    gpointer user_data)
+{
+    ResetCaptureJob *job =
+        user_data;
+
+    if (g_c.reset_bt_status) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            job->message[0]
+                ? job->message
+                : (job->ok
+                    ? "Switch 2 wake beacon captured."
+                    : "Wake beacon capture failed."));
+    }
+
+    if (g_c.reset_bt_capture) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_capture,
+            TRUE);
+    }
+
+    if (g_c.reset_bt_test_adapter) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_adapter,
+            TRUE);
+    }
+
+    free(job);
+    return G_SOURCE_REMOVE;
+}
+
+static int reset_capture_thread(
+    void *user_data)
+{
+    ResetCaptureJob *job =
+        user_data;
+
+    job->ok =
+        reset_method_capture_bluetooth_beacon(
+            job->adapter,
+            job->message,
+            sizeof(job->message));
+
+    g_idle_add(
+        reset_capture_finished,
+        job);
+
+    return 0;
+}
+
 static void reset_capture_clicked(
     GtkWidget *widget,
     gpointer user_data)
@@ -615,9 +672,71 @@ static void reset_capture_clicked(
         return;
     }
 
+    if (output_pcble_session_running() ||
+        output_pcble_ipc_up()) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Controller Bluetooth session is active. Wait for it to stop before capturing the wake beacon.");
+        return;
+    }
+
+    ResetCaptureJob *job =
+        calloc(
+            1,
+            sizeof(*job));
+
+    if (!job) {
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Could not allocate wake capture job.");
+        return;
+    }
+
+    snprintf(
+        job->adapter,
+        sizeof(job->adapter),
+        "%s",
+        g_c.reset_bt_adapters[index].id);
+
+    reset_method_set_bluetooth_adapter(
+        g_c.reset_bt_adapters[index].address);
+
     gtk_label_set_text(
         GTK_LABEL(g_c.reset_bt_status),
-        "Beacon capture ready — privileged HCI backend not connected yet.");
+        "Listening for 20 seconds. Put the Switch 2 to sleep, then press HOME on a real paired controller.");
+
+    gtk_widget_set_sensitive(
+        g_c.reset_bt_capture,
+        FALSE);
+
+    gtk_widget_set_sensitive(
+        g_c.reset_bt_test_adapter,
+        FALSE);
+
+    SDL_Thread *thread =
+        SDL_CreateThread(
+            reset_capture_thread,
+            "reset-bt-capture",
+            job);
+
+    if (!thread) {
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_capture,
+            TRUE);
+
+        gtk_widget_set_sensitive(
+            g_c.reset_bt_test_adapter,
+            TRUE);
+
+        gtk_label_set_text(
+            GTK_LABEL(g_c.reset_bt_status),
+            "Could not start wake beacon capture.");
+
+        free(job);
+        return;
+    }
+
+    SDL_DetachThread(thread);
 }
 
 static void reset_test_beacon_clicked(
