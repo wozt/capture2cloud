@@ -28,7 +28,7 @@ It is a personal project built and tested on real hardware, not a commercial pro
 * Password-protected control access
 * Remote console wake with automatic controller reconnection
 
-Development notes and known limitations are kept in [WORKINPROGRESS.md](WORKINPROGRESS.md).
+Development notes and known limitations are kept in [WORKINPROGRESS.md](docs/WORKINPROGRESS.md).
 
 ---
 
@@ -354,8 +354,8 @@ Builds are normally handled automatically by the launch scripts.
 
 Useful project documentation:
 
-* [WORKINPROGRESS.md](WORKINPROGRESS.md) — development notes and measurements
-* [SHARED_SETTINGS.md](SHARED_SETTINGS.md) — host/client setting ownership
+* [WORKINPROGRESS.md](docs/WORKINPROGRESS.md) — development notes and measurements
+* [SHARED_SETTINGS.md](docs/SHARED_SETTINGS.md) — host/client setting ownership
 * [wiiu_console/README.md](wiiu_console/README.md) — Wii U console client
 
 ---
