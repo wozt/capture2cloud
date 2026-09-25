@@ -96,3 +96,4 @@ wiiu_console/bringup/*/*.wuhb
 wiiu_ethernet/
 patch.sh
 .cafeglsl/
+.mcp.json
