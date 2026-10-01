@@ -321,14 +321,7 @@ int main(void)
          * like severe video stutter.  Keep the current top framebuffer on
          * screen until a replacement frame has actually been decoded. */
         if (g_video_frame_ready || fallback_video_presented) {
-            /*
-             * MPEG/Y2R normally arrives as a PICA200 texture now.
-             * JPEG and software fallback frames still use the old direct
-             * framebuffer path.
-             */
-            if (!video_present_gpu()) {
-                gfxScreenSwapBuffers(GFX_TOP, false);
-            }
+            gfxScreenSwapBuffers(GFX_TOP, false);
             g_video_frame_ready = false;
         }
         if (draw_bottom) {

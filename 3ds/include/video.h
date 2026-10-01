@@ -22,13 +22,5 @@ void video_exit(void);
 bool video_decode_and_present(const uint8_t *data, uint32_t size,
                               uint32_t received_ms, uint8_t codec,
                               bool present);
-
-/*
- * Present the most recently prepared MPEG texture through the PICA200.
- * Returns true when the current prepared frame uses the GPU texture path.
- * JPEG and software fallback frames still use the classic framebuffer path.
- */
-bool video_present_gpu(void);
-
 void video_note_received_bytes(uint32_t frame_size);
 void video_get_stats(VideoStats *stats);

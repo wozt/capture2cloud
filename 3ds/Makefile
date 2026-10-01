@@ -27,7 +27,7 @@ CFLAGS  += $(INCLUDE) -D__3DS__
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS := -g $(ARCH)
 LDFLAGS := -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS    := -lavcodec -lswscale -lavutil -lopus -ljpeg -lcitro2d -lcitro3d -lctru -lm
+LIBS    := -lavcodec -lswscale -lavutil -lopus -ljpeg -lctru -lm
 LIBDIRS := $(FFMPEG_PREFIX) $(CTRULIB) $(PORTLIBS)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))

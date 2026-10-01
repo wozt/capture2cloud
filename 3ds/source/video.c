@@ -2,7 +2,6 @@
 #include "c2s_protocol.h"
 
 #include <3ds.h>
-#include <citro2d.h>
 
 #include <stdio.h>
 #include <jpeglib.h>
@@ -19,14 +18,6 @@
 #define VIDEO_WIDTH 400
 #define VIDEO_HEIGHT 240
 
-/*
- * PICA200 textures must be power-of-two sized.  The actual image remains
- * 400x240; Y2R writes each 8-line tiled band into the 512-wide texture and
- * skips the unused 112-pixel tail using transfer_gap.
- */
-#define VIDEO_TEX_WIDTH 512
-#define VIDEO_TEX_HEIGHT 256
-
 typedef struct {
     struct jpeg_error_mgr base;
     jmp_buf jump;
@@ -37,21 +28,6 @@ static DecodeError g_error;
 static uint16_t *g_pixels;
 static uint8_t *g_yuv420;
 static bool g_y2r;
-
-/*
- * MPEG presentation path:
- *
- * FFmpeg YUV420 -> Y2R BLOCK_8_BY_8 -> RGB565 texture -> Citro2D.
- *
- * The texture lives in linear memory so Y2R can DMA straight into it.
- */
-static bool g_gpu_video;
-static bool g_gpu_frame_ready;
-static C3D_Tex g_video_texture;
-static C3D_RenderTarget *g_video_target;
-static Tex3DS_SubTexture g_video_subtexture;
-static C2D_Image g_video_image;
-
 static AVCodecContext *g_video_decoder;
 static AVFrame *g_video_frame;
 static struct SwsContext *g_video_scale;
@@ -202,53 +178,6 @@ bool video_init(void)
             y2rExit();
         }
     }
-
-    /*
-     * Create a tiny GPU presentation pipeline for the top screen.
-     *
-     * C3D_TexInit() uses linear memory by default, which is exactly what
-     * Y2R needs for DMA output.  Y2R will fill only the 400x240 visible
-     * portion; the remainder is texture padding.
-     */
-    if (g_y2r &&
-        C3D_Init(C3D_DEFAULT_CMDBUF_SIZE) &&
-        C2D_Init(32)) {
-        C2D_Prepare();
-
-        g_video_target = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
-
-        if (g_video_target &&
-            C3D_TexInit(&g_video_texture,
-                        VIDEO_TEX_WIDTH, VIDEO_TEX_HEIGHT,
-                        GPU_RGB565)) {
-            C3D_TexSetFilter(&g_video_texture, GPU_NEAREST, GPU_NEAREST);
-
-            memset(g_video_texture.data, 0,
-                   VIDEO_TEX_WIDTH * VIDEO_TEX_HEIGHT * sizeof(uint16_t));
-
-            /*
-             * Texture coordinates are vertically inverted in Citro2D.
-             * Y2R writes starting at the first tiled row of the texture.
-             */
-            g_video_subtexture.width = VIDEO_WIDTH;
-            g_video_subtexture.height = VIDEO_HEIGHT;
-            g_video_subtexture.left = 0.0f;
-            g_video_subtexture.right =
-                (float)VIDEO_WIDTH / (float)VIDEO_TEX_WIDTH;
-            g_video_subtexture.top =
-                (float)VIDEO_HEIGHT / (float)VIDEO_TEX_HEIGHT;
-            g_video_subtexture.bottom = 0.0f;
-
-            g_video_image.tex = &g_video_texture;
-            g_video_image.subtex = &g_video_subtexture;
-
-            g_gpu_video = true;
-        } else {
-            C2D_Fini();
-            C3D_Fini();
-        }
-    }
-
     g_window_start = osGetTime();
     video_clear();
     return true;
@@ -264,14 +193,6 @@ void video_clear(void)
 
 void video_exit(void)
 {
-    if (g_gpu_video) {
-        C3D_TexDelete(&g_video_texture);
-        g_gpu_video = false;
-        g_gpu_frame_ready = false;
-        C2D_Fini();
-        C3D_Fini();
-    }
-
     if (g_y2r) y2rExit();
     g_y2r = false;
     linearFree(g_yuv420);
@@ -366,13 +287,7 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
         parameters.input_format = INPUT_YUV420_INDIV_8;
         parameters.output_format = OUTPUT_RGB_16_565;
         parameters.rotation = ROTATION_NONE;
-
-        /*
-         * MPEG frames go directly into PICA200 texture layout.
-         * JPEG/software fallbacks continue to use the old linear RGB path.
-         */
-        parameters.block_alignment =
-            g_gpu_video ? BLOCK_8_BY_8 : BLOCK_LINE;
+        parameters.block_alignment = BLOCK_LINE;
         parameters.input_line_width = VIDEO_WIDTH;
         parameters.input_lines = VIDEO_HEIGHT;
         parameters.standard_coefficient = COEFFICIENT_ITU_R_BT_601_SCALING;
@@ -403,34 +318,10 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
                 g_video_frame->linesize[2] - VIDEO_WIDTH / 2);
         }
         if (R_SUCCEEDED(result)) {
-            if (g_gpu_video) {
-                /*
-                 * BLOCK_8_BY_8 is already the native texture layout.
-                 *
-                 * One transfer is one 8-line band:
-                 *   visible: 400 * 8 * 2 = 6400 bytes
-                 *   texture: 512 * 8 * 2 = 8192 bytes
-                 *
-                 * The 1792-byte gap advances DMA to the next texture band.
-                 */
-                const int transfer_unit =
-                    VIDEO_WIDTH * (int)sizeof(uint16_t) * 8;
-                const int transfer_gap =
-                    (VIDEO_TEX_WIDTH - VIDEO_WIDTH) *
-                    (int)sizeof(uint16_t) * 8;
-
-                result = Y2RU_SetReceiving(
-                    g_video_texture.data, rgb_size,
-                    transfer_unit, transfer_gap);
-            } else {
-                /*
-                 * Four rows per DMA transfer avoids the documented early
-                 * completion interrupt at exactly 400x240.
-                 */
-                result = Y2RU_SetReceiving(
-                    g_pixels, rgb_size,
-                    VIDEO_WIDTH * (int)sizeof(uint16_t) * 4, 0);
-            }
+            /* Four rows per DMA transfer avoids the documented early
+             * completion interrupt at exactly 400x240. */
+            result = Y2RU_SetReceiving(g_pixels, rgb_size,
+                                       VIDEO_WIDTH * (int)sizeof(uint16_t) * 4, 0);
         }
         if (R_SUCCEEDED(result)) {
             result = Y2RU_StartConversion();
@@ -443,27 +334,12 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
         if (finished) svcCloseHandle(finished);
         if (R_SUCCEEDED(result)) {
             g_stats.hardware_conversion = true;
-
-            if (g_gpu_video) {
-                /*
-                 * Y2R DMA has written the texture.  Invalidate any stale CPU
-                 * cache lines before the GPU samples it.
-                 */
-                GSPGPU_InvalidateDataCache(
-                    g_video_texture.data,
-                    VIDEO_TEX_WIDTH * VIDEO_TEX_HEIGHT *
-                        sizeof(uint16_t));
-
-                g_gpu_frame_ready = true;
-            }
-
             return true;
         }
         if (conversion_started) Y2RU_StopConversion();
     }
 
     g_stats.hardware_conversion = false;
-    g_gpu_frame_ready = false;
 
     g_video_scale = sws_getCachedContext(
         g_video_scale,
@@ -514,19 +390,6 @@ bool video_decode_and_present(const uint8_t *data, uint32_t size,
         return true;
     }
 
-    /*
-     * MPEG + Y2R texture path is already completely prepared for the GPU.
-     * Do not touch 96,000 pixels on ARM11 just to transpose them again.
-     */
-    if (g_gpu_frame_ready) {
-        uint32_t upload_end = osGetTime();
-        g_upload_total_ms += upload_end - decode_end;
-        g_window_displayed++;
-        g_stats.local_latency_ms = upload_end - received_ms;
-        refresh_rates(upload_end);
-        return true;
-    }
-
     u16 framebuffer_width = 0;
     u16 framebuffer_height = 0;
     uint16_t *framebuffer = (uint16_t *)gfxGetFramebuffer(
@@ -555,27 +418,6 @@ bool video_decode_and_present(const uint8_t *data, uint32_t size,
     g_window_displayed++;
     g_stats.local_latency_ms = upload_end - received_ms;
     refresh_rates(upload_end);
-    return true;
-}
-
-bool video_present_gpu(void)
-{
-    if (!g_gpu_video || !g_gpu_frame_ready || !g_video_target) {
-        return false;
-    }
-
-    /*
-     * Citro2D handles the physical sideways framebuffer layout for us.
-     * The actual video texture already contains native PICA200 8x8 tiles.
-     */
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-    C2D_TargetClear(g_video_target, C2D_Color32(0, 0, 0, 255));
-    C2D_SceneBegin(g_video_target);
-    C2D_DrawImageAt(g_video_image, 0.0f, 0.0f, 0.0f,
-                    NULL, 1.0f, 1.0f);
-    C3D_FrameEnd(0);
-
-    g_gpu_frame_ready = false;
     return true;
 }
 
