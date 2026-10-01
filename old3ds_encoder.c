@@ -121,7 +121,7 @@ static int open_video(Old3dsEncoder *encoder)
          * This changes packetisation inside the MPEG picture, not the
          * visual quality or the Capture2Cloud wire protocol.
          */
-        encoder->video->slices = 2;
+        encoder->video->slices = 4;
     }
     /* max_b_frames=0 removes reordering latency for all three MPEG
      * comparison codecs without relying on codec-specific flags. */
