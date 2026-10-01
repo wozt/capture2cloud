@@ -112,15 +112,15 @@ static int open_video(Old3dsEncoder *encoder)
         encoder->video->max_qdiff = 3;
         encoder->video->qcompress = 0.5f;
         encoder->video->mb_decision = FF_MB_DECISION_SIMPLE;
+    }
 
-        /*
-         * Split each 400x240 MPEG-1 picture into two independent slices.
-         * The Old 3DS decoder can then reconstruct both halves in
-         * parallel on its two ARM11 cores.
-         *
-         * This changes packetisation inside the MPEG picture, not the
-         * visual quality or the Capture2Cloud wire protocol.
-         */
+    /*
+     * MPEG-1 and MPEG-2 decoders both support FFmpeg slice threading.
+     * Four slices give the two Old 3DS ARM11 workers enough granularity
+     * to balance uneven high-motion regions without creating more threads.
+     */
+    if (encoder->codec == C2S_CODEC_OLD3DS_MPEG1 ||
+        encoder->codec == C2S_CODEC_OLD3DS_MPEG2) {
         encoder->video->slices = 4;
     }
     /* max_b_frames=0 removes reordering latency for all three MPEG

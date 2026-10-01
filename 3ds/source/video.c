@@ -141,9 +141,24 @@ static bool open_video_decoder(uint8_t codec)
      * Decode those slices in parallel.  Keep MPEG-2/MPEG-4 single
      * threaded until their stream layout is explicitly tuned for it.
      */
-    if (codec == C2S_CODEC_OLD3DS_MPEG1) {
+    if (codec == C2S_CODEC_OLD3DS_MPEG1 ||
+        codec == C2S_CODEC_OLD3DS_MPEG2) {
+        /*
+         * Capture2Cloud emits four slices per picture.  FFmpeg distributes
+         * them over two workers, improving load balancing on Old 3DS.
+         */
         g_video_decoder->thread_count = 2;
         g_video_decoder->thread_type = FF_THREAD_SLICE;
+    } else if (codec == C2S_CODEC_OLD3DS_MPEG4) {
+        /*
+         * FFmpeg's MPEG-4 Part 2 decoder does not advertise slice threading.
+         * It does support frame threading, so use two workers there instead.
+         *
+         * This may trade a little pipeline latency for throughput; keep it
+         * isolated to MPEG-4 so MPEG-1/MPEG-2 retain their low-latency path.
+         */
+        g_video_decoder->thread_count = 2;
+        g_video_decoder->thread_type = FF_THREAD_FRAME;
     } else {
         g_video_decoder->thread_count = 1;
     }
