@@ -20,10 +20,6 @@ fi
 git -C "$source_dir" fetch --depth=1 origin "$commit"
 git -C "$source_dir" checkout --detach "$commit"
 
-# Old 3DS-specific ARMv6 MPEG DSP optimisations.  Keep these changes
-# reproducible instead of modifying build-tools/ffmpeg-src by hand.
-python3 "$script_dir/patch-ffmpeg-old3ds.py" "$source_dir"
-
 cd "$source_dir"
 make distclean >/dev/null 2>&1 || true
 ./configure \
