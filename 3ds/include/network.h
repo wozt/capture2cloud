@@ -26,6 +26,8 @@ typedef struct {
     uint32_t last_receive_ms;
     uint32_t queue_depth;
     uint8_t video_codec;
+    uint8_t audio_codec;
+    uint8_t worker_core;
     float video_fps;
     float video_kbps;
     float receive_ms;
@@ -43,7 +45,11 @@ void network_get_stats(NetworkStats *stats);
 bool network_acquire_video(const uint8_t **data, uint32_t *size,
                            uint32_t *received_ms, uint8_t *codec, int *slot);
 void network_release_video(int slot);
-bool network_take_audio(uint8_t *data, uint32_t capacity, uint32_t *size);
+bool network_take_audio(uint8_t *data, uint32_t capacity, uint32_t *size,
+                        uint8_t *codec);
+uint32_t network_audio_depth(void);
+bool network_peek_audio_codec(uint8_t *codec);
+void network_clear_audio(void);
 
 void network_send_input(const int8_t state[C2S_PAD_SLOTS]);
 void network_send_home(void);

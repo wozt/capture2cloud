@@ -19,9 +19,14 @@
 
 typedef struct SwitchStream SwitchStream;
 
-/* Starts listening. `port` 0 uses C2S_DEFAULT_PORT. Returns NULL and
- * reports on stderr if the port cannot be bound. */
-SwitchStream *switch_stream_start(WebStream *ws, uint16_t port);
+/* Starts the native listeners. A zero value selects that client's
+ * protocol default. Returns NULL only when the primary native port
+ * cannot be bound; a dedicated client port may fail independently. */
+SwitchStream *switch_stream_start(WebStream *ws,
+                                  uint16_t native_port,
+                                  uint16_t drc_port,
+                                  uint16_t wiiu_port,
+                                  uint16_t old3ds_port);
 void switch_stream_stop(SwitchStream *s);
 
 /* Called when a frame had to be skipped for a client. Skipping breaks
@@ -68,6 +73,7 @@ void switch_stream_set_demand_changed(SwitchStream *s, void (*cb)(void *ctx), vo
 #define SS_STREAM_WEB  2
 #define SS_STREAM_DRC  3
 #define SS_STREAM_WIIU 4
+#define SS_STREAM_OLD3DS 5
 
 void switch_stream_announce_stream(SwitchStream *s, int slot,
                                    uint16_t width, uint16_t height);
@@ -107,7 +113,7 @@ int switch_stream_max_clients(void);
  * the other group is watching a different encode, and bytes from the
  * wrong chain do not fail cleanly -- they decode into a picture. */
 void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, uint32_t size,
-                              int keyframe);
+                              int keyframe, uint8_t codec);
 /* Opus for legacy/native/browser clients that negotiated it. */
 void switch_stream_send_audio(SwitchStream *s, const uint8_t *data, uint32_t size);
 

@@ -33,6 +33,7 @@ typedef enum {
     GTK_SHELL_CLIENT_NATIVE,        /* Switch homebrew, Android app */
     GTK_SHELL_CLIENT_WIIU_PAD,      /* a real GamePad, over the radio */
     GTK_SHELL_CLIENT_WIIU_CONSOLE,  /* homebrew running on a Wii U */
+    GTK_SHELL_CLIENT_OLD3DS,        /* Old 3DS / Old 2DS homebrew */
     GTK_SHELL_CLIENT_COUNT
 } GtkShellClient;
 

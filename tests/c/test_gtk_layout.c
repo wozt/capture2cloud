@@ -191,6 +191,7 @@ static void on_pair(void *u, const char *pin) { (void)u; (void)pin; }
 int gamepad_bridge_link_up(void) { return 0; }
 double gamepad_bridge_report_rate(void) { return 0.0; }
 int gamepad_bridge_console(void) { return 0; }
+void gamepad_bridge_reset(void) {}
 const char *gamepad_bridge_backend_name(void) { return "titan"; }
 int gamepad_bridge_backend_count(void) { return 3; }
 const char *gamepad_bridge_backend_name_at(int i) {
@@ -273,6 +274,9 @@ int output_pcble_start_session(
 void output_pcble_stop_session(void) {}
 int output_pcble_ipc_up(void) { return 0; }
 int output_pcble_session_running(void) { return 0; }
+int output_pcble_reconnect_pending(void) { return 0; }
+int output_pcble_reconnect_active(void) { return 0; }
+int output_pcble_session_stopping(void) { return 0; }
 
 void output_pcble_peer(char *out, size_t out_size)
 {
@@ -370,6 +374,17 @@ int main(void) {
         strcmp(
             gtk_label_get_text(GTK_LABEL(g_c.overview_status)),
             "starting...") != 0);
+
+    t_ok(
+        "all dedicated native-client port controls exist",
+        g_c.wiiu_pad_port &&
+        g_c.wiiu_console_port &&
+        g_c.old3ds_port);
+
+    t_eq_int(
+        "Old3DS port is loaded into its own tab",
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(g_c.old3ds_port)),
+        5085);
 
     /*
      * Backend-specific controls must really appear when pcble is selected.

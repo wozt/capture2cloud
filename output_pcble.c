@@ -24,6 +24,7 @@
 #define PCBLE_KEEPALIVE_MS 100
 #define PCBLE_RETRY_MS 250
 #define PCBLE_HOME_MS 150
+#define PCBLE_CAPTURE_MS 150
 #define PCBLE_REPLY_MAX 32768
 
 static SDL_mutex *g_lock;
@@ -38,6 +39,7 @@ static int g_link_up;
 static int8_t g_state[CONTROLLER_STATE_COUNT];
 
 static Uint32 g_home_until;
+static Uint32 g_capture_until;
 static Uint32 g_last_attempt;
 static Uint32 g_last_send;
 static Uint32 g_rate_started;
@@ -138,6 +140,7 @@ static uint16_t stick_axis(
 static void build_nintendo_state(
     const int8_t state[CONTROLLER_STATE_COUNT],
     int home_override,
+    int capture_override,
     uint8_t buttons[3],
     uint16_t sticks[4])
 {
@@ -158,6 +161,8 @@ static void build_nintendo_state(
     if (pressed(state, CONTROLLER_L3))     buttons[1] |= 1u << 3;
     if (pressed(state, CONTROLLER_HOME) || home_override)
         buttons[1] |= 1u << 4;
+    if (capture_override)
+        buttons[1] |= 1u << 5; /* Capture */
 
     if (pressed(state, CONTROLLER_DOWN))  buttons[2] |= 1u << 0;
     if (pressed(state, CONTROLLER_UP))    buttons[2] |= 1u << 1;
@@ -359,6 +364,7 @@ static void socket_path(char *out, size_t out_size, const char *name)
 static int send_input(
     const int8_t state[CONTROLLER_STATE_COUNT],
     int home_override,
+    int capture_override,
     int pair_mode,
     int *initialized,
     char *peer,
@@ -370,6 +376,7 @@ static int send_input(
     build_nintendo_state(
         state,
         home_override,
+        capture_override,
         buttons,
         sticks);
 
@@ -468,6 +475,7 @@ static int worker(void *unused)
         int8_t state[CONTROLLER_STATE_COUNT];
         int should_send = 0;
         int home = 0;
+        int capture = 0;
         int pair_mode = 0;
         int was_ipc_up = 0;
 
@@ -497,6 +505,9 @@ static int worker(void *unused)
             home =
                 g_home_until != 0 &&
                 (Sint32)(g_home_until - now) > 0;
+            capture =
+                g_capture_until != 0 &&
+                (Sint32)(g_capture_until - now) > 0;
 
             g_dirty = 0;
             g_last_attempt = now;
@@ -516,6 +527,7 @@ static int worker(void *unused)
             send_input(
                 state,
                 home,
+                capture,
                 pair_mode,
                 &initialized,
                 peer,
@@ -645,6 +657,7 @@ static int output_pcble_init(void)
     g_link_up = 0;
     g_peer[0] = '\0';
     g_home_until = 0;
+    g_capture_until = 0;
     g_last_attempt = SDL_GetTicks() - PCBLE_RETRY_MS;
     g_last_send = 0;
     g_rate_started = SDL_GetTicks();
@@ -781,6 +794,15 @@ static void output_pcble_press_home(void)
 
     g_dirty = 1;
 
+    SDL_UnlockMutex(g_lock);
+}
+
+static void output_pcble_press_capture(void)
+{
+    if (!g_lock) return;
+    SDL_LockMutex(g_lock);
+    g_capture_until = SDL_GetTicks() + PCBLE_CAPTURE_MS;
+    g_dirty = 1;
     SDL_UnlockMutex(g_lock);
 }
 
@@ -1971,6 +1993,7 @@ const GamepadOutputBackend *output_pcble_backend(void)
         .update = output_pcble_update,
         .reset = output_pcble_reset,
         .press_home = output_pcble_press_home,
+        .press_capture = output_pcble_press_capture,
         .service = output_pcble_service,
         .link_up = output_pcble_link_up,
         .report_rate = output_pcble_report_rate,

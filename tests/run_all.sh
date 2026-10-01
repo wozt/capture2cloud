@@ -77,7 +77,7 @@ run_c_test_x11() {
             return
         fi
     fi
-    if ! $LOW xvfb-run -a "$BUILD_DIR/$name"; then
+    if ! $LOW env NO_AT_BRIDGE=1 xvfb-run -a "$BUILD_DIR/$name"; then
         failed=1
     fi
 }
@@ -123,7 +123,7 @@ timed "C: h264 encoders"   run_c_test test_h264_encoders "sdl2 gstreamer-1.0 gst
 # a broken layout at run time and never at compile time. Skipped rather
 # than failed where Xvfb is not installed.
 if command -v xvfb-run >/dev/null 2>&1; then
-    timed "C: gtk layout"      run_c_test_x11 test_gtk_layout "sdl2 gtk+-3.0 x11 glib-2.0"
+    timed "C: gtk layout"      run_c_test_x11 test_gtk_layout "sdl2 gtk+-3.0 x11 glib-2.0" "-lm"
 else
     echo "═══ C: gtk layout ═══"; echo "  xvfb-run not installed; skipped"
 fi

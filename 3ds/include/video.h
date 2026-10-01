@@ -13,6 +13,7 @@ typedef struct {
     uint32_t decoded;
     uint32_t decode_errors;
     uint32_t local_latency_ms;
+    bool hardware_conversion;
 } VideoStats;
 
 bool video_init(void);

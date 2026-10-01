@@ -35,6 +35,7 @@ void gamepad_bridge_prepare_console_wake(void);
 int gamepad_bridge_console_wake_ready(void);
 
 void gamepad_bridge_press_home(void);
+void gamepad_bridge_press_capture(void);
 
 /* Advances backend maintenance; safe with or without GTK. */
 void gamepad_bridge_service(void);

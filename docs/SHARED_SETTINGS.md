@@ -34,7 +34,8 @@ So "shared" below means *shared by everyone on the same stream*:
 | **common native H.264** | Switch and Android | `switch_*[SS_STREAM_H264]` |
 | **browser WebSocket H.264** | browser WebSocket clients | `switch_*[SS_STREAM_WEB]`; follows the browser profile above |
 | **Wii U GamePad** | PC-side GamePad client | `switch_*[SS_STREAM_DRC]` |
-| **Wii U console** | homebrew on port 5083 | `switch_*[SS_STREAM_WIIU]` |
+| **Wii U console** | homebrew on `WIIU_CONSOLE_PORT` (5083 by default) | `switch_*[SS_STREAM_WIIU]` |
+| **Old 3DS / Old 2DS** | native client on `OLD3DS_PORT` (5085 by default) | `switch_*[SS_STREAM_OLD3DS]`; dedicated 400×240@30 JPEG / MPEG-4 Part 2 encoder |
 
 **The browser row is two encoders, and that is deliberate.** WebRTC is
 served VP8 and the WebSocket is served H.264, because they are two
@@ -70,7 +71,7 @@ shared one — the one row that moved out of the table below.
 | **Transport** (WebRTC / WebSocket) | the host: it runs one | `/transport` | — | — | — |
 | **Capture format** (MJPEG / raw YUYV) | capture card | `/capture-format` | — | — | `capture_mjpeg` |
 | **Adapter output protocol** (xb360 / switch / ps…) | the adapter's own memory | — | — | — | `output_protocol` |
-| **Stream enabled**, **web port**, **native port** | the servers | — | — | — | `stream_enabled`, `web_port`, `switch_port` |
+| **Stream enabled and client ports** | the servers | — | — | — | `stream_enabled`, `web_port`, `switch_port`, `wiiu_pad_port`, `wiiu_console_port`, `old3ds_port` |
 
 Three notes on that table.
 

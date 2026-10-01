@@ -3,11 +3,18 @@
 This native client targets the original Nintendo 3DS, original 3DS XL,
 and original 2DS. It does not require New 3DS CPU features.
 
-The server exposes a dedicated stream on TCP port `5085`. It scales the
-capture to 400x240 and encodes independent baseline JPEG frames at 24 Hz.
-This path is separate from every VP8, H.264, Wii U console, and Wii U
-GamePad encoder. Since each image is independent, a stale frame can be
-dropped without corrupting the next one.
+The server exposes a dedicated 400x240@30 stream on TCP port `5085`.
+The client can switch at runtime between independent baseline JPEG frames
+and low-delay MPEG-4 Part 2. This path is separate from every VP8, H.264,
+Wii U console, and Wii U GamePad encoder. MPEG-4 frames are consumed in
+prediction order; after a loss, both ends wait for a fresh keyframe instead
+of displaying corrupted P-frames.
+
+Audio uses 48 kHz stereo low-delay Opus over UDP port `5084`. Four 5 ms
+network packets are coalesced into each NDSP wave buffer to avoid underruns
+at packet boundaries without increasing network packet latency. Network and
+audio workers use CPU1 while video decoding stays on CPU0; MPEG-4 colour
+conversion uses the 3DS Y2R hardware.
 
 ## Build
 

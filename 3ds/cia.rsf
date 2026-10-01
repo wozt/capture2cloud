@@ -122,6 +122,7 @@ AccessControlInfo:
     - ptm:u
     - soc:U
     - ssl:C
+    - y2r:u
 
 SystemControlInfo:
   SaveDataSize: 0KB

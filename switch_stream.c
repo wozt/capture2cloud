@@ -50,7 +50,7 @@
  * produces, at 864x480 and a quantiser of 32, none of it negotiable.
  * Nothing else can be on this stream and it can be on nothing else.
  */
-#define SS_STREAM_COUNT 5
+#define SS_STREAM_COUNT 6
 
 /*
  * Four was sized for native clients, back when a browser could not
@@ -175,10 +175,17 @@ typedef struct {
     int is_ws;
     int on_drc_port;   /* arrived on the GamePad's own port */
     int on_wiiu_port;  /* arrived on the Wii U console's own port */
+    int on_old3ds_port; /* arrived on the Old 3DS / Old 2DS port */
+    /* MPEG-4 Part 2 pictures after a dropped P-frame are unusable until
+     * the next I-frame.  Keep this peer parked at a clean boundary rather
+     * than forwarding corruption while a replacement keyframe is made. */
+    int waiting_keyframe;
 
     /* This client explicitly negotiated raw S16LE audio. */
     int pcm_audio;
     int pcm_udp;
+    int opus_udp;
+    int adpcm_udp;
 
     /*
      * Native peer IPv4 in network byte order.
@@ -217,6 +224,7 @@ struct SwitchStream {
     int listen_fd;
     int drc_listen_fd;   /* the GamePad's own port */
     int wiiu_listen_fd;  /* the Wii U console's own TCP port */
+    int old3ds_listen_fd;/* Old 3DS / Old 2DS JPEG port */
 
     /*
      * Connectionless PCM output to Wii U consoles.
@@ -227,6 +235,13 @@ struct SwitchStream {
      */
     int audio_udp_fd;
     uint32_t pcm_sequence;
+    uint32_t opus_sequence;
+    uint32_t adpcm_sequence;
+    int16_t adpcm_pcm[C2S_ADPCM_FRAMES * 2];
+    uint16_t adpcm_frames;
+    uint8_t adpcm_index_left;
+    uint8_t adpcm_index_right;
+    uint8_t old3ds_codec;
 
     uint16_t port;
     uint16_t width, height;
@@ -321,14 +336,16 @@ static int client_slot(const SsClient *c) {
     /* Same rule, same reason: a console on a television wants
      * 720p60 and a phone on 5081 may not. */
     if (c->on_wiiu_port) return SS_STREAM_WIIU;
+    if (c->on_old3ds_port) return SS_STREAM_OLD3DS;
     return codec_slot(c->codec);
 }
 
 /* What a stream is encoded in. The browsers' stream and the console's
  * are both H.264; they differ in size, not in codec. */
-static uint8_t slot_codec(int slot) {
+static uint8_t slot_codec(const SwitchStream *s, int slot) {
     if (slot == SS_STREAM_VP8) return C2S_CODEC_VP8;
     if (slot == SS_STREAM_DRC) return C2S_CODEC_DRC_H264;
+    if (slot == SS_STREAM_OLD3DS) return s->old3ds_codec;
     return C2S_CODEC_H264;
 }
 /* slot_filter < 0 means every client; otherwise only those on that
@@ -362,7 +379,7 @@ void switch_stream_announce_stream(SwitchStream *s, int slot,
     memset(&info, 0, sizeof(info));
     info.width = width;
     info.height = height;
-    info.video_codec = slot_codec(slot);
+    info.video_codec = slot_codec(s, slot);
     s->group_width[slot] = width;
     s->group_height[slot] = height;
     s->group_stream_known[slot] = 1;
@@ -385,7 +402,7 @@ void switch_stream_announce_shared(SwitchStream *s, int slot, uint16_t width, ui
                                    uint16_t fps, uint16_t bitrate_kbps,
                                    uint8_t capture_mjpeg) {
     if (!s || slot < 0 || slot >= SS_STREAM_COUNT) return;
-    const uint8_t codec = slot_codec(slot);
+    const uint8_t codec = slot_codec(s, slot);
     C2sShared sh;
     memset(&sh, 0, sizeof(sh));
     sh.width = width;
@@ -516,7 +533,7 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
          *  2 = PCM/TCP fallback only
          */
         if (pcm_filter == 0 &&
-            c->pcm_audio) {
+            (c->pcm_audio || c->opus_udp || c->adpcm_udp)) {
             continue;
         }
 
@@ -535,6 +552,14 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
             drop_client(s, i, "connection gone");
             continue;
         }
+        const int predictive_old3ds =
+            type == C2S_MSG_VIDEO && c->on_old3ds_port &&
+            c->codec == C2S_CODEC_OLD3DS_MPEG4;
+        if (predictive_old3ds && c->waiting_keyframe &&
+            !(flags & C2S_FLAG_KEYFRAME)) {
+            skipped = 1;
+            continue;
+        }
         /* What the kernel has accepted but not yet put on the wire. A
          * frame added on top of a backlog arrives late by definition, so
          * it is skipped and the next one takes its place -- the client
@@ -542,9 +567,32 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
          * behind it. */
         if (type == C2S_MSG_VIDEO) {
             int unsent = 0;
+            uint32_t client_allowance = allowance;
+            if (c->on_old3ds_port) {
+                if (predictive_old3ds) {
+                    /* One MPEG I-frame is commonly 35-45 KB.  An 8 KB
+                     * threshold therefore dropped the P-frame after
+                     * every perfectly healthy keyframe and immediately
+                     * invalidated the prediction chain.  Allow one full
+                     * recent frame plus modest headroom, still capped to
+                     * well below a second of video. */
+                    client_allowance = s->max_frame_bytes * 2u + 8192u;
+                    if (client_allowance < 49152u) client_allowance = 49152u;
+                    if (client_allowance > 131072u) client_allowance = 131072u;
+                } else {
+                    /* JPEG pictures are independent.  One complete
+                     * recent picture plus headroom gives the WLAN one
+                     * scheduling hiccup without building a seconds-long
+                     * queue; 8 KiB was smaller than a normal picture. */
+                    client_allowance = s->max_frame_bytes + 8192u;
+                    if (client_allowance < 24576u) client_allowance = 24576u;
+                    if (client_allowance > 65536u) client_allowance = 65536u;
+                }
+            }
 
             if (ioctl(c->fd, TIOCOUTQ, &unsent) == 0 &&
-                unsent > (int)allowance) {
+                unsent > (int)client_allowance) {
+                if (predictive_old3ds) c->waiting_keyframe = 1;
                 skipped = 1;
                 continue;
             }
@@ -562,6 +610,7 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
              * flight instead of intentionally creating a hole.
              */
             if (type != C2S_MSG_AUDIO) {
+                if (predictive_old3ds) c->waiting_keyframe = 1;
                 skipped = 1;
                 continue;
             }
@@ -659,6 +708,8 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
 
         if (flush_pending(c) != 0) {
             drop_client(s, i, "connection gone");
+        } else if (predictive_old3ds && (flags & C2S_FLAG_KEYFRAME)) {
+            c->waiting_keyframe = 0;
         }
     }
     SDL_UnlockMutex(s->mutex);
@@ -682,7 +733,9 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
                             "behind (allowance %u B, largest frame %u B)\n",
                     s->skipped_frames, allowance, s->max_frame_bytes);
         }
-        if (s->keyframe_cb && t - s->last_keyframe_ms >= SS_KEYFRAME_MIN_INTERVAL_MS) {
+        if ((slot_filter != SS_STREAM_OLD3DS ||
+             s->old3ds_codec == C2S_CODEC_OLD3DS_MPEG4) && s->keyframe_cb &&
+            t - s->last_keyframe_ms >= SS_KEYFRAME_MIN_INTERVAL_MS) {
             s->last_keyframe_ms = t;
             s->keyframe_cb(s->keyframe_ctx);
         }
@@ -705,10 +758,14 @@ static void broadcast(SwitchStream *s, int slot_filter,
 
 
 void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, uint32_t size,
-                              int keyframe) {
+                              int keyframe, uint8_t codec) {
     /* Only to the clients on that stream. The others are watching a
      * different encode and would decode these bytes as their own. */
-    broadcast(s, slot, C2S_MSG_VIDEO, keyframe ? C2S_FLAG_KEYFRAME : 0, data, size);
+    uint8_t flags = keyframe ? C2S_FLAG_KEYFRAME : 0;
+    if (slot == SS_STREAM_OLD3DS && codec == C2S_CODEC_OLD3DS_MPEG4) {
+        flags |= C2S_FLAG_OLD3DS_MPEG4;
+    }
+    broadcast(s, slot, C2S_MSG_VIDEO, flags, data, size);
 }
 
 /* How many clients are watching one of the two codecs. The pipeline
@@ -849,6 +906,147 @@ void switch_stream_send_audio(SwitchStream *s,
         data,
         size,
         0);
+
+    if (!s || !data || !size || size > C2S_OPUS_UDP_MAX_BYTES ||
+        s->audio_udp_fd < 0) return;
+
+    uint32_t peers[SS_MAX_CLIENTS];
+    int peer_count = 0;
+    uint32_t sequence = 0;
+    SDL_LockMutex(s->mutex);
+    for (int i = 0; i < SS_MAX_CLIENTS; i++) {
+        const SsClient *c = &s->clients[i];
+        if (c->in_use && c->handshake_done && c->on_old3ds_port &&
+            c->opus_udp && c->peer_ipv4 != 0) {
+            peers[peer_count++] = c->peer_ipv4;
+        }
+    }
+    if (peer_count) sequence = s->opus_sequence++;
+    SDL_UnlockMutex(s->mutex);
+    if (!peer_count) return;
+
+    uint8_t packet[sizeof(C2sOpusUdpHeader) + C2S_OPUS_UDP_MAX_BYTES];
+    C2sOpusUdpHeader header = {
+        .magic = c2s_le32(C2S_OPUS_UDP_MAGIC),
+        .sequence = c2s_le32(sequence),
+        .bytes = c2s_le16((uint16_t)size),
+        .reserved = 0,
+    };
+    memcpy(packet, &header, sizeof(header));
+    memcpy(packet + sizeof(header), data, size);
+    for (int i = 0; i < peer_count; i++) {
+        struct sockaddr_in destination;
+        memset(&destination, 0, sizeof(destination));
+        destination.sin_family = AF_INET;
+        destination.sin_addr.s_addr = peers[i];
+        destination.sin_port = htons(C2S_AUDIO_UDP_PORT);
+        (void)sendto(s->audio_udp_fd, packet, sizeof(header) + size,
+                     MSG_DONTWAIT | MSG_NOSIGNAL,
+                     (struct sockaddr *)&destination, sizeof(destination));
+    }
+}
+
+static uint8_t old3ds_adpcm_nibble(int16_t sample, int *predictor, int *index)
+{
+    static const int step_table[89] = {
+        7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
+        34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+        130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371,
+        408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166,
+        1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024,
+        3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845,
+        8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
+        20350, 22385, 24623, 27086, 29794, 32767
+    };
+    static const int index_adjust[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+    const int step = step_table[*index];
+    int difference = (int)sample - *predictor;
+    uint8_t code = 0;
+    if (difference < 0) {
+        code = 8;
+        difference = -difference;
+    }
+    int delta = step >> 3;
+    if (difference >= step) {
+        code |= 4;
+        difference -= step;
+        delta += step;
+    }
+    if (difference >= (step >> 1)) {
+        code |= 2;
+        difference -= step >> 1;
+        delta += step >> 1;
+    }
+    if (difference >= (step >> 2)) {
+        code |= 1;
+        delta += step >> 2;
+    }
+    *predictor += (code & 8) ? -delta : delta;
+    if (*predictor < -32768) *predictor = -32768;
+    if (*predictor > 32767) *predictor = 32767;
+    *index += index_adjust[code & 7];
+    if (*index < 0) *index = 0;
+    if (*index > 88) *index = 88;
+    return code;
+}
+
+static void send_old3ds_adpcm(SwitchStream *s)
+{
+    uint32_t peers[SS_MAX_CLIENTS];
+    int peer_count = 0;
+    uint32_t sequence = 0;
+
+    SDL_LockMutex(s->mutex);
+    for (int i = 0; i < SS_MAX_CLIENTS; i++) {
+        const SsClient *c = &s->clients[i];
+        if (c->in_use && c->handshake_done && c->on_old3ds_port &&
+            c->adpcm_udp && c->peer_ipv4 != 0) {
+            peers[peer_count++] = c->peer_ipv4;
+        }
+    }
+    if (peer_count) sequence = s->adpcm_sequence++;
+    SDL_UnlockMutex(s->mutex);
+    if (!peer_count) return;
+
+    uint8_t packet[sizeof(C2sAdpcmUdpHeader) + C2S_ADPCM_MAX_BYTES];
+    C2sAdpcmUdpHeader header;
+    memset(&header, 0, sizeof(header));
+    header.magic = c2s_le32(C2S_ADPCM_UDP_MAGIC);
+    header.sequence = c2s_le32(sequence);
+    header.frames = c2s_le16(C2S_ADPCM_FRAMES);
+    header.bytes = c2s_le16(C2S_ADPCM_MAX_BYTES);
+    header.predictor_left = (int16_t)c2s_le16((uint16_t)s->adpcm_pcm[0]);
+    header.predictor_right = (int16_t)c2s_le16((uint16_t)s->adpcm_pcm[1]);
+    header.index_left = s->adpcm_index_left;
+    header.index_right = s->adpcm_index_right;
+    memcpy(packet, &header, sizeof(header));
+
+    int left_predictor = s->adpcm_pcm[0];
+    int right_predictor = s->adpcm_pcm[1];
+    int left_index = s->adpcm_index_left;
+    int right_index = s->adpcm_index_right;
+    uint8_t *encoded = packet + sizeof(header);
+    for (int frame = 1; frame < C2S_ADPCM_FRAMES; frame++) {
+        const uint8_t left = old3ds_adpcm_nibble(
+            s->adpcm_pcm[frame * 2], &left_predictor, &left_index);
+        const uint8_t right = old3ds_adpcm_nibble(
+            s->adpcm_pcm[frame * 2 + 1], &right_predictor, &right_index);
+        encoded[frame - 1] = (uint8_t)(left | (right << 4));
+    }
+    s->adpcm_index_left = (uint8_t)left_index;
+    s->adpcm_index_right = (uint8_t)right_index;
+
+    const size_t packet_size = sizeof(header) + C2S_ADPCM_MAX_BYTES;
+    for (int i = 0; i < peer_count; i++) {
+        struct sockaddr_in destination;
+        memset(&destination, 0, sizeof(destination));
+        destination.sin_family = AF_INET;
+        destination.sin_addr.s_addr = peers[i];
+        destination.sin_port = htons(C2S_AUDIO_UDP_PORT);
+        (void)sendto(s->audio_udp_fd, packet, packet_size,
+                     MSG_DONTWAIT | MSG_NOSIGNAL,
+                     (struct sockaddr *)&destination, sizeof(destination));
+    }
 }
 
 
@@ -887,6 +1085,22 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
         return;
     }
 
+    /* Old 3DS receives a separate 24 kHz IMA-ADPCM stream.  Average
+     * adjacent 48 kHz samples (a cheap two-tap low-pass) and gather
+     * exactly 20 ms before encoding.  Each UDP block is independent. */
+    const int16_t *pcm = (const int16_t *)data;
+    for (uint32_t input = 0; input + 1 < frames; input += 2) {
+        const uint32_t out = s->adpcm_frames++;
+        s->adpcm_pcm[out * 2] = (int16_t)(((int32_t)pcm[input * 2] +
+                                          pcm[(input + 1) * 2]) / 2);
+        s->adpcm_pcm[out * 2 + 1] = (int16_t)(((int32_t)pcm[input * 2 + 1] +
+                                              pcm[(input + 1) * 2 + 1]) / 2);
+        if (s->adpcm_frames == C2S_ADPCM_FRAMES) {
+            send_old3ds_adpcm(s);
+            s->adpcm_frames = 0;
+        }
+    }
+
     uint32_t peers[SS_MAX_CLIENTS];
     int peer_count = 0;
     uint32_t sequence = 0;
@@ -902,7 +1116,7 @@ void switch_stream_send_audio_pcm(SwitchStream *s,
 
         if (c->in_use &&
             c->handshake_done &&
-            c->on_wiiu_port &&
+            (c->on_wiiu_port || c->on_old3ds_port) &&
             c->pcm_audio &&
             c->pcm_udp &&
             c->peer_ipv4 != 0) {
@@ -993,7 +1207,8 @@ int switch_stream_opus_audio_client_count(SwitchStream *s)
 
         if (c->in_use &&
             c->handshake_done &&
-            !c->pcm_audio) {
+            !c->pcm_audio &&
+            !c->adpcm_udp) {
             count++;
         }
     }
@@ -1066,6 +1281,13 @@ static void handle_hello(SwitchStream *s, int index) {
         drop_client(s, index, "protocol mismatch");
         return;
     }
+    if (c->on_old3ds_port &&
+        !(c2s_le16(hello.reserved) & C2S_HELLO_CAP_OLD3DS)) {
+        ack.accepted = 0;
+        send_all_now(c->fd, &ack, sizeof(ack));
+        drop_client(s, index, "old3ds capability missing");
+        return;
+    }
 
     ack.accepted = 1;
     /*
@@ -1094,7 +1316,9 @@ static void handle_hello(SwitchStream *s, int index) {
      * ordinary H.264 for as long as it took to ask -- which it then
      * did, reporting a stream that "is not what this client asked
      * for" twice on the way to being right. */
-    if (c->codec != C2S_CODEC_DRC_H264) {
+    if (c->codec != C2S_CODEC_DRC_H264 &&
+        c->codec != C2S_CODEC_OLD3DS_JPEG &&
+        c->codec != C2S_CODEC_OLD3DS_MPEG4) {
         c->codec = C2S_CODEC_H264;
     }
     {
@@ -1113,13 +1337,13 @@ static void handle_hello(SwitchStream *s, int index) {
      * Legacy clients leave C2sHello.reserved at zero and therefore keep
      * receiving Opus exactly as before.
      *
-     * Only the Wii U console currently advertises raw PCM support.
+     * The Wii U console and Old 3DS clients can advertise raw PCM.
      */
     const uint16_t audio_caps =
         c2s_le16(hello.reserved);
 
     c->pcm_audio =
-        c->on_wiiu_port &&
+        (c->on_wiiu_port || c->on_old3ds_port) &&
         ((audio_caps &
           C2S_HELLO_CAP_PCM_S16LE) != 0);
 
@@ -1129,19 +1353,41 @@ static void handle_hello(SwitchStream *s, int index) {
         ((audio_caps &
           C2S_HELLO_CAP_PCM_UDP) != 0);
 
+    c->opus_udp =
+        !c->pcm_audio &&
+        c->on_old3ds_port &&
+        s->audio_udp_fd >= 0 &&
+        ((audio_caps & C2S_HELLO_CAP_OPUS_UDP) != 0) &&
+        ((audio_caps & C2S_HELLO_CAP_ADPCM_UDP) == 0);
+
+    c->adpcm_udp =
+        !c->pcm_audio &&
+        c->on_old3ds_port &&
+        s->audio_udp_fd >= 0 &&
+        ((audio_caps & C2S_HELLO_CAP_ADPCM_UDP) != 0);
+
     ack.video_codec = c->codec;
 
     ack.audio_codec =
         c->pcm_audio
             ? C2S_CODEC_PCM_S16LE
-            : C2S_CODEC_OPUS;
+            : c->adpcm_udp
+                ? C2S_CODEC_OLD3DS_ADPCM
+                : C2S_CODEC_OPUS;
 
     if (c->pcm_udp) {
         ack.reserved |=
             C2S_ACK_FLAG_PCM_UDP;
     }
+    if (c->opus_udp) {
+        ack.reserved |= C2S_ACK_FLAG_OPUS_UDP;
+    }
 
-    ack.audio_rate = 48000;
+    if (c->adpcm_udp) {
+        ack.reserved |= C2S_ACK_FLAG_ADPCM_UDP;
+    }
+
+    ack.audio_rate = c->adpcm_udp ? C2S_ADPCM_RATE : 48000;
     ack.audio_channels = 2;
 
     if (send_all_now(c->fd, &ack, sizeof(ack)) != 0) {
@@ -1150,11 +1396,16 @@ static void handle_hello(SwitchStream *s, int index) {
     }
     c->handshake_done = 1;
     c->may_control = ack.may_control;
+    c->waiting_keyframe = c->on_old3ds_port &&
+        s->old3ds_codec == C2S_CODEC_OLD3DS_MPEG4;
 
     /* This client has seen no picture at all, so the next one has to be
      * a keyframe -- otherwise it decodes against frames that went out
      * before it arrived and shows garbage until the interval elapses. */
-    s->keyframe_pending = 1;
+    if (!c->on_old3ds_port ||
+        s->old3ds_codec == C2S_CODEC_OLD3DS_MPEG4) {
+        s->keyframe_pending = 1;
+    }
 
     /* Before it can ask for anything: what the room is already doing.
      * A client told this has no reason to push its own saved settings,
@@ -1170,6 +1421,7 @@ static void handle_hello(SwitchStream *s, int index) {
             c->may_control ? "PLAYER" : "viewer",
             c->on_wiiu_port ? "wii u console" :
             c->on_drc_port ? "wii u gamepad" :
+            c->on_old3ds_port ? "old3ds" :
             c->codec == C2S_CODEC_H264 ? "h264" : "vp8");
 }
 
@@ -1232,7 +1484,7 @@ static void send_group_state(SwitchStream *s, int index) {
         memset(&info, 0, sizeof(info));
         info.width = s->group_width[slot];
         info.height = s->group_height[slot];
-        info.video_codec = slot_codec(slot);
+        info.video_codec = slot_codec(s, slot);
         send_msg_now(c, C2S_MSG_STREAM_INFO, &info, sizeof(info));
     }
     if (s->shared_known[slot]) {
@@ -1338,6 +1590,11 @@ static void handle_messages(SwitchStream *s, int index) {
                     gamepad_bridge_press_home();
                 }
                 break;
+            case C2S_MSG_CAPTURE:
+                if (c->may_control) {
+                    gamepad_bridge_press_capture();
+                }
+                break;
             case C2S_MSG_PROFILE:
                 /* Players only, like the browser's /quality and
                  * /resolution: one encoder feeds this client's whole
@@ -1349,7 +1606,9 @@ static void handle_messages(SwitchStream *s, int index) {
                     C2sProfile p;
                     memcpy(&p, payload, sizeof(p));
                     fprintf(stderr, "switch_stream: client %d (%s) asks for %ux%u@%u, %u kbps\n",
-                            index, c->codec == C2S_CODEC_H264 ? "h264" : "vp8",
+                            index, (c->codec == C2S_CODEC_OLD3DS_JPEG ||
+                                    c->codec == C2S_CODEC_OLD3DS_MPEG4) ? "old3ds" :
+                                   c->codec == C2S_CODEC_H264 ? "h264" : "vp8",
                             p.width, p.height, p.fps, p.bitrate_kbps);
                     if (s->profile_cb) {
                         s->profile_cb(s->profile_ctx, client_slot(c),
@@ -1370,6 +1629,32 @@ static void handle_messages(SwitchStream *s, int index) {
                  * Refusing is what lets the client fall back; accepting
                  * and then sending nothing would look like a dead
                  * stream. */
+                if (c->on_old3ds_port) {
+                    if (h.size == 1 &&
+                        (payload[0] == C2S_CODEC_OLD3DS_JPEG ||
+                         payload[0] == C2S_CODEC_OLD3DS_MPEG4) &&
+                        s->old3ds_codec != payload[0]) {
+                        s->old3ds_codec = payload[0];
+                        if (s->shared_known[SS_STREAM_OLD3DS]) {
+                            s->shared[SS_STREAM_OLD3DS].video_codec = payload[0];
+                        }
+                        for (int peer = 0; peer < SS_MAX_CLIENTS; peer++) {
+                            if (s->clients[peer].in_use &&
+                                s->clients[peer].handshake_done &&
+                                s->clients[peer].on_old3ds_port) {
+                                s->clients[peer].codec = payload[0];
+                                s->clients[peer].waiting_keyframe =
+                                    payload[0] == C2S_CODEC_OLD3DS_MPEG4;
+                                send_group_state(s, peer);
+                            }
+                        }
+                        fprintf(stderr, "switch_stream: old3ds stream now on %s\n",
+                                payload[0] == C2S_CODEC_OLD3DS_MPEG4
+                                    ? "mpeg4" : "jpeg");
+                        codec_changed = 1;
+                    }
+                    break;
+                }
                 if (h.size == 1 && payload[0] == C2S_CODEC_DRC_H264 && !s->drc_available) {
                     fprintf(stderr, "switch_stream: client %d asked for the wii u "
                                     "encode; this host cannot make it\n", index);
@@ -1445,8 +1730,8 @@ static int accept_thread(void *arg) {
     SwitchStream *s = arg;
 
     while (s->running) {
-        struct pollfd pfds[SS_MAX_CLIENTS + 1];
-        int map[SS_MAX_CLIENTS + 1];
+        struct pollfd pfds[SS_MAX_CLIENTS + 4];
+        int map[SS_MAX_CLIENTS + 4];
         int n = 0;
 
         pfds[n].fd = s->listen_fd;
@@ -1469,6 +1754,14 @@ static int accept_thread(void *arg) {
         const int wiiu_pfd = (s->wiiu_listen_fd >= 0) ? n : -1;
         if (s->wiiu_listen_fd >= 0) {
             pfds[n].fd = s->wiiu_listen_fd;
+            pfds[n].events = POLLIN;
+            pfds[n].revents = 0;
+            map[n] = -2;
+            n++;
+        }
+        const int old3ds_pfd = (s->old3ds_listen_fd >= 0) ? n : -1;
+        if (s->old3ds_listen_fd >= 0) {
+            pfds[n].fd = s->old3ds_listen_fd;
             pfds[n].events = POLLIN;
             pfds[n].revents = 0;
             map[n] = -2;
@@ -1498,26 +1791,35 @@ static int accept_thread(void *arg) {
         const int ready = poll(pfds, n, 200);
         if (ready > 0) {
 
-        for (int door = 0; door < 3; door++) {
-            const int pfd = (door == 0) ? 0 : (door == 1) ? drc_pfd : wiiu_pfd;
+        for (int door = 0; door < 4; door++) {
+            const int pfd = (door == 0) ? 0 : (door == 1) ? drc_pfd
+                          : (door == 2) ? wiiu_pfd : old3ds_pfd;
             if (pfd < 0 || !(pfds[pfd].revents & POLLIN)) {
                 continue;
             }
             const int is_drc = (door == 1);
             const int is_wiiu = (door == 2);
+            const int is_old3ds = (door == 3);
 
             struct sockaddr_in peer;
             socklen_t peer_len = sizeof(peer);
             memset(&peer, 0, sizeof(peer));
 
             int fd = accept(is_drc ? s->drc_listen_fd
-                                   : is_wiiu ? s->wiiu_listen_fd : s->listen_fd,
+                                   : is_wiiu ? s->wiiu_listen_fd
+                                   : is_old3ds ? s->old3ds_listen_fd : s->listen_fd,
                             (struct sockaddr *)&peer,
                             &peer_len);
             if (fd >= 0) {
                 int one = 1;
                 setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-                int sndbuf = SS_SOCKET_SNDBUF;
+                /* Old 3DS WLAN/decoder capacity is much smaller than
+                 * the other clients.  A large kernel queue hid almost
+                 * a second of stale JPEG frames from our drop logic. */
+                /* 16 KiB was smaller than an Old3DS keyframe/JPEG.  A
+                 * single partial write then made the next predictive
+                 * frame illegal and forced a new I-frame loop. */
+                int sndbuf = is_old3ds ? 65536 : SS_SOCKET_SNDBUF;
                 setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
                 fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 
@@ -1582,6 +1884,10 @@ static int accept_thread(void *arg) {
                          * decoded by anything else. */
                         s->clients[slot].codec = C2S_CODEC_DRC_H264;
                         s->clients[slot].on_drc_port = 1;
+                    }
+                    if (is_old3ds) {
+                        s->clients[slot].codec = s->old3ds_codec;
+                        s->clients[slot].on_old3ds_port = 1;
                     }
                 }
                 SDL_UnlockMutex(s->mutex);
@@ -1657,14 +1963,25 @@ static int accept_thread(void *arg) {
     return 0;
 }
 
-SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
+SwitchStream *switch_stream_start(WebStream *ws,
+                                  uint16_t native_port,
+                                  uint16_t drc_port,
+                                  uint16_t wiiu_port,
+                                  uint16_t old3ds_port) {
     SwitchStream *s = calloc(1, sizeof(*s));
     if (!s) {
         return NULL;
     }
     s->web = ws;
     s->audio_udp_fd = -1;
-    s->port = port ? port : C2S_DEFAULT_PORT;
+    s->drc_listen_fd = -1;
+    s->wiiu_listen_fd = -1;
+    s->old3ds_listen_fd = -1;
+    s->old3ds_codec = C2S_CODEC_OLD3DS_JPEG;
+    s->port = native_port ? native_port : C2S_DEFAULT_PORT;
+    drc_port = drc_port ? drc_port : C2S_DRC_PORT;
+    wiiu_port = wiiu_port ? wiiu_port : C2S_WIIU_PORT;
+    old3ds_port = old3ds_port ? old3ds_port : C2S_OLD3DS_PORT;
     s->video_codec = C2S_CODEC_VP8;
     s->width = 1280;
     s->height = 720;
@@ -1731,16 +2048,16 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         memset(&drc_addr, 0, sizeof(drc_addr));
         drc_addr.sin_family = AF_INET;
         drc_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        drc_addr.sin_port = htons(C2S_DRC_PORT);
+        drc_addr.sin_port = htons(drc_port);
         if (bind(s->drc_listen_fd, (struct sockaddr *)&drc_addr, sizeof(drc_addr)) != 0 ||
             listen(s->drc_listen_fd, 2) != 0) {
             fprintf(stderr, "switch_stream: no wii u port %u (%s); the other "
                             "clients are unaffected\n",
-                    C2S_DRC_PORT, strerror(errno));
+                    drc_port, strerror(errno));
             close(s->drc_listen_fd);
             s->drc_listen_fd = -1;
         } else {
-            fprintf(stderr, "switch_stream: wii u gamepads on port %u\n", C2S_DRC_PORT);
+            fprintf(stderr, "switch_stream: wii u gamepads on port %u\n", drc_port);
         }
     }
 
@@ -1754,16 +2071,40 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         memset(&wiiu_addr, 0, sizeof(wiiu_addr));
         wiiu_addr.sin_family = AF_INET;
         wiiu_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        wiiu_addr.sin_port = htons(C2S_WIIU_PORT);
+        wiiu_addr.sin_port = htons(wiiu_port);
         if (bind(s->wiiu_listen_fd, (struct sockaddr *)&wiiu_addr, sizeof(wiiu_addr)) != 0 ||
             listen(s->wiiu_listen_fd, 2) != 0) {
             fprintf(stderr, "switch_stream: no wii u console port %u (%s); the other "
                             "clients are unaffected\n",
-                    C2S_WIIU_PORT, strerror(errno));
+                    wiiu_port, strerror(errno));
             close(s->wiiu_listen_fd);
             s->wiiu_listen_fd = -1;
         } else {
-            fprintf(stderr, "switch_stream: wii u consoles on port %u\n", C2S_WIIU_PORT);
+            fprintf(stderr, "switch_stream: wii u consoles on port %u\n", wiiu_port);
+        }
+    }
+
+    /* Old 3DS clients never share a port or encoder with the other
+     * native clients.  Failure is non-fatal for every other family. */
+    s->old3ds_listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s->old3ds_listen_fd >= 0) {
+        setsockopt(s->old3ds_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in old3ds_addr;
+        memset(&old3ds_addr, 0, sizeof(old3ds_addr));
+        old3ds_addr.sin_family = AF_INET;
+        old3ds_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        old3ds_addr.sin_port = htons(old3ds_port);
+        if (bind(s->old3ds_listen_fd, (struct sockaddr *)&old3ds_addr,
+                 sizeof(old3ds_addr)) != 0 ||
+            listen(s->old3ds_listen_fd, 2) != 0) {
+            fprintf(stderr, "switch_stream: no old3ds port %u (%s); the other "
+                            "clients are unaffected\n",
+                    old3ds_port, strerror(errno));
+            close(s->old3ds_listen_fd);
+            s->old3ds_listen_fd = -1;
+        } else {
+            fprintf(stderr, "switch_stream: old3ds clients on port %u\n",
+                    old3ds_port);
         }
     }
 
@@ -1812,6 +2153,9 @@ SwitchStream *switch_stream_start(WebStream *ws, uint16_t port) {
         }
 
         close(s->listen_fd);
+        if (s->old3ds_listen_fd >= 0) close(s->old3ds_listen_fd);
+        if (s->wiiu_listen_fd >= 0) close(s->wiiu_listen_fd);
+        if (s->drc_listen_fd >= 0) close(s->drc_listen_fd);
         SDL_DestroyMutex(s->mutex);
         free(s);
         return NULL;
@@ -1843,6 +2187,10 @@ void switch_stream_stop(SwitchStream *s) {
     if (s->wiiu_listen_fd >= 0) {
         close(s->wiiu_listen_fd);
         s->wiiu_listen_fd = -1;
+    }
+    if (s->old3ds_listen_fd >= 0) {
+        close(s->old3ds_listen_fd);
+        s->old3ds_listen_fd = -1;
     }
     if (s->drc_listen_fd >= 0) {
         close(s->drc_listen_fd);

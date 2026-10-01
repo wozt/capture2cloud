@@ -75,8 +75,10 @@ struct GtkShell {
  * a list of assignments repeated in three places. */
 typedef struct {
     GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
-    GtkWidget *wiiu_pad_enabled, *wiiu_pad_bitrate;
-    GtkWidget *wiiu_console_enabled, *wiiu_console_resolution, *wiiu_console_bitrate;
+    GtkWidget *wiiu_pad_enabled, *wiiu_pad_port, *wiiu_pad_bitrate;
+    GtkWidget *wiiu_console_enabled, *wiiu_console_port;
+    GtkWidget *wiiu_console_resolution, *wiiu_console_bitrate;
+    GtkWidget *old3ds_port;
     /* One line per client family, so "nothing is watching" can be told
      * apart from "something is watching and the picture is wrong"
      * without reading a terminal. Indexed by GtkShellClient. */
@@ -2210,6 +2212,9 @@ static void on_spin(GtkWidget *w, gpointer user_data) {
     SDL_LockMutex(shell->lock);
     if (w == g_c.port) shell->settings.web_port = v;
     else if (w == g_c.switch_port) shell->settings.switch_port = v;
+    else if (w == g_c.wiiu_pad_port) shell->settings.wiiu_pad_port = v;
+    else if (w == g_c.wiiu_console_port) shell->settings.wiiu_console_port = v;
+    else if (w == g_c.old3ds_port) shell->settings.old3ds_port = v;
     SDL_UnlockMutex(shell->lock);
     publish(shell);
 }
@@ -2589,14 +2594,17 @@ static void load_controls(GtkShell *shell) {
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), s.wiiu_pad_enabled);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.wiiu_pad_port), s.wiiu_pad_port);
     gtk_range_set_value(GTK_RANGE(g_c.wiiu_pad_bitrate), s.wiiu_pad_bitrate_mbps);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_console_enabled),
                                  s.wiiu_console_enabled);
     gtk_range_set_value(GTK_RANGE(g_c.wiiu_console_bitrate), s.wiiu_console_bitrate_mbps);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.wiiu_console_port), s.wiiu_console_port);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.wiiu_console_resolution),
                              s.wiiu_console_height == 1080 ? 0
                              : s.wiiu_console_height == 480 ? 2 : 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.switch_port), s.switch_port);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.old3ds_port), s.old3ds_port);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.resolution),
                              s.browser_height == 1080 ? 0 : (s.browser_height == 720 ? 1 : 2));
     gtk_range_set_value(GTK_RANGE(g_c.bitrate), s.bitrate_mbps);
@@ -2803,6 +2811,9 @@ static void build_settings_window(GtkShell *shell) {
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
         add_client_status(grid, row++, "Wii U Console");
 
+    g_c.overview_client_status[GTK_SHELL_CLIENT_OLD3DS] =
+        add_client_status(grid, row++, "Old 3DS / Old 2DS");
+
     add_section_header(grid, row++, "Quick actions");
 
     {
@@ -2952,6 +2963,18 @@ static void build_settings_window(GtkShell *shell) {
         g_c.wiiu_pad_enabled,
         "Feeds a real Wii U GamePad over its dedicated radio path.");
 
+    g_c.wiiu_pad_port = add_row(
+        grid,
+        row++,
+        "TCP port",
+        gtk_spin_button_new_with_range(1, 65535, 1));
+
+    g_signal_connect(
+        g_c.wiiu_pad_port,
+        "value-changed",
+        G_CALLBACK(on_spin),
+        shell);
+
     g_c.wiiu_pad_bitrate = add_row(
         grid,
         row++,
@@ -3047,6 +3070,18 @@ static void build_settings_window(GtkShell *shell) {
         "serve to Wii U console",
         make_check(shell, "on"));
 
+    g_c.wiiu_console_port = add_row(
+        grid,
+        row++,
+        "TCP port",
+        gtk_spin_button_new_with_range(1, 65535, 1));
+
+    g_signal_connect(
+        g_c.wiiu_console_port,
+        "value-changed",
+        G_CALLBACK(on_spin),
+        shell);
+
     g_c.wiiu_console_resolution = gtk_combo_box_text_new();
 
     gtk_combo_box_text_append_text(
@@ -3094,6 +3129,44 @@ static void build_settings_window(GtkShell *shell) {
             FALSE, FALSE, 0);
 
         add_row(grid, row++, "", buttons);
+    }
+
+
+    /* --- Client · Old 3DS / Old 2DS ------------------------------- */
+    make_page("Client · Old 3DS / Old 2DS", clients, &grid);
+    row = 0;
+
+    g_c.old3ds_port = add_row(
+        grid,
+        row++,
+        "TCP port",
+        gtk_spin_button_new_with_range(1, 65535, 1));
+
+    g_signal_connect(
+        g_c.old3ds_port,
+        "value-changed",
+        G_CALLBACK(on_spin),
+        shell);
+
+    {
+        GtkWidget *profile = gtk_label_new(
+            "400×240 @ 30 FPS · JPEG / MPEG-4 Part 2 · dedicated encoder");
+        gtk_widget_set_halign(profile, GTK_ALIGN_START);
+        gtk_label_set_line_wrap(GTK_LABEL(profile), TRUE);
+        add_row(grid, row++, "profile", profile);
+    }
+
+    g_c.client_status[GTK_SHELL_CLIENT_OLD3DS] =
+        add_client_status(grid, row++, "connected now");
+
+    {
+        GtkWidget *note = gtk_label_new(
+            "The web/login port is the Browser port. Configure that port, "
+            "this TCP port and the same host address in the 3DS client.");
+        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(note), 70);
+        gtk_widget_set_halign(note, GTK_ALIGN_START);
+        add_row(grid, row++, "", note);
     }
 
 

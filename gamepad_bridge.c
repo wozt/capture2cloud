@@ -392,6 +392,13 @@ void gamepad_bridge_press_home(void)
     }
 }
 
+void gamepad_bridge_press_capture(void)
+{
+    if (g_backend && g_backend->press_capture) {
+        g_backend->press_capture();
+    }
+}
+
 void gamepad_bridge_set_output_shaping(
     const ControllerShaping *shaping)
 {

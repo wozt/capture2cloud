@@ -14,8 +14,8 @@
 #include <unistd.h>
 
 #define SOC_BUFFER_SIZE (1024 * 1024)
-#define VIDEO_SLOTS 3
-#define VIDEO_CAPACITY (512 * 1024)
+#define VIDEO_SLOTS 6
+#define VIDEO_CAPACITY (256 * 1024)
 #define VIDEO_PADDING 64
 #define AUDIO_SLOTS 24
 #define AUDIO_CAPACITY 4096
@@ -35,6 +35,7 @@ typedef struct {
 typedef struct {
     uint8_t data[AUDIO_CAPACITY];
     uint32_t size;
+    uint8_t codec;
 } AudioSlot;
 
 static uint32_t *g_soc_buffer;
@@ -60,6 +61,7 @@ static uint32_t g_video_window_frames;
 static uint64_t g_video_window_bytes;
 static uint64_t g_video_window_receive_ms;
 static uint8_t g_video_codec = C2S_CODEC_OLD3DS_JPEG;
+static uint8_t g_audio_codec = C2S_CODEC_OPUS;
 static uint32_t g_last_keyframe_request_ms;
 static bool g_need_keyframe;
 static volatile bool g_audio_udp_active;
@@ -296,7 +298,7 @@ static void note_video_received(uint32_t size, uint32_t receive_ms)
     LightLock_Unlock(&g_lock);
 }
 
-static void queue_audio(const uint8_t *data, uint32_t size)
+static void queue_audio(const uint8_t *data, uint32_t size, uint8_t codec)
 {
     if (size > AUDIO_CAPACITY) return;
     LightLock_Lock(&g_lock);
@@ -306,8 +308,9 @@ static void queue_audio(const uint8_t *data, uint32_t size)
         g_stats.audio_dropped++;
     }
     int write = (g_audio_read + g_audio_count) % AUDIO_SLOTS;
-    memcpy(g_audio[write].data, data, size);
+    if (size) memcpy(g_audio[write].data, data, size);
     g_audio[write].size = size;
+    g_audio[write].codec = codec;
     g_audio_count++;
     LightLock_Unlock(&g_lock);
 }
@@ -315,7 +318,9 @@ static void queue_audio(const uint8_t *data, uint32_t size)
 static void audio_udp_thread(void *unused)
 {
     (void)unused;
-    uint8_t packet[sizeof(C2sOpusUdpHeader) + C2S_OPUS_UDP_MAX_BYTES];
+    uint8_t packet[sizeof(C2sPcmUdpHeader) +
+                   C2S_PCM_UDP_MAX_FRAMES * 4u];
+    static const uint8_t silence[C2S_PCM_UDP_MAX_FRAMES * 4u];
     while (g_audio_running) {
         ssize_t got = recv(g_audio_socket, packet, sizeof(packet), 0);
         if (got < 0) {
@@ -325,25 +330,83 @@ static void audio_udp_thread(void *unused)
             }
             break;
         }
-        if ((size_t)got < sizeof(C2sOpusUdpHeader)) continue;
-        C2sOpusUdpHeader header;
-        memcpy(&header, packet, sizeof(header));
-        const uint32_t magic = c2s_le32(header.magic);
-        const uint32_t sequence = c2s_le32(header.sequence);
-        const uint16_t bytes = c2s_le16(header.bytes);
-        if (magic != C2S_OPUS_UDP_MAGIC || bytes == 0 ||
-            bytes > C2S_OPUS_UDP_MAX_BYTES ||
-            (size_t)got != sizeof(header) + bytes || !g_audio_udp_active) {
+        if ((size_t)got < sizeof(uint32_t) || !g_audio_udp_active) continue;
+        uint32_t magic;
+        memcpy(&magic, packet, sizeof(magic));
+        magic = c2s_le32(magic);
+        uint32_t sequence;
+        uint32_t bytes;
+        uint32_t payload_offset;
+        uint8_t codec;
+        if (magic == C2S_PCM_UDP_MAGIC &&
+            (size_t)got >= sizeof(C2sPcmUdpHeader)) {
+            C2sPcmUdpHeader header;
+            memcpy(&header, packet, sizeof(header));
+            sequence = c2s_le32(header.sequence);
+            const uint16_t frames = c2s_le16(header.frames);
+            bytes = (uint32_t)frames * 4u;
+            payload_offset = sizeof(header);
+            codec = C2S_CODEC_PCM_S16LE;
+            if (!frames || frames > C2S_PCM_UDP_MAX_FRAMES ||
+                (size_t)got != payload_offset + bytes) continue;
+        } else if (magic == C2S_OPUS_UDP_MAGIC &&
+                   (size_t)got >= sizeof(C2sOpusUdpHeader)) {
+            C2sOpusUdpHeader header;
+            memcpy(&header, packet, sizeof(header));
+            sequence = c2s_le32(header.sequence);
+            bytes = c2s_le16(header.bytes);
+            payload_offset = sizeof(header);
+            codec = C2S_CODEC_OPUS;
+            if (!bytes || bytes > C2S_OPUS_UDP_MAX_BYTES ||
+                (size_t)got != payload_offset + bytes) continue;
+        } else if (magic == C2S_ADPCM_UDP_MAGIC &&
+                   (size_t)got >= sizeof(C2sAdpcmUdpHeader)) {
+            C2sAdpcmUdpHeader header;
+            memcpy(&header, packet, sizeof(header));
+            sequence = c2s_le32(header.sequence);
+            const uint16_t frames = c2s_le16(header.frames);
+            const uint16_t encoded_bytes = c2s_le16(header.bytes);
+            codec = C2S_CODEC_OLD3DS_ADPCM;
+            payload_offset = 0;
+            bytes = (uint32_t)got;
+            if (frames != C2S_ADPCM_FRAMES ||
+                encoded_bytes != C2S_ADPCM_MAX_BYTES ||
+                (size_t)got != sizeof(header) + encoded_bytes) continue;
+        } else {
             continue;
         }
-        if (g_audio_udp_sequence_valid && sequence > g_audio_udp_sequence + 1) {
-            LightLock_Lock(&g_lock);
-            g_stats.audio_dropped += sequence - g_audio_udp_sequence - 1;
-            LightLock_Unlock(&g_lock);
+        LightLock_Lock(&g_lock);
+        const bool audio_enabled = g_config.audio_enabled;
+        LightLock_Unlock(&g_lock);
+        if (!audio_enabled) {
+            g_audio_udp_sequence = sequence;
+            g_audio_udp_sequence_valid = true;
+            continue;
+        }
+        if (g_audio_udp_sequence_valid) {
+            const int32_t delta = (int32_t)(sequence - g_audio_udp_sequence);
+            if (delta <= 0) continue; /* duplicate or late packet */
+            if (delta > 1) {
+                const uint32_t missing = (uint32_t)delta - 1;
+                LightLock_Lock(&g_lock);
+                g_stats.audio_dropped += missing;
+                LightLock_Unlock(&g_lock);
+                /* Opus can synthesize a missing packet; ADPCM uses one
+                 * 20 ms silence marker; raw PCM gets equal-sized silence. */
+                const uint32_t plc = missing > 4 ? 4 : missing;
+                for (uint32_t i = 0; i < plc; i++) {
+                    if (codec == C2S_CODEC_OPUS ||
+                        codec == C2S_CODEC_OLD3DS_ADPCM) {
+                        queue_audio(NULL, 0, codec);
+                    } else {
+                        queue_audio(silence, bytes, codec);
+                    }
+                }
+            }
         }
         g_audio_udp_sequence = sequence;
         g_audio_udp_sequence_valid = true;
-        queue_audio(packet + sizeof(header), bytes);
+        queue_audio(packet + payload_offset, bytes, codec);
     }
 }
 
@@ -397,7 +460,10 @@ static int stream_session(const AppConfig *config)
     hello.version = C2S_VERSION;
     hello.token_len = (uint8_t)strlen(token);
     uint16_t capabilities = C2S_HELLO_CAP_OLD3DS;
-    if (g_audio_socket >= 0) capabilities |= C2S_HELLO_CAP_OPUS_UDP;
+    if (g_audio_socket >= 0) {
+        capabilities |= C2S_HELLO_CAP_OPUS_UDP |
+                        C2S_HELLO_CAP_ADPCM_UDP;
+    }
     hello.reserved = c2s_le16(capabilities);
     LightLock_Lock(&g_send_lock);
     int hello_ok = send_all_locked(&hello, sizeof(hello)) &&
@@ -420,11 +486,17 @@ static int stream_session(const AppConfig *config)
              ack.may_control ? " (player)" : " (viewer)");
     g_video_codec = ack.video_codec;
     g_stats.video_codec = ack.video_codec;
+    g_audio_codec = ack.audio_codec;
+    g_stats.audio_codec = ack.audio_codec;
     LightLock_Unlock(&g_lock);
 
     g_audio_udp_active =
-        ack.audio_codec == C2S_CODEC_OPUS &&
-        (ack.reserved & C2S_ACK_FLAG_OPUS_UDP) != 0;
+        (ack.audio_codec == C2S_CODEC_PCM_S16LE &&
+         (ack.reserved & C2S_ACK_FLAG_PCM_UDP) != 0) ||
+        (ack.audio_codec == C2S_CODEC_OPUS &&
+         (ack.reserved & C2S_ACK_FLAG_OPUS_UDP) != 0) ||
+        (ack.audio_codec == C2S_CODEC_OLD3DS_ADPCM &&
+         (ack.reserved & C2S_ACK_FLAG_ADPCM_UDP) != 0);
     g_audio_udp_sequence_valid = false;
 
     if (config->video_codec != ack.video_codec) {
@@ -480,7 +552,9 @@ static int stream_session(const AppConfig *config)
             LightLock_Lock(&g_lock);
             const bool audio_enabled = g_config.audio_enabled;
             LightLock_Unlock(&g_lock);
-            if (audio_enabled && !g_audio_udp_active) queue_audio(packet, header.size);
+            if (audio_enabled && !g_audio_udp_active) {
+                queue_audio(packet, header.size, g_audio_codec);
+            }
         } else if (header.type == C2S_MSG_STREAM_INFO &&
                    header.size == sizeof(C2sStreamInfo)) {
             C2sStreamInfo info;
@@ -515,6 +589,9 @@ static int stream_session(const AppConfig *config)
 static void network_thread(void *unused)
 {
     (void)unused;
+    LightLock_Lock(&g_lock);
+    g_stats.worker_core = (uint8_t)svcGetProcessorID();
+    LightLock_Unlock(&g_lock);
     while (g_running) {
         if (!g_wanted) {
             svcSleepThread(50000000LL);
@@ -553,6 +630,9 @@ bool network_init(void)
 
     g_audio_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_audio_socket >= 0) {
+        int receive_buffer = 64 * 1024;
+        setsockopt(g_audio_socket, SOL_SOCKET, SO_RCVBUF,
+                   &receive_buffer, sizeof(receive_buffer));
         struct sockaddr_in address;
         memset(&address, 0, sizeof(address));
         address.sin_family = AF_INET;
@@ -577,14 +657,25 @@ bool network_init(void)
     if (g_audio_socket >= 0) {
         g_audio_running = true;
         g_audio_thread = threadCreate(audio_udp_thread, NULL, 16 * 1024,
-                                      0x31, -2, false);
+                                      0x31, 1, false);
+        if (!g_audio_thread) {
+            g_audio_thread = threadCreate(audio_udp_thread, NULL, 16 * 1024,
+                                          0x31, -2, false);
+        }
         if (!g_audio_thread) {
             g_audio_running = false;
             close(g_audio_socket);
             g_audio_socket = -1;
         }
     }
-    g_thread = threadCreate(network_thread, NULL, 32 * 1024, 0x30, -2, false);
+    /* Keep TCP receive/copies off the decoder's application core.  If
+     * CPU1 is unavailable (for example APT refused the time limit), the
+     * default-core retry keeps networking functional. */
+    g_thread = threadCreate(network_thread, NULL, 32 * 1024, 0x30, 1, false);
+    if (!g_thread) {
+        g_thread = threadCreate(network_thread, NULL, 32 * 1024,
+                                0x30, -2, false);
+    }
     if (!g_thread) {
         network_exit();
         return false;
@@ -665,51 +756,64 @@ void network_get_stats(NetworkStats *stats)
 bool network_acquire_video(const uint8_t **data, uint32_t *size,
                            uint32_t *received_ms, uint8_t *codec, int *slot)
 {
-    int newest = -1;
-    uint32_t sequence = 0;
-    bool dropped_predictive = false;
+    int chosen = -1;
     bool request_keyframe = false;
     LightLock_Lock(&g_lock);
-    for (int i = 0; i < VIDEO_SLOTS; i++) {
-        if (g_video[i].state == SLOT_READY) {
-            if (g_video[i].sequence >= sequence) {
-                if (newest >= 0) {
-                    if (g_video[newest].codec == C2S_CODEC_OLD3DS_MPEG4) {
-                        dropped_predictive = true;
-                    }
-                    g_video[newest].state = SLOT_FREE;
+    if (g_video_codec == C2S_CODEC_OLD3DS_MPEG4) {
+        /* Predictive video must be consumed in order.  If any reference
+         * was lost, discard P-frames until the clean I-frame requested
+         * below arrives. */
+        for (;;) {
+            uint32_t oldest = UINT32_MAX;
+            chosen = -1;
+            for (int i = 0; i < VIDEO_SLOTS; i++) {
+                if (g_video[i].state == SLOT_READY &&
+                    g_video[i].sequence < oldest) {
+                    oldest = g_video[i].sequence;
+                    chosen = i;
+                }
+            }
+            if (chosen < 0) break;
+            if (!g_need_keyframe ||
+                (g_video[chosen].flags & C2S_FLAG_KEYFRAME)) break;
+            g_video[chosen].state = SLOT_FREE;
+            g_stats.video_dropped++;
+            chosen = -1;
+            request_keyframe = true;
+        }
+        if (chosen >= 0 && (g_video[chosen].flags & C2S_FLAG_KEYFRAME)) {
+            g_need_keyframe = false;
+        }
+    } else {
+        /* JPEG frames are independent: retain only the newest one to
+         * minimize input-to-display latency. */
+        uint32_t newest_sequence = 0;
+        for (int i = 0; i < VIDEO_SLOTS; i++) {
+            if (g_video[i].state != SLOT_READY) continue;
+            if (chosen < 0 || g_video[i].sequence >= newest_sequence) {
+                if (chosen >= 0) {
+                    g_video[chosen].state = SLOT_FREE;
                     g_stats.video_dropped++;
                 }
-                newest = i;
-                sequence = g_video[i].sequence;
+                chosen = i;
+                newest_sequence = g_video[i].sequence;
             } else {
-                if (g_video[i].codec == C2S_CODEC_OLD3DS_MPEG4) {
-                    dropped_predictive = true;
-                }
                 g_video[i].state = SLOT_FREE;
                 g_stats.video_dropped++;
             }
         }
     }
-    if (newest >= 0) {
-        g_video[newest].state = SLOT_DECODING;
-        *data = g_video[newest].data;
-        *size = g_video[newest].size;
-        *received_ms = g_video[newest].received_ms;
-        *codec = g_video[newest].codec;
-        *slot = newest;
-        if (g_video[newest].codec == C2S_CODEC_OLD3DS_MPEG4) {
-            if (g_video[newest].flags & C2S_FLAG_KEYFRAME) {
-                g_need_keyframe = false;
-            } else if (dropped_predictive || g_need_keyframe) {
-                g_need_keyframe = true;
-                request_keyframe = true;
-            }
-        }
+    if (chosen >= 0) {
+        g_video[chosen].state = SLOT_DECODING;
+        *data = g_video[chosen].data;
+        *size = g_video[chosen].size;
+        *received_ms = g_video[chosen].received_ms;
+        *codec = g_video[chosen].codec;
+        *slot = chosen;
     }
     LightLock_Unlock(&g_lock);
     if (request_keyframe) network_request_keyframe();
-    return newest >= 0;
+    return chosen >= 0;
 }
 
 void network_release_video(int slot)
@@ -720,19 +824,49 @@ void network_release_video(int slot)
     LightLock_Unlock(&g_lock);
 }
 
-bool network_take_audio(uint8_t *data, uint32_t capacity, uint32_t *size)
+bool network_take_audio(uint8_t *data, uint32_t capacity, uint32_t *size,
+                        uint8_t *codec)
 {
     bool result = false;
     LightLock_Lock(&g_lock);
     if (g_audio_count > 0 && g_audio[g_audio_read].size <= capacity) {
         *size = g_audio[g_audio_read].size;
         memcpy(data, g_audio[g_audio_read].data, *size);
+        *codec = g_audio[g_audio_read].codec;
         g_audio_read = (g_audio_read + 1) % AUDIO_SLOTS;
         g_audio_count--;
         result = true;
     }
     LightLock_Unlock(&g_lock);
     return result;
+}
+
+uint32_t network_audio_depth(void)
+{
+    LightLock_Lock(&g_lock);
+    const uint32_t depth = (uint32_t)g_audio_count;
+    LightLock_Unlock(&g_lock);
+    return depth;
+}
+
+bool network_peek_audio_codec(uint8_t *codec)
+{
+    bool available = false;
+    LightLock_Lock(&g_lock);
+    if (g_audio_count > 0) {
+        *codec = g_audio[g_audio_read].codec;
+        available = true;
+    }
+    LightLock_Unlock(&g_lock);
+    return available;
+}
+
+void network_clear_audio(void)
+{
+    LightLock_Lock(&g_lock);
+    g_audio_read = 0;
+    g_audio_count = 0;
+    LightLock_Unlock(&g_lock);
 }
 
 void network_send_input(const int8_t state[C2S_PAD_SLOTS])
@@ -758,6 +892,7 @@ void network_request_keyframe(void)
 {
     const uint32_t now = osGetTime();
     LightLock_Lock(&g_lock);
+    g_need_keyframe = true;
     const bool send_now = g_stats.state == NETWORK_CONNECTED &&
         (!g_last_keyframe_request_ms ||
          now - g_last_keyframe_request_ms >= 1000);

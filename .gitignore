@@ -97,3 +97,16 @@ wiiu_ethernet/
 patch.sh
 .cafeglsl/
 .mcp.json
+release*/
+
+# Old 3DS homebrew build outputs and locally built open-source host tool.
+/3ds/build/
+/3ds/build-tools/makerom
+/3ds/build-tools/ffmpeg/
+/3ds/build-tools/ffmpeg-src/
+/3ds/capture2cloud-old3ds.elf
+/3ds/capture2cloud-old3ds.3dsx
+/3ds/capture2cloud-old3ds.cia
+/3ds/capture2cloud-old3ds.smdh
+/3ds/capture2cloud-old3ds.map
+/3ds/capture2cloud-old3ds.lst

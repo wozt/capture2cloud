@@ -291,11 +291,19 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
         snprintf(line, sizeof(line), "NET %.1F DEC %.1F UP %.1FMS", network->receive_ms,
                  video->decode_ms, video->upload_ms);
         text(6, 137, line, 1, color(214, 224, 231));
-        snprintf(line, sizeof(line), "AUDIO Q %lu DROP %lu", (unsigned long)audio->queued_buffers,
-                 (unsigned long)(audio->dropped_packets + network->audio_dropped));
+        const char *audio_name = network->audio_codec == C2S_CODEC_PCM_S16LE
+            ? "PCM" : network->audio_codec == C2S_CODEC_OLD3DS_ADPCM
+                ? "ADPCM" : "OPUS";
+        snprintf(line, sizeof(line), "%s Q%lu D%lu U%lu", audio_name,
+                 (unsigned long)audio->queued_buffers,
+                 (unsigned long)(audio->dropped_packets + network->audio_dropped),
+                 (unsigned long)audio->underruns);
         text(6, 147, line, 1, color(214, 224, 231));
-        snprintf(line, sizeof(line), "%s ERR %lu",
+        snprintf(line, sizeof(line), "%s%s C%u ERR %lu",
                  video_codec == C2S_CODEC_OLD3DS_JPEG ? "JPEG" : "MPEG4",
+                 video_codec == C2S_CODEC_OLD3DS_MPEG4 && video->hardware_conversion
+                     ? "/Y2R" : "",
+                 network->worker_core,
                  (unsigned long)video->decode_errors);
         text(6, 157, line, 1, color(214, 224, 231));
         snprintf(line, sizeof(line), "LOCAL LAG %luMS",

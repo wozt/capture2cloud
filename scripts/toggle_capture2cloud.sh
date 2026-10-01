@@ -43,6 +43,10 @@ LOG_FILE="/dev/shm/capture2cloud.log"
 
 # Useful when the script is launched from SSH.
 export DISPLAY="${DISPLAY:-:0}"
+# This desktop has no AT-SPI session bus. GTK's accessibility bridge
+# otherwise emits a dbind warning on every launch even though the
+# settings window itself is healthy.
+export NO_AT_BRIDGE=1
 
 if c2c_find_running windowed >/dev/null; then
     echo "Stopping Capture2Cloud..."

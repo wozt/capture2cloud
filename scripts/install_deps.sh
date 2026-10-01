@@ -64,7 +64,7 @@ PACKAGES=(
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
     gstreamer1.0-libav gstreamer1.0-nice
     # colour conversion + usb
-    libavutil-dev libswscale-dev libusb-1.0-0-dev
+    libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev
 
     # Classic Bluetooth controller backend
     libglib2.0-dev libjson-glib-dev libbluetooth-dev

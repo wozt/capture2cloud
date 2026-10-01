@@ -3,6 +3,7 @@
 #include "gst_webrtc.h"
 #include "switch_stream.h"
 #include "drc_encoder.h"
+#include "old3ds_encoder.h"
 #include "c2s_protocol.h"
 
 #include <gst/video/video.h>
@@ -263,7 +264,7 @@ int gst_webrtc_pick_h264_encoders(const char *forced, const char **out, int coun
  * is not a GStreamer chain at all -- it scales straight into drc-x264
  * and hands the transport five chunks. It is a slot here because the
  * demand gate that decides what gets fed is per slot. */
-#define SS_STREAM_COUNT_LOCAL 5
+#define SS_STREAM_COUNT_LOCAL 6
 
 /* The browsers' stream: H.264, and at a size a monitor wants rather
  * than the size a handheld wants -- which is the whole reason it cannot
@@ -437,6 +438,10 @@ struct GstWebrtcStream {
     DrcEncoder *drc_enc;
     volatile int drc_allowed;       /* the "serve to wii u gamepad" setting */
     volatile int wiiu_allowed;      /* the "serve to wii u console" setting */
+    Old3dsEncoder *old3ds_encoder;  /* separate Old 3DS codec path */
+    volatile int old3ds_want_keyframe;
+    gint64 old3ds_pace_last_us;
+    gint64 old3ds_pace_credit_us;
     int         drc_tried;          /* so a missing library is reported once */
     uint8_t    *drc_i420;           /* 864x480, letterboxed, planes packed */
     struct SwsContext *drc_sws;
@@ -1091,14 +1096,18 @@ GstWebrtcStream *gst_webrtc_stream_create(int width, int height, int audio_rate,
     }
     for (int slot = 0; slot < SS_STREAM_COUNT_LOCAL; slot++) {
         const int web = (slot == SS_STREAM_WEB);
-        g->switch_width[slot] = (slot == SS_STREAM_WIIU) ? WIIU_SEND_WIDTH
+        g->switch_width[slot] = (slot == SS_STREAM_OLD3DS) ? OLD3DS_VIDEO_WIDTH
+                              : (slot == SS_STREAM_WIIU) ? WIIU_SEND_WIDTH
                               : (slot == SS_STREAM_DRC) ? DRC_SEND_WIDTH
                               : web ? WEB_VIDEO_WIDTH : SWITCH_VIDEO_WIDTH;
-        g->switch_height[slot] = (slot == SS_STREAM_WIIU) ? WIIU_SEND_HEIGHT
+        g->switch_height[slot] = (slot == SS_STREAM_OLD3DS) ? OLD3DS_VIDEO_HEIGHT
+                               : (slot == SS_STREAM_WIIU) ? WIIU_SEND_HEIGHT
                                : (slot == SS_STREAM_DRC) ? DRC_SEND_HEIGHT
                                : web ? WEB_VIDEO_HEIGHT : SWITCH_VIDEO_HEIGHT;
-        g->switch_fps[slot] = 60;
-        g->switch_bitrate_kbps[slot] = web ? WEB_VIDEO_BITRATE_KBPS
+        g->switch_fps[slot] = (slot == SS_STREAM_OLD3DS) ? OLD3DS_VIDEO_FPS : 60;
+        g->switch_bitrate_kbps[slot] = (slot == SS_STREAM_OLD3DS)
+                                           ? OLD3DS_VIDEO_BITRATE_KBPS
+                                           : web ? WEB_VIDEO_BITRATE_KBPS
                                            : SWITCH_VIDEO_BITRATE_KBPS;
     }
     g->switchasink = gst_bin_get_by_name(GST_BIN(g->pipeline), "switchasink");
@@ -1158,6 +1167,7 @@ void gst_webrtc_stream_destroy(GstWebrtcStream *g) {
     if (g->atee) gst_object_unref(g->atee);
     if (g->pipeline) gst_object_unref(g->pipeline);
     if (g->sws_i420) sws_freeContext(g->sws_i420);
+    old3ds_encoder_destroy(g->old3ds_encoder);
     free(g->i420_buf);
     SDL_DestroyMutex(g->clients_mutex);
     free(g);
@@ -1193,7 +1203,8 @@ static GstFlowReturn on_switch_video_sample(GstElement *sink, gpointer user_data
     GstMapInfo map;
     if (buf && gst_buffer_map(buf, &map, GST_MAP_READ)) {
         int keyframe = !GST_BUFFER_FLAG_IS_SET(buf, GST_BUFFER_FLAG_DELTA_UNIT);
-        switch_stream_send_video(g->switch_out, slot, map.data, (uint32_t)map.size, keyframe);
+        switch_stream_send_video(g->switch_out, slot, map.data,
+                                 (uint32_t)map.size, keyframe, 0);
         gst_buffer_unmap(buf, &map);
     }
     gst_sample_unref(sample);
@@ -1290,6 +1301,7 @@ static void on_switch_keyframe_request(void *ctx) {
     if (!g) {
         return;
     }
+    g->old3ds_want_keyframe = 1;
     /* Both branches, not just the VP8 one. Sending it only to the sink
      * that happened to be written first meant that in H.264 the request
      * went to an encoder receiving nothing, and the client waited out
@@ -1360,6 +1372,28 @@ static void on_switch_profile_request(void *ctx, int slot, int w, int h, int fps
 
     if (slot == SS_STREAM_WIIU) {
         set_wiiu_profile_full(g, w, h, fps, bitrate_kbps);
+        return;
+    }
+
+    if (slot == SS_STREAM_OLD3DS) {
+        /* Geometry and cadence are hardware constraints, not a general
+         * quality choice.  Only the JPEG quality budget is adjustable. */
+        if (bitrate_kbps > 0) {
+            if (bitrate_kbps < 600) bitrate_kbps = 600;
+            if (bitrate_kbps > 3600) bitrate_kbps = 3600;
+            g->switch_bitrate_kbps[slot] = bitrate_kbps;
+            if (g->old3ds_encoder) {
+                old3ds_encoder_set_bitrate(g->old3ds_encoder, bitrate_kbps);
+            }
+        }
+        g->switch_width[slot] = OLD3DS_VIDEO_WIDTH;
+        g->switch_height[slot] = OLD3DS_VIDEO_HEIGHT;
+        g->switch_fps[slot] = OLD3DS_VIDEO_FPS;
+        if (g->switch_out) {
+            switch_stream_announce_stream(g->switch_out, slot,
+                                           OLD3DS_VIDEO_WIDTH, OLD3DS_VIDEO_HEIGHT);
+            announce_shared_slot(g, slot);
+        }
         return;
     }
 
@@ -1445,7 +1479,8 @@ static void on_switch_demand_changed(void *ctx) {
          * just added, which is exactly what happened when the fifth
          * one arrived. */
         static const char *const names[SS_STREAM_COUNT_LOCAL] = {
-            "native vp8", "native h264", "browser h264", "wii u gamepad", "wii u console"};
+            "native vp8", "native h264", "browser h264", "wii u gamepad",
+            "wii u console", "old3ds"};
         fprintf(stderr, "gst_webrtc: %s chain %s\n", names[slot],
                 wanted ? "started (a client is watching it)" : "stopped (nobody left on it)");
         if (wanted) {
@@ -2007,7 +2042,7 @@ static void push_drc_chain(GstWebrtcStream *g, const uint8_t *const plane[3],
     }
 
     switch_stream_send_video(g->switch_out, SS_STREAM_DRC, g->drc_msg,
-                             (uint32_t)total, f.is_idr);
+                             (uint32_t)total, f.is_idr, C2S_CODEC_DRC_H264);
 }
 
 /* Feeds ONE of the two native chains. Returns nothing: a chain that
@@ -2177,6 +2212,62 @@ static void push_switch_chain(GstWebrtcStream *g, int slot, const uint8_t *const
  * on it is not fed at all, so it encodes nothing: that is what makes
  * running both affordable, and what makes the common case (everybody on
  * one codec) cost exactly what it did before. */
+static void push_old3ds_chain(GstWebrtcStream *g,
+                              const uint8_t *const plane[3],
+                              const int stride[3],
+                              enum AVPixelFormat format,
+                              int width,
+                              int height)
+{
+    const gint64 now = g_get_monotonic_time();
+    const gint64 frame_us = G_USEC_PER_SEC / OLD3DS_VIDEO_FPS;
+
+    if (!g->old3ds_pace_last_us ||
+        now - g->old3ds_pace_last_us > G_USEC_PER_SEC / 2) {
+        g->old3ds_pace_last_us = now;
+        g->old3ds_pace_credit_us = frame_us;
+    } else {
+        gint64 elapsed = now - g->old3ds_pace_last_us;
+        if (elapsed < 0) elapsed = 0;
+        g->old3ds_pace_last_us = now;
+        g->old3ds_pace_credit_us += elapsed;
+        if (g->old3ds_pace_credit_us > frame_us * 2) {
+            g->old3ds_pace_credit_us = frame_us * 2;
+        }
+    }
+    if (g->old3ds_pace_credit_us < frame_us) return;
+    g->old3ds_pace_credit_us -= frame_us;
+
+    if (!g->old3ds_encoder) {
+        g->old3ds_encoder = old3ds_encoder_create();
+        if (!g->old3ds_encoder) {
+            fprintf(stderr, "gst_webrtc: could not create old3ds encoder\n");
+            return;
+        }
+        old3ds_encoder_set_bitrate(g->old3ds_encoder,
+                                   g->switch_bitrate_kbps[SS_STREAM_OLD3DS]);
+        fprintf(stderr, "gst_webrtc: old3ds encoder started\n");
+    }
+
+    int codec = switch_stream_stream_codec(g->switch_out, SS_STREAM_OLD3DS);
+    if (codec != C2S_CODEC_OLD3DS_JPEG &&
+        codec != C2S_CODEC_OLD3DS_MPEG4) codec = C2S_CODEC_OLD3DS_JPEG;
+    old3ds_encoder_set_codec(g->old3ds_encoder, (uint8_t)codec);
+    if (g->old3ds_want_keyframe) {
+        g->old3ds_want_keyframe = 0;
+        old3ds_encoder_request_keyframe(g->old3ds_encoder);
+    }
+
+    const uint8_t *encoded = NULL;
+    uint32_t encoded_size = 0;
+    int keyframe = 0;
+    if (old3ds_encoder_encode(g->old3ds_encoder, plane, stride, format,
+                              width, height, &encoded, &encoded_size, &keyframe)) {
+        switch_stream_send_video(g->switch_out, SS_STREAM_OLD3DS,
+                                 encoded, encoded_size, keyframe, (uint8_t)codec);
+    }
+}
+
 void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *const plane[3],
                                           const int stride[3], int av_pixel_format,
                                           int width, int height) {
@@ -2191,7 +2282,9 @@ void gst_webrtc_stream_push_video_switch(GstWebrtcStream *g, const uint8_t *cons
         if (!g->switch_wanted[slot]) {
             continue;
         }
-        if (slot == SS_STREAM_DRC) {
+        if (slot == SS_STREAM_OLD3DS) {
+            push_old3ds_chain(g, plane, stride, format, width, height);
+        } else if (slot == SS_STREAM_DRC) {
             /* Two encodes share this stream and only one is ever fed:
              * the chunks drc-x264 makes, or ordinary H.264 the client
              * decodes and encodes again. The pad says which. */

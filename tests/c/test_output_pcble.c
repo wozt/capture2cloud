@@ -22,6 +22,14 @@ const char *config_get_str(
     return fallback;
 }
 
+long config_get_int(const char *key, long fallback, long min_value, long max_value)
+{
+    (void)key;
+    (void)min_value;
+    (void)max_value;
+    return fallback;
+}
+
 #include "../../output_pcble.c"
 #include "test_util.h"
 
@@ -33,7 +41,7 @@ static void test_neutral(void)
     uint8_t buttons[3];
     uint16_t sticks[4];
 
-    build_nintendo_state(state, 0, buttons, sticks);
+    build_nintendo_state(state, 0, 0, buttons, sticks);
 
     t_eq_int("buttons 0 neutral", buttons[0], 0);
     t_eq_int("buttons 1 neutral", buttons[1], 0);
@@ -73,7 +81,7 @@ static void test_buttons(void)
     state[CONTROLLER_L1] = 100;
     state[CONTROLLER_L2] = 100;
 
-    build_nintendo_state(state, 0, buttons, sticks);
+    build_nintendo_state(state, 0, 0, buttons, sticks);
 
     t_eq_int("right-side byte", buttons[0], 0xcf);
     t_eq_int("middle byte", buttons[1], 0x1f);
@@ -93,7 +101,7 @@ static void test_axes(void)
     state[CONTROLLER_RX] = -100;
     state[CONTROLLER_RY] = 100;  /* down */
 
-    build_nintendo_state(state, 0, buttons, sticks);
+    build_nintendo_state(state, 0, 0, buttons, sticks);
 
     t_eq_int("left X max", sticks[0], 3625);
     t_eq_int("left Y up", sticks[1], 3499);
@@ -159,7 +167,7 @@ static void test_home_override(void)
     uint8_t buttons[3];
     uint16_t sticks[4];
 
-    build_nintendo_state(state, 1, buttons, sticks);
+    build_nintendo_state(state, 1, 0, buttons, sticks);
 
     t_ok("HOME override is set", (buttons[1] & 0x10) != 0);
 }

@@ -70,8 +70,20 @@
  * keyframes.
  */
 #define C2S_WIIU_AUDIO_PORT 5084
+#define C2S_AUDIO_UDP_PORT C2S_WIIU_AUDIO_PORT
+
+/* Dedicated Old 3DS / Old 2DS stream.  It has its own encoder and
+ * settings because the ARM11 cannot use the existing H.264/VP8 paths
+ * within the required latency budget. */
+#define C2S_OLD3DS_PORT 5085
 #define C2S_PCM_UDP_MAGIC 0x314d4350u /* "PCM1" little-endian */
 #define C2S_PCM_UDP_MAX_FRAMES 320
+#define C2S_OPUS_UDP_MAGIC 0x3155504fu /* "OPU1" little-endian */
+#define C2S_OPUS_UDP_MAX_BYTES 512
+#define C2S_ADPCM_UDP_MAGIC 0x31444149u /* "IAD1" little-endian */
+#define C2S_ADPCM_RATE 24000
+#define C2S_ADPCM_FRAMES 480
+#define C2S_ADPCM_MAX_BYTES (C2S_ADPCM_FRAMES - 1)
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -79,6 +91,28 @@ typedef struct __attribute__((packed)) {
     uint16_t frames;
     uint16_t reserved;
 } C2sPcmUdpHeader;
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t sequence;
+    uint16_t bytes;
+    uint16_t reserved;
+} C2sOpusUdpHeader;
+
+/* One independently decodable 20 ms stereo IMA-ADPCM block.  Keeping
+ * the predictor and step index in every datagram means a lost packet
+ * damages exactly 20 ms instead of poisoning the following audio. */
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t sequence;
+    uint16_t frames;
+    uint16_t bytes;
+    int16_t predictor_left;
+    int16_t predictor_right;
+    uint8_t index_left;
+    uint8_t index_right;
+    uint16_t reserved;
+} C2sAdpcmUdpHeader;
 
 /* Sizes are u32 and the sender never exceeds this, so a receiver can
  * reject a malformed length instead of trying to allocate it. A 720p
@@ -126,9 +160,14 @@ static inline uint32_t c2s_le32(uint32_t v)
  */
 #define C2S_HELLO_CAP_PCM_S16LE 0x0001u
 #define C2S_HELLO_CAP_PCM_UDP   0x0002u
+#define C2S_HELLO_CAP_OPUS_UDP  0x0004u
+#define C2S_HELLO_CAP_ADPCM_UDP 0x0008u
+#define C2S_HELLO_CAP_OLD3DS    0x8000u
 
 /* C2sHelloAck.reserved */
 #define C2S_ACK_FLAG_PCM_UDP    0x01u
+#define C2S_ACK_FLAG_OPUS_UDP   0x02u
+#define C2S_ACK_FLAG_ADPCM_UDP  0x04u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;        /* C2S_MAGIC */
@@ -182,7 +221,22 @@ typedef enum {
      * already PCM, so compressing it to Opus only to immediately decode
      * it back to PCM on a fast LAN buys nothing.
      */
-    C2S_CODEC_PCM_S16LE = 5
+    C2S_CODEC_PCM_S16LE = 5,
+
+    /* One complete baseline JPEG image per VIDEO message.  This is an
+     * intra-only stream: dropping a stale frame never damages the next
+     * one, which is essential on the CPU-limited Old 3DS. */
+    C2S_CODEC_OLD3DS_JPEG = 6,
+
+    /* Low-delay MPEG-4 Part 2 elementary video for Old 3DS.  The
+     * handheld can decode 400x240@30 in software while using far less
+     * WLAN bandwidth than intra-only JPEG. */
+    C2S_CODEC_OLD3DS_MPEG4 = 7,
+
+    /* 24 kHz stereo IMA-ADPCM in independent 20 ms UDP blocks.  This
+     * is the Old 3DS audio path: roughly 192 kbit/s and only 50 packets
+     * per second, with a decoder made of integer adds and shifts. */
+    C2S_CODEC_OLD3DS_ADPCM = 8
 } C2sCodec;
 
 /* Fixed by the pad's protocol, not chosen: the panel libdrc feeds is
@@ -265,10 +319,17 @@ typedef enum {
      * in front of it, so the page's reader has one shape to handle
      * rather than a special first frame.
      */
-    C2S_MSG_HELLO_ACK    = 27
+    C2S_MSG_HELLO_ACK    = 27,
+    /* Momentary screenshot/capture action.  The established 21-byte
+     * controller ABI has no capture slot, so it remains an action. */
+    C2S_MSG_CAPTURE      = 28
 } C2sMsgType;
 
-#define C2S_FLAG_KEYFRAME 0x01
+#define C2S_FLAG_KEYFRAME       0x01
+/* Set on VIDEO frames carrying the Old 3DS MPEG-4 Part 2 elementary
+ * stream.  Keeping the codec on every frame makes a live codec switch
+ * unambiguous even when older JPEG frames are still queued in TCP. */
+#define C2S_FLAG_OLD3DS_MPEG4   0x02
 
 typedef struct __attribute__((packed)) {
     uint8_t  type;   /* C2sMsgType */
@@ -350,5 +411,7 @@ C2S_STATIC_ASSERT(sizeof(C2sStreamInfo) == 8, "C2sStreamInfo must stay 8 bytes o
 C2S_STATIC_ASSERT(sizeof(C2sProfile) == 8, "C2sProfile must stay 8 bytes on the wire");
 C2S_STATIC_ASSERT(sizeof(C2sShared) == 12, "C2sShared must stay 12 bytes on the wire");
 C2S_STATIC_ASSERT(sizeof(C2sFrameHeader) == 8, "C2sFrameHeader must stay 8 bytes on the wire");
+C2S_STATIC_ASSERT(sizeof(C2sPcmUdpHeader) == 12, "PCM UDP header must stay 12 bytes");
+C2S_STATIC_ASSERT(sizeof(C2sOpusUdpHeader) == 12, "Opus UDP header must stay 12 bytes");
 
 #endif

@@ -48,6 +48,13 @@ int main(void)
     gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
     gfxSet3D(false);
 
+    /* Old 3DS reserves CPU1 for the system by default.  Giving the app
+     * 70% of that core lets the network worker run there while MPEG-4
+     * decoding and presentation stay on the application core.  This is
+     * the Old 3DS value used by Video_player_for_3DS; 80% is its New 3DS
+     * setting. */
+    APT_SetAppCpuTimeLimit(70);
+
     AppConfig config;
     bool loaded = config_load(&config);
     char message[80] = "";
@@ -66,6 +73,7 @@ int main(void)
     if (!network_ok) snprintf(message, sizeof(message), "NETWORK INIT FAILED");
     bool audio_ok = audio_init();
     if (!audio_ok) snprintf(message, sizeof(message), "AUDIO UNAVAILABLE - VIDEO STILL WORKS");
+    if (audio_ok) audio_service(config.audio_enabled);
 
     if (network_ok) {
         network_apply_config(&config);
@@ -175,7 +183,7 @@ int main(void)
         uint32_t received_ms = 0;
         uint8_t video_codec = C2S_CODEC_OLD3DS_JPEG;
         int video_slot = -1;
-        if (network_ok && audio_ok && config.audio_enabled) audio_service(true);
+        if (audio_ok) audio_service(config.audio_enabled);
         if (network_ok && video_ok && network_acquire_video(&jpeg, &jpeg_size,
                                                 &received_ms, &video_codec, &video_slot)) {
             video_note_received_bytes(jpeg_size);
@@ -185,8 +193,6 @@ int main(void)
             }
             network_release_video(video_slot);
         }
-        if (network_ok && audio_ok && config.audio_enabled) audio_service(true);
-
         uint32_t now = osGetTime();
         if (network_ok && now - last_input_ms >= 33) {
             int8_t state[C2S_PAD_SLOTS];
@@ -215,10 +221,14 @@ int main(void)
     if (network_ok) {
         int8_t released[C2S_PAD_SLOTS] = {0};
         network_send_input(released);
-        network_exit();
     }
+    /* Stop and join the audio worker while the network queue and its lock
+     * still exist.  The worker calls network_clear_audio() as part of its
+     * teardown, so destroying networking first was the wrong lifetime. */
     if (audio_ok) audio_exit();
+    if (network_ok) network_exit();
     if (video_ok) video_exit();
+    APT_SetAppCpuTimeLimit(10);
     gfxExit();
     return 0;
 }

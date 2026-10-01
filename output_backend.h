@@ -24,6 +24,7 @@ typedef struct {
     void (*update)(const int8_t state[CONTROLLER_STATE_COUNT]);
     void (*reset)(void);
     void (*press_home)(void);
+    void (*press_capture)(void);
 
     /*
      * Advance non-blocking backend maintenance from the Capture2Cloud

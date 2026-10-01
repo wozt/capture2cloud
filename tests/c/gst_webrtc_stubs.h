@@ -46,8 +46,26 @@ int drc_encoder_encode(DrcEncoder *e, const uint8_t *i420, int idr, DrcFrame *ou
 int drc_encoder_restart(DrcEncoder *e) { (void)e; return -1; }
 const char *drc_encoder_library(const DrcEncoder *e) { (void)e; return ""; }
 
-void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *d, uint32_t n, int k) {
-    (void)s; (void)slot; (void)d; (void)n; (void)k;
+Old3dsEncoder *old3ds_encoder_create(void) { return NULL; }
+void old3ds_encoder_destroy(Old3dsEncoder *e) { (void)e; }
+void old3ds_encoder_set_bitrate(Old3dsEncoder *e, int kbps) {
+    (void)e; (void)kbps;
+}
+void old3ds_encoder_set_codec(Old3dsEncoder *e, uint8_t codec) {
+    (void)e; (void)codec;
+}
+void old3ds_encoder_request_keyframe(Old3dsEncoder *e) { (void)e; }
+int old3ds_encoder_encode(Old3dsEncoder *e, const uint8_t *const planes[3],
+                          const int strides[3], int format, int width, int height,
+                          const uint8_t **out, uint32_t *size, int *keyframe) {
+    (void)e; (void)planes; (void)strides; (void)format; (void)width; (void)height;
+    (void)out; (void)size; (void)keyframe;
+    return 0;
+}
+
+void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *d, uint32_t n,
+                              int k, uint8_t codec) {
+    (void)s; (void)slot; (void)d; (void)n; (void)k; (void)codec;
 }
 
 void switch_stream_announce_stream(SwitchStream *s, int slot, uint16_t w, uint16_t h) {

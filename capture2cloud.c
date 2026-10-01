@@ -333,7 +333,7 @@ static void process_wiiu_pad_request(void)
                 wiiu_pad_request_start(g_wiiu_pad);
             } else {
                 g_wiiu_pad =
-                    wiiu_pad_start(g_project_dir, C2S_DRC_PORT);
+                    wiiu_pad_start(g_project_dir, (uint16_t)g_settings.wiiu_pad_port);
             }
             break;
 
@@ -359,7 +359,7 @@ static void process_wiiu_pad_request(void)
                 wiiu_pad_request_restart(g_wiiu_pad);
             } else {
                 g_wiiu_pad =
-                    wiiu_pad_start(g_project_dir, C2S_DRC_PORT);
+                    wiiu_pad_start(g_project_dir, (uint16_t)g_settings.wiiu_pad_port);
             }
             break;
 
@@ -393,6 +393,7 @@ static void publish_client_status(void) {
         { SS_STREAM_H264, GTK_SHELL_CLIENT_NATIVE },
         { SS_STREAM_DRC,  GTK_SHELL_CLIENT_WIIU_PAD },
         { SS_STREAM_WIIU, GTK_SHELL_CLIENT_WIIU_CONSOLE },
+        { SS_STREAM_OLD3DS, GTK_SHELL_CLIENT_OLD3DS },
     };
 
     for (size_t i = 0; i < sizeof(MAP) / sizeof(*MAP); i++) {
@@ -458,6 +459,7 @@ static void on_settings(void *userdata, const AppSettings *want) {
             web_stream_stop(g_web);
             start_or_report_web_stream();
         }
+        config_set_int("WEB_PORT", have->web_port);
     }
     if (want->stream_enabled != have->stream_enabled) {
         have->stream_enabled = want->stream_enabled;
@@ -468,18 +470,39 @@ static void on_settings(void *userdata, const AppSettings *want) {
         }
     }
     if (want->switch_enabled != have->switch_enabled ||
-        (want->switch_port != have->switch_port && want->switch_port > 0)) {
+        (want->switch_port != have->switch_port && want->switch_port > 0) ||
+        (want->wiiu_pad_port != have->wiiu_pad_port && want->wiiu_pad_port > 0) ||
+        (want->wiiu_console_port != have->wiiu_console_port && want->wiiu_console_port > 0) ||
+        (want->old3ds_port != have->old3ds_port && want->old3ds_port > 0)) {
         have->switch_enabled = want->switch_enabled;
         if (want->switch_port > 0) {
             have->switch_port = want->switch_port;
         }
+        if (want->wiiu_pad_port > 0) {
+            have->wiiu_pad_port = want->wiiu_pad_port;
+        }
+        if (want->wiiu_console_port > 0) {
+            have->wiiu_console_port = want->wiiu_console_port;
+        }
+        if (want->old3ds_port > 0) {
+            have->old3ds_port = want->old3ds_port;
+        }
+        config_set_int("SWITCH_AUTOSTART", have->switch_enabled ? 1 : 0);
+        config_set_int("SWITCH_PORT", have->switch_port);
+        config_set_int("WIIU_PAD_PORT", have->wiiu_pad_port);
+        config_set_int("WIIU_CONSOLE_PORT", have->wiiu_console_port);
+        config_set_int("OLD3DS_PORT", have->old3ds_port);
         /* Torn down and started again: a listening socket cannot be
          * moved. Whoever was connected is dropped, which is the honest
          * outcome -- they were told to knock on a door that is no longer
          * there, and the console has to be pointed at the new one. */
         switch_stream_stop(g_switch);
         g_switch = have->switch_enabled
-                       ? switch_stream_start(g_web, (uint16_t)have->switch_port)
+                       ? switch_stream_start(g_web,
+                                             (uint16_t)have->switch_port,
+                                             (uint16_t)have->wiiu_pad_port,
+                                             (uint16_t)have->wiiu_console_port,
+                                             (uint16_t)have->old3ds_port)
                        : NULL;
         /* Told either way: a NULL output is what makes the encoder stop
          * being fed rather than encoding for a server that is gone. */
@@ -1222,19 +1245,29 @@ int main(int argc, char **argv) {
     /* Off unless asked for: it needs radio hardware most machines do
      * not have, and starting it without that only produces an error. */
     g_settings.wiiu_pad_enabled = (int)config_get_int("WIIU_PAD_AUTOSTART", 0, 0, 1);
+    g_settings.wiiu_pad_port =
+        (int)config_get_int("WIIU_PAD_PORT", C2S_DRC_PORT, 1, 65535);
     g_settings.wiiu_pad_bitrate_mbps =
         (int)config_get_int("WIIU_PAD_BITRATE_MBPS", 6, 2, 20);
     /* Off unless asked for, like the pad's, and for a milder reason: a
      * chain nobody is on costs nothing, but a machine that has never
      * seen a Wii U should not be listening on its behalf. */
     g_settings.wiiu_console_enabled = (int)config_get_int("WIIU_CONSOLE_ENABLED", 0, 0, 1);
+    g_settings.wiiu_console_port =
+        (int)config_get_int("WIIU_CONSOLE_PORT", C2S_WIIU_PORT, 1, 65535);
     g_settings.wiiu_console_height = (int)config_get_int("WIIU_CONSOLE_HEIGHT", 720, 480, 1080);
     g_settings.wiiu_console_bitrate_mbps =
         (int)config_get_int("WIIU_CONSOLE_BITRATE_MBPS", 8, 2, 30);
+    g_settings.old3ds_port =
+        (int)config_get_int("OLD3DS_PORT", C2S_OLD3DS_PORT, 1, 65535);
     web_stream_set_native_counter(g_web, count_native_clients, NULL);
     web_stream_set_native_adopt(g_web, adopt_web_socket, NULL);
     g_switch = g_settings.switch_enabled
-                   ? switch_stream_start(g_web, (uint16_t)g_settings.switch_port)
+                   ? switch_stream_start(g_web,
+                                         (uint16_t)g_settings.switch_port,
+                                         (uint16_t)g_settings.wiiu_pad_port,
+                                         (uint16_t)g_settings.wiiu_console_port,
+                                         (uint16_t)g_settings.old3ds_port)
                    : NULL;
     gst_webrtc_stream_set_switch_output(g_gst, g_switch);
     /* The console client's chain, from what was remembered. Applied at
@@ -1259,7 +1292,7 @@ int main(int argc, char **argv) {
      */
     gst_webrtc_stream_set_drc_enabled(g_gst, g_settings.wiiu_pad_enabled);
     if (g_settings.wiiu_pad_enabled && g_switch) {
-        g_wiiu_pad = wiiu_pad_start(g_project_dir, C2S_DRC_PORT);
+        g_wiiu_pad = wiiu_pad_start(g_project_dir, (uint16_t)g_settings.wiiu_pad_port);
         fprintf(stderr, "wiiu_pad: %s\n", wiiu_pad_status(g_wiiu_pad));
     }
 
