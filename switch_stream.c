@@ -554,7 +554,7 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
         }
         const int predictive_old3ds =
             type == C2S_MSG_VIDEO && c->on_old3ds_port &&
-            c->codec == C2S_CODEC_OLD3DS_MPEG4;
+            c2s_old3ds_predictive_codec(c->codec);
         if (predictive_old3ds && c->waiting_keyframe &&
             !(flags & C2S_FLAG_KEYFRAME)) {
             skipped = 1;
@@ -734,7 +734,7 @@ static void broadcast_filtered(SwitchStream *s, int slot_filter,
                     s->skipped_frames, allowance, s->max_frame_bytes);
         }
         if ((slot_filter != SS_STREAM_OLD3DS ||
-             s->old3ds_codec == C2S_CODEC_OLD3DS_MPEG4) && s->keyframe_cb &&
+             c2s_old3ds_predictive_codec(s->old3ds_codec)) && s->keyframe_cb &&
             t - s->last_keyframe_ms >= SS_KEYFRAME_MIN_INTERVAL_MS) {
             s->last_keyframe_ms = t;
             s->keyframe_cb(s->keyframe_ctx);
@@ -762,8 +762,10 @@ void switch_stream_send_video(SwitchStream *s, int slot, const uint8_t *data, ui
     /* Only to the clients on that stream. The others are watching a
      * different encode and would decode these bytes as their own. */
     uint8_t flags = keyframe ? C2S_FLAG_KEYFRAME : 0;
-    if (slot == SS_STREAM_OLD3DS && codec == C2S_CODEC_OLD3DS_MPEG4) {
-        flags |= C2S_FLAG_OLD3DS_MPEG4;
+    if (slot == SS_STREAM_OLD3DS) {
+        if (codec == C2S_CODEC_OLD3DS_MPEG4) flags |= C2S_FLAG_OLD3DS_MPEG4;
+        if (codec == C2S_CODEC_OLD3DS_MPEG1) flags |= C2S_FLAG_OLD3DS_MPEG1;
+        if (codec == C2S_CODEC_OLD3DS_MPEG2) flags |= C2S_FLAG_OLD3DS_MPEG2;
     }
     broadcast(s, slot, C2S_MSG_VIDEO, flags, data, size);
 }
@@ -1317,8 +1319,7 @@ static void handle_hello(SwitchStream *s, int index) {
      * did, reporting a stream that "is not what this client asked
      * for" twice on the way to being right. */
     if (c->codec != C2S_CODEC_DRC_H264 &&
-        c->codec != C2S_CODEC_OLD3DS_JPEG &&
-        c->codec != C2S_CODEC_OLD3DS_MPEG4) {
+        !c2s_old3ds_video_codec(c->codec)) {
         c->codec = C2S_CODEC_H264;
     }
     {
@@ -1397,13 +1398,13 @@ static void handle_hello(SwitchStream *s, int index) {
     c->handshake_done = 1;
     c->may_control = ack.may_control;
     c->waiting_keyframe = c->on_old3ds_port &&
-        s->old3ds_codec == C2S_CODEC_OLD3DS_MPEG4;
+        c2s_old3ds_predictive_codec(s->old3ds_codec);
 
     /* This client has seen no picture at all, so the next one has to be
      * a keyframe -- otherwise it decodes against frames that went out
      * before it arrived and shows garbage until the interval elapses. */
     if (!c->on_old3ds_port ||
-        s->old3ds_codec == C2S_CODEC_OLD3DS_MPEG4) {
+        c2s_old3ds_predictive_codec(s->old3ds_codec)) {
         s->keyframe_pending = 1;
     }
 
@@ -1606,8 +1607,7 @@ static void handle_messages(SwitchStream *s, int index) {
                     C2sProfile p;
                     memcpy(&p, payload, sizeof(p));
                     fprintf(stderr, "switch_stream: client %d (%s) asks for %ux%u@%u, %u kbps\n",
-                            index, (c->codec == C2S_CODEC_OLD3DS_JPEG ||
-                                    c->codec == C2S_CODEC_OLD3DS_MPEG4) ? "old3ds" :
+                            index, c2s_old3ds_video_codec(c->codec) ? "old3ds" :
                                    c->codec == C2S_CODEC_H264 ? "h264" : "vp8",
                             p.width, p.height, p.fps, p.bitrate_kbps);
                     if (s->profile_cb) {
@@ -1631,8 +1631,7 @@ static void handle_messages(SwitchStream *s, int index) {
                  * stream. */
                 if (c->on_old3ds_port) {
                     if (h.size == 1 &&
-                        (payload[0] == C2S_CODEC_OLD3DS_JPEG ||
-                         payload[0] == C2S_CODEC_OLD3DS_MPEG4) &&
+                        c2s_old3ds_video_codec(payload[0]) &&
                         s->old3ds_codec != payload[0]) {
                         s->old3ds_codec = payload[0];
                         if (s->shared_known[SS_STREAM_OLD3DS]) {
@@ -1644,13 +1643,16 @@ static void handle_messages(SwitchStream *s, int index) {
                                 s->clients[peer].on_old3ds_port) {
                                 s->clients[peer].codec = payload[0];
                                 s->clients[peer].waiting_keyframe =
-                                    payload[0] == C2S_CODEC_OLD3DS_MPEG4;
+                                    c2s_old3ds_predictive_codec(payload[0]);
                                 send_group_state(s, peer);
                             }
                         }
+                        const char *name = payload[0] == C2S_CODEC_OLD3DS_MPEG1
+                            ? "mpeg1" : payload[0] == C2S_CODEC_OLD3DS_MPEG2
+                                ? "mpeg2" : payload[0] == C2S_CODEC_OLD3DS_MPEG4
+                                    ? "mpeg4" : "jpeg";
                         fprintf(stderr, "switch_stream: old3ds stream now on %s\n",
-                                payload[0] == C2S_CODEC_OLD3DS_MPEG4
-                                    ? "mpeg4" : "jpeg");
+                                name);
                         codec_changed = 1;
                     }
                     break;
@@ -2128,7 +2130,7 @@ SwitchStream *switch_stream_start(WebStream *ws,
                 0) |
                 O_NONBLOCK);
 
-        int sndbuf = 64 * 1024;
+        int sndbuf = 256 * 1024;
 
         setsockopt(
             s->audio_udp_fd,

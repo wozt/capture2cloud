@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Minimal LGPL FFmpeg build for the Old 3DS MPEG-4 Part 2 decoder.
+# Minimal LGPL FFmpeg build for the Old 3DS MPEG-1/2/4 video decoders.
 # Only avcodec/avutil/swscale are built; no demuxer, network stack,
 # command-line program or unrelated decoder is shipped in the CIA.
 
@@ -35,7 +35,7 @@ make distclean >/dev/null 2>&1 || true
     --disable-swresample --disable-network --disable-autodetect --disable-neon \
     --disable-armv6t2 --disable-pthreads --enable-inline-asm --enable-vfp \
     --enable-armv5te --enable-armv6 --enable-avcodec --enable-avutil \
-    --enable-swscale --enable-decoder=mpeg4
+    --enable-swscale --enable-decoder=mpeg1video,mpeg2video,mpeg4
 
 make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 make install

@@ -11,7 +11,7 @@ typedef struct Old3dsEncoder Old3dsEncoder;
 #define OLD3DS_VIDEO_FPS 30
 #define OLD3DS_VIDEO_BITRATE_KBPS 1200
 
-/* A completely independent 400x240 JPEG / MPEG-4 Part 2 encoder for the
+/* A completely independent 400x240 JPEG / MPEG-1/2/4 encoder for the
  * Old 3DS/2DS client.  The returned buffer belongs to the encoder and
  * stays valid until the next encode call. */
 Old3dsEncoder *old3ds_encoder_create(void);

@@ -20,6 +20,7 @@ bool video_init(void);
 void video_clear(void);
 void video_exit(void);
 bool video_decode_and_present(const uint8_t *data, uint32_t size,
-                              uint32_t received_ms, uint8_t codec);
+                              uint32_t received_ms, uint8_t codec,
+                              bool present);
 void video_note_received_bytes(uint32_t frame_size);
 void video_get_stats(VideoStats *stats);

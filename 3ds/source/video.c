@@ -26,9 +26,9 @@ static DecodeError g_error;
 static uint16_t *g_pixels;
 static uint8_t *g_yuv420;
 static bool g_y2r;
-static AVCodecContext *g_mpeg4;
-static AVFrame *g_mpeg4_frame;
-static struct SwsContext *g_mpeg4_scale;
+static AVCodecContext *g_video_decoder;
+static AVFrame *g_video_frame;
+static struct SwsContext *g_video_scale;
 static uint8_t g_last_codec;
 static VideoStats g_stats;
 static uint32_t g_window_start;
@@ -38,6 +38,28 @@ static uint32_t g_window_displayed;
 static uint64_t g_window_bytes;
 static uint64_t g_decode_total_ms;
 static uint64_t g_upload_total_ms;
+
+static enum AVCodecID decoder_id(uint8_t codec)
+{
+    if (codec == C2S_CODEC_OLD3DS_MPEG1) return AV_CODEC_ID_MPEG1VIDEO;
+    if (codec == C2S_CODEC_OLD3DS_MPEG2) return AV_CODEC_ID_MPEG2VIDEO;
+    return AV_CODEC_ID_MPEG4;
+}
+
+static bool open_video_decoder(uint8_t codec)
+{
+    const AVCodec *decoder = avcodec_find_decoder(decoder_id(codec));
+    if (!decoder) return false;
+    avcodec_free_context(&g_video_decoder);
+    g_video_decoder = avcodec_alloc_context3(decoder);
+    if (!g_video_decoder) return false;
+    g_video_decoder->flags2 |= AV_CODEC_FLAG2_FAST;
+    if (avcodec_open2(g_video_decoder, decoder, NULL) < 0) {
+        avcodec_free_context(&g_video_decoder);
+        return false;
+    }
+    return true;
+}
 
 static void decode_failed(j_common_ptr jpeg)
 {
@@ -58,20 +80,19 @@ bool video_init(void)
     }
     jpeg_create_decompress(&g_jpeg);
 
-    const AVCodec *mpeg4 = avcodec_find_decoder(AV_CODEC_ID_MPEG4);
-    g_mpeg4 = mpeg4 ? avcodec_alloc_context3(mpeg4) : NULL;
-    g_mpeg4_frame = av_frame_alloc();
-    if (g_mpeg4) g_mpeg4->flags2 |= AV_CODEC_FLAG2_FAST;
-    if (!g_mpeg4 || !g_mpeg4_frame || avcodec_open2(g_mpeg4, mpeg4, NULL) < 0) {
-        av_frame_free(&g_mpeg4_frame);
-        avcodec_free_context(&g_mpeg4);
+    g_video_frame = av_frame_alloc();
+    if (!g_video_frame ||
+        !avcodec_find_decoder(AV_CODEC_ID_MPEG1VIDEO) ||
+        !avcodec_find_decoder(AV_CODEC_ID_MPEG2VIDEO) ||
+        !avcodec_find_decoder(AV_CODEC_ID_MPEG4)) {
+        av_frame_free(&g_video_frame);
         jpeg_destroy_decompress(&g_jpeg);
         linearFree(g_pixels);
         g_pixels = NULL;
         return false;
     }
 
-    /* Y2R is the 3DS' hardware YUV-to-RGB converter.  MPEG-4 still
+    /* Y2R is the 3DS' hardware YUV-to-RGB converter.  MPEG video still
      * decodes on ARM11, but the colour conversion no longer consumes
      * that same core.  Keep libswscale as a complete runtime fallback. */
     if (R_SUCCEEDED(y2rInit())) {
@@ -101,10 +122,10 @@ void video_exit(void)
     g_y2r = false;
     linearFree(g_yuv420);
     g_yuv420 = NULL;
-    sws_freeContext(g_mpeg4_scale);
-    g_mpeg4_scale = NULL;
-    av_frame_free(&g_mpeg4_frame);
-    avcodec_free_context(&g_mpeg4);
+    sws_freeContext(g_video_scale);
+    g_video_scale = NULL;
+    av_frame_free(&g_video_frame);
+    avcodec_free_context(&g_video_decoder);
     jpeg_destroy_decompress(&g_jpeg);
     linearFree(g_pixels);
     g_pixels = NULL;
@@ -164,30 +185,36 @@ static bool decode_jpeg(const uint8_t *data, uint32_t size)
     return true;
 }
 
-static bool decode_mpeg4(const uint8_t *data, uint32_t size)
+static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
 {
     AVPacket packet;
     memset(&packet, 0, sizeof(packet));
     packet.data = (uint8_t *)data;
     packet.size = (int)size;
-    if (avcodec_send_packet(g_mpeg4, &packet) < 0 ||
-        avcodec_receive_frame(g_mpeg4, g_mpeg4_frame) < 0) {
+    if (!g_video_decoder ||
+        avcodec_send_packet(g_video_decoder, &packet) < 0 ||
+        avcodec_receive_frame(g_video_decoder, g_video_frame) < 0) {
         return false;
     }
-    if (g_mpeg4_frame->width != VIDEO_WIDTH ||
-        g_mpeg4_frame->height != VIDEO_HEIGHT) return false;
+    if (g_video_frame->width != VIDEO_WIDTH ||
+        g_video_frame->height != VIDEO_HEIGHT) return false;
+
+    /* A predictive stream must decode every reference frame, but an old
+     * frame need not also pay for Y2R, a 192 KiB RGB write and a framebuffer
+     * transpose.  The caller uses this when catching up to the live edge. */
+    if (!convert) return true;
 
     if (g_y2r &&
-        (g_mpeg4_frame->format == AV_PIX_FMT_YUV420P ||
-         g_mpeg4_frame->format == AV_PIX_FMT_YUVJ420P)) {
+        (g_video_frame->format == AV_PIX_FMT_YUV420P ||
+         g_video_frame->format == AV_PIX_FMT_YUVJ420P)) {
         uint8_t *destination = g_yuv420;
         for (int plane = 0; plane < 3; plane++) {
             const int plane_width = plane == 0 ? VIDEO_WIDTH : VIDEO_WIDTH / 2;
             const int plane_height = plane == 0 ? VIDEO_HEIGHT : VIDEO_HEIGHT / 2;
             for (int row = 0; row < plane_height; row++) {
                 memcpy(destination + (size_t)row * plane_width,
-                       g_mpeg4_frame->data[plane] +
-                           (size_t)row * g_mpeg4_frame->linesize[plane],
+                       g_video_frame->data[plane] +
+                           (size_t)row * g_video_frame->linesize[plane],
                        (size_t)plane_width);
             }
             destination += (size_t)plane_width * plane_height;
@@ -245,40 +272,54 @@ static bool decode_mpeg4(const uint8_t *data, uint32_t size)
 
     g_stats.hardware_conversion = false;
 
-    g_mpeg4_scale = sws_getCachedContext(
-        g_mpeg4_scale,
-        g_mpeg4_frame->width, g_mpeg4_frame->height,
-        (enum AVPixelFormat)g_mpeg4_frame->format,
+    g_video_scale = sws_getCachedContext(
+        g_video_scale,
+        g_video_frame->width, g_video_frame->height,
+        (enum AVPixelFormat)g_video_frame->format,
         VIDEO_WIDTH, VIDEO_HEIGHT, AV_PIX_FMT_RGB565LE,
         SWS_FAST_BILINEAR, NULL, NULL, NULL);
-    if (!g_mpeg4_scale) return false;
+    if (!g_video_scale) return false;
     uint8_t *destination[4] = {(uint8_t *)g_pixels, NULL, NULL, NULL};
     int destination_stride[4] = {VIDEO_WIDTH * (int)sizeof(uint16_t), 0, 0, 0};
-    return sws_scale(g_mpeg4_scale,
-                     (const uint8_t *const *)g_mpeg4_frame->data,
-                     g_mpeg4_frame->linesize, 0, g_mpeg4_frame->height,
+    return sws_scale(g_video_scale,
+                     (const uint8_t *const *)g_video_frame->data,
+                     g_video_frame->linesize, 0, g_video_frame->height,
                      destination, destination_stride) == VIDEO_HEIGHT;
 }
 
 bool video_decode_and_present(const uint8_t *data, uint32_t size,
-                              uint32_t received_ms, uint8_t codec)
+                              uint32_t received_ms, uint8_t codec,
+                              bool present)
 {
     uint32_t decode_start = osGetTime();
     if (codec != g_last_codec) {
-        if (codec == C2S_CODEC_OLD3DS_MPEG4) avcodec_flush_buffers(g_mpeg4);
+        if (c2s_old3ds_predictive_codec(codec) &&
+            !open_video_decoder(codec)) {
+            g_stats.decode_errors++;
+            refresh_rates(osGetTime());
+            return false;
+        }
         g_last_codec = codec;
     }
-    if (codec != C2S_CODEC_OLD3DS_MPEG4) {
+    if (!c2s_old3ds_predictive_codec(codec)) {
         g_stats.hardware_conversion = false;
     }
-    const bool decoded = codec == C2S_CODEC_OLD3DS_MPEG4
-        ? decode_mpeg4(data, size) : decode_jpeg(data, size);
+    const bool decoded = c2s_old3ds_predictive_codec(codec)
+        ? decode_mpeg_video(data, size, present) : decode_jpeg(data, size);
     if (!decoded) {
         g_stats.decode_errors++;
         refresh_rates(osGetTime());
         return false;
     }
     uint32_t decode_end = osGetTime();
+
+    g_decode_total_ms += decode_end - decode_start;
+    g_window_decoded++;
+    g_stats.decoded++;
+    if (!present) {
+        refresh_rates(decode_end);
+        return true;
+    }
 
     u16 framebuffer_width = 0;
     u16 framebuffer_height = 0;
@@ -288,20 +329,24 @@ bool video_decode_and_present(const uint8_t *data, uint32_t size,
         framebuffer_height < VIDEO_WIDTH) return false;
 
     /* Y2R and libjpeg both produce row-major pixels.  The 3DS framebuffer
-     * is rotated, so transpose here.  Y2R's own rotation mode does not
-     * produce the byte layout gfxGetFramebuffer exposes on real hardware. */
-    for (int x = 0; x < VIDEO_WIDTH; x++) {
-        uint16_t *dst = framebuffer + (size_t)x * framebuffer_width;
-        for (int y = 0; y < VIDEO_HEIGHT; y++) {
-            dst[VIDEO_HEIGHT - 1 - y] = g_pixels[y * VIDEO_WIDTH + x];
+     * is rotated, so transpose here.  Work in 8x8 tiles: the old full-column
+     * walk jumped 800 bytes between every source pixel and repeatedly missed
+     * the tiny Old 3DS data cache.  A tile loads eight source rows once while
+     * retaining contiguous writes on each framebuffer row. */
+    for (int block_y = 0; block_y < VIDEO_HEIGHT; block_y += 8) {
+        for (int block_x = 0; block_x < VIDEO_WIDTH; block_x += 8) {
+            for (int x = block_x; x < block_x + 8; x++) {
+                uint16_t *dst = framebuffer + (size_t)x * framebuffer_width;
+                for (int y = block_y; y < block_y + 8; y++) {
+                    dst[VIDEO_HEIGHT - 1 - y] =
+                        g_pixels[(size_t)y * VIDEO_WIDTH + x];
+                }
+            }
         }
     }
     uint32_t upload_end = osGetTime();
-    g_decode_total_ms += decode_end - decode_start;
     g_upload_total_ms += upload_end - decode_end;
-    g_window_decoded++;
     g_window_displayed++;
-    g_stats.decoded++;
     g_stats.local_latency_ms = upload_end - received_ms;
     refresh_rates(upload_end);
     return true;

@@ -54,8 +54,15 @@ bool config_load(AppConfig *config)
         } else if (!strcmp(line, "stats")) {
             config->stats_enabled = atoi(equals) != 0;
         } else if (!strcmp(line, "codec")) {
-            config->video_codec = !strcmp(equals, "jpeg")
-                ? C2S_CODEC_OLD3DS_JPEG : C2S_CODEC_OLD3DS_MPEG4;
+            if (!strcmp(equals, "jpeg")) {
+                config->video_codec = C2S_CODEC_OLD3DS_JPEG;
+            } else if (!strcmp(equals, "mpeg1")) {
+                config->video_codec = C2S_CODEC_OLD3DS_MPEG1;
+            } else if (!strcmp(equals, "mpeg2")) {
+                config->video_codec = C2S_CODEC_OLD3DS_MPEG2;
+            } else {
+                config->video_codec = C2S_CODEC_OLD3DS_MPEG4;
+            }
         } else if (!strcmp(line, "right_stick_deadzone")) {
             int value = atoi(equals);
             if (value >= 0 && value <= 50) config->right_stick_deadzone = value;
@@ -78,8 +85,11 @@ bool config_save(const AppConfig *config)
     fprintf(file, "auto_connect=%d\n", config->auto_connect ? 1 : 0);
     fprintf(file, "audio=%d\n", config->audio_enabled ? 1 : 0);
     fprintf(file, "stats=%d\n", config->stats_enabled ? 1 : 0);
-    fprintf(file, "codec=%s\n",
-            config->video_codec == C2S_CODEC_OLD3DS_JPEG ? "jpeg" : "mpeg4");
+    const char *codec = config->video_codec == C2S_CODEC_OLD3DS_JPEG
+        ? "jpeg" : config->video_codec == C2S_CODEC_OLD3DS_MPEG1
+            ? "mpeg1" : config->video_codec == C2S_CODEC_OLD3DS_MPEG2
+                ? "mpeg2" : "mpeg4";
+    fprintf(file, "codec=%s\n", codec);
     fprintf(file, "right_stick_deadzone=%d\n", config->right_stick_deadzone);
     bool ok = fclose(file) == 0;
     return ok;

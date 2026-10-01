@@ -13,6 +13,7 @@
 #define AUDIO_BATCH_PACKETS 4
 #define AUDIO_START_PACKETS 8
 #define AUDIO_ADPCM_START_PACKETS 3
+#define AUDIO_ADPCM_TARGET_BUFFERS 3
 
 static OpusDecoder *g_decoder;
 static ndspWaveBuf g_wave[AUDIO_BUFFERS];
@@ -130,6 +131,12 @@ static uint32_t audio_service_once(void)
         const uint32_t depth = network_audio_depth();
         uint8_t queued_codec = C2S_CODEC_OPUS;
         if (!depth || !network_peek_audio_codec(&queued_codec)) break;
+        /* One ADPCM wave is exactly 20 ms.  Filling every one of the twelve
+         * NDSP slots can therefore put sound almost a quarter-second behind
+         * live video.  Three buffers retain jitter tolerance while bounding
+         * the normal audio queue to about 60 ms. */
+        if (queued_codec == C2S_CODEC_OLD3DS_ADPCM &&
+            queued >= AUDIO_ADPCM_TARGET_BUFFERS) break;
         const int packets_per_wave =
             queued_codec == C2S_CODEC_OLD3DS_ADPCM ? 1 : AUDIO_BATCH_PACKETS;
         if (depth < (uint32_t)packets_per_wave && queued >= 2) break;

@@ -10,6 +10,22 @@ static u16 g_fb_width;
 static u16 g_fb_height;
 static int g_active;
 
+static const char *codec_short_name(uint8_t codec)
+{
+    if (codec == C2S_CODEC_OLD3DS_MPEG1) return "M1V";
+    if (codec == C2S_CODEC_OLD3DS_MPEG2) return "M2V";
+    if (codec == C2S_CODEC_OLD3DS_MPEG4) return "M4V";
+    return "JPG";
+}
+
+static const char *codec_name(uint8_t codec)
+{
+    if (codec == C2S_CODEC_OLD3DS_MPEG1) return "MPEG1";
+    if (codec == C2S_CODEC_OLD3DS_MPEG2) return "MPEG2";
+    if (codec == C2S_CODEC_OLD3DS_MPEG4) return "MPEG4";
+    return "JPEG";
+}
+
 enum {
     TOUCH_NONE,
     TOUCH_ZL,
@@ -264,8 +280,7 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
     button(110, 194, 44, 34, "-", event->controls.minus);
     button(164, 194, 44, 34, "+", event->controls.plus);
     button(4, 210, 54, 26, "CFG", g_active == TOUCH_CONFIG);
-    button(60, 210, 48, 26,
-           video_codec == C2S_CODEC_OLD3DS_JPEG ? "JPG" : "M4V",
+    button(60, 210, 48, 26, codec_short_name(video_codec),
            g_active == TOUCH_CODEC);
     button(262, 210, 54, 26, "STAT", g_active == TOUCH_STATS);
 
@@ -300,8 +315,8 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
                  (unsigned long)audio->underruns);
         text(6, 147, line, 1, color(214, 224, 231));
         snprintf(line, sizeof(line), "%s%s C%u ERR %lu",
-                 video_codec == C2S_CODEC_OLD3DS_JPEG ? "JPEG" : "MPEG4",
-                 video_codec == C2S_CODEC_OLD3DS_MPEG4 && video->hardware_conversion
+                 codec_name(video_codec),
+                 c2s_old3ds_predictive_codec(video_codec) && video->hardware_conversion
                      ? "/Y2R" : "",
                  network->worker_core,
                  (unsigned long)video->decode_errors);
@@ -330,8 +345,7 @@ void touch_ui_draw_config(const AppConfig *config, const NetworkStats *network,
     button(8, 117, 94, 25, label, config->auto_connect);
     snprintf(label, sizeof(label), "AUDIO %s", config->audio_enabled ? "ON" : "OFF");
     button(106, 117, 94, 25, label, config->audio_enabled);
-    snprintf(label, sizeof(label), "%s",
-             config->video_codec == C2S_CODEC_OLD3DS_JPEG ? "JPEG" : "MPEG4");
+    snprintf(label, sizeof(label), "%s", codec_name(config->video_codec));
     button(204, 117, 108, 25, label, false);
     button(8, 151, 60, 29, "SAVE", false);
     button(72, 151, 74, 29, "CONNECT", false);

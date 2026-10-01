@@ -1380,7 +1380,10 @@ static void on_switch_profile_request(void *ctx, int slot, int w, int h, int fps
          * quality choice.  Only the JPEG quality budget is adjustable. */
         if (bitrate_kbps > 0) {
             if (bitrate_kbps < 600) bitrate_kbps = 600;
-            if (bitrate_kbps > 3600) bitrate_kbps = 3600;
+            /* Retail Old 3DS tests show its TCP receive path begins to
+             * accumulate and drop frames above this point.  A client's old
+             * saved 1200/3600 value must not silently re-enable the stutter. */
+            if (bitrate_kbps > 900) bitrate_kbps = 900;
             g->switch_bitrate_kbps[slot] = bitrate_kbps;
             if (g->old3ds_encoder) {
                 old3ds_encoder_set_bitrate(g->old3ds_encoder, bitrate_kbps);
@@ -2250,8 +2253,9 @@ static void push_old3ds_chain(GstWebrtcStream *g,
     }
 
     int codec = switch_stream_stream_codec(g->switch_out, SS_STREAM_OLD3DS);
-    if (codec != C2S_CODEC_OLD3DS_JPEG &&
-        codec != C2S_CODEC_OLD3DS_MPEG4) codec = C2S_CODEC_OLD3DS_JPEG;
+    if (!c2s_old3ds_video_codec((uint8_t)codec)) {
+        codec = C2S_CODEC_OLD3DS_JPEG;
+    }
     old3ds_encoder_set_codec(g->old3ds_encoder, (uint8_t)codec);
     if (g->old3ds_want_keyframe) {
         g->old3ds_want_keyframe = 0;

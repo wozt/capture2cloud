@@ -59,7 +59,8 @@
 #define C2S_WIIU_PORT 5083
 
 /*
- * Wii U console audio deliberately does NOT share the video TCP stream.
+ * Wii U console audio and negotiated Old 3DS media deliberately do NOT
+ * share the video/control TCP stream.
  *
  * One packet is normally 5 ms of S16LE stereo PCM:
  *
@@ -236,8 +237,29 @@ typedef enum {
     /* 24 kHz stereo IMA-ADPCM in independent 20 ms UDP blocks.  This
      * is the Old 3DS audio path: roughly 192 kbit/s and only 50 packets
      * per second, with a decoder made of integer adds and shifts. */
-    C2S_CODEC_OLD3DS_ADPCM = 8
+    C2S_CODEC_OLD3DS_ADPCM = 8,
+
+    /* Comparison codecs for the Old 3DS software decoder.  They use the
+     * same 400x240@30 low-delay profile as MPEG-4 Part 2, but the simpler
+     * bitstreams are materially cheaper to decode on ARM11. */
+    C2S_CODEC_OLD3DS_MPEG1 = 9,
+    C2S_CODEC_OLD3DS_MPEG2 = 10
 } C2sCodec;
+
+static inline int c2s_old3ds_video_codec(uint8_t codec)
+{
+    return codec == C2S_CODEC_OLD3DS_JPEG ||
+           codec == C2S_CODEC_OLD3DS_MPEG4 ||
+           codec == C2S_CODEC_OLD3DS_MPEG1 ||
+           codec == C2S_CODEC_OLD3DS_MPEG2;
+}
+
+static inline int c2s_old3ds_predictive_codec(uint8_t codec)
+{
+    return codec == C2S_CODEC_OLD3DS_MPEG4 ||
+           codec == C2S_CODEC_OLD3DS_MPEG1 ||
+           codec == C2S_CODEC_OLD3DS_MPEG2;
+}
 
 /* Fixed by the pad's protocol, not chosen: the panel libdrc feeds is
  * 864x480 and the slicing is always five chunks. */
@@ -326,10 +348,12 @@ typedef enum {
 } C2sMsgType;
 
 #define C2S_FLAG_KEYFRAME       0x01
-/* Set on VIDEO frames carrying the Old 3DS MPEG-4 Part 2 elementary
- * stream.  Keeping the codec on every frame makes a live codec switch
- * unambiguous even when older JPEG frames are still queued in TCP. */
+/* Set on VIDEO frames carrying one of the Old 3DS MPEG elementary
+ * streams.  Keeping the codec on every frame makes a live codec switch
+ * unambiguous even when frames from the previous mode remain in TCP. */
 #define C2S_FLAG_OLD3DS_MPEG4   0x02
+#define C2S_FLAG_OLD3DS_MPEG1   0x04
+#define C2S_FLAG_OLD3DS_MPEG2   0x08
 
 typedef struct __attribute__((packed)) {
     uint8_t  type;   /* C2sMsgType */

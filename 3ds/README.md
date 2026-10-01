@@ -28,7 +28,15 @@ make
 ```
 
 The outputs are `capture2cloud-old3ds.3dsx` and
-`capture2cloud-old3ds.cia`.
+`capture2cloud-old3ds.cia`. The on-screen codec button cycles through
+JPEG, MPEG-4 Part 2, MPEG-1 Video and MPEG-2 Video; every mode remains
+fixed at 400x240 and 30 FPS so their Old 3DS decode cost can be compared
+directly.
+
+Video, authentication and controls use the dedicated TCP connection. Audio
+uses independent 24 kHz ADPCM datagrams so audio timing cannot be held behind
+a large video frame. The video encoder enforces a conservative bitrate for
+the retail Old 3DS WLAN path instead of accumulating stale TCP pictures.
 `make cia` remains available as an explicit packaging alias.
 
 The CIA rule uses the open-source `makerom` binary in `build-tools/`.

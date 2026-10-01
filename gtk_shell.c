@@ -3150,7 +3150,7 @@ static void build_settings_window(GtkShell *shell) {
 
     {
         GtkWidget *profile = gtk_label_new(
-            "400×240 @ 30 FPS · JPEG / MPEG-4 Part 2 · dedicated encoder");
+            "400×240 @ 30 FPS · JPEG / MPEG-1 / MPEG-2 / MPEG-4 · dedicated encoder");
         gtk_widget_set_halign(profile, GTK_ALIGN_START);
         gtk_label_set_line_wrap(GTK_LABEL(profile), TRUE);
         add_row(grid, row++, "profile", profile);

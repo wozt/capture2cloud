@@ -35,7 +35,12 @@ So "shared" below means *shared by everyone on the same stream*:
 | **browser WebSocket H.264** | browser WebSocket clients | `switch_*[SS_STREAM_WEB]`; follows the browser profile above |
 | **Wii U GamePad** | PC-side GamePad client | `switch_*[SS_STREAM_DRC]` |
 | **Wii U console** | homebrew on `WIIU_CONSOLE_PORT` (5083 by default) | `switch_*[SS_STREAM_WIIU]` |
-| **Old 3DS / Old 2DS** | native client on `OLD3DS_PORT` (5085 by default) | `switch_*[SS_STREAM_OLD3DS]`; dedicated 400×240@30 JPEG / MPEG-4 Part 2 encoder |
+| **Old 3DS / Old 2DS** | native client on `OLD3DS_PORT` (5085 by default) | `switch_*[SS_STREAM_OLD3DS]`; dedicated 400×240@30 JPEG / MPEG-1 / MPEG-2 / MPEG-4 encoder |
+
+The Old 3DS carries video and controls on its authenticated TCP connection.
+Its 24 kHz ADPCM audio uses the separate media UDP port, so a large picture
+cannot hold audio behind it. The host caps the Old 3DS video budget at
+900 kbit/s because higher values overflow the retail console's receive path.
 
 **The browser row is two encoders, and that is deliberate.** WebRTC is
 served VP8 and the WebSocket is served H.264, because they are two

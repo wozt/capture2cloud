@@ -68,6 +68,27 @@ static volatile bool g_audio_udp_active;
 static uint32_t g_audio_udp_sequence;
 static bool g_audio_udp_sequence_valid;
 
+/* libctru's recv() is recvfrom(..., NULL, 0).  soc:U nevertheless copies a
+ * sockaddr (25 bytes in every retail crash dump) to the zero-length static
+ * IPC buffer.  If libctru's temporary happens to end at a page boundary the
+ * socket sysmodule itself aborts.  Supplying a real address makes libctru map
+ * that static buffer with its actual size and prevents the sysmodule crash. */
+static ssize_t soc_recv_safe(int fd, void *data, size_t size, int flags)
+{
+    struct sockaddr_storage source;
+    socklen_t source_size = sizeof(source);
+    return recvfrom(fd, data, size, flags,
+                    (struct sockaddr *)&source, &source_size);
+}
+
+static uint8_t video_codec_from_flags(uint8_t flags)
+{
+    if (flags & C2S_FLAG_OLD3DS_MPEG1) return C2S_CODEC_OLD3DS_MPEG1;
+    if (flags & C2S_FLAG_OLD3DS_MPEG2) return C2S_CODEC_OLD3DS_MPEG2;
+    if (flags & C2S_FLAG_OLD3DS_MPEG4) return C2S_CODEC_OLD3DS_MPEG4;
+    return C2S_CODEC_OLD3DS_JPEG;
+}
+
 static void set_status(NetworkState state, const char *text)
 {
     LightLock_Lock(&g_lock);
@@ -121,7 +142,7 @@ static int receive_exact(int socket_fd, void *data, size_t size)
 {
     uint8_t *at = data;
     while (size && g_running && g_wanted) {
-        ssize_t got = recv(socket_fd, at, size, 0);
+        ssize_t got = soc_recv_safe(socket_fd, at, size, 0);
         if (got > 0) {
             at += got;
             size -= (size_t)got;
@@ -198,7 +219,12 @@ static int login_password(const AppConfig *config, char token[C2S_MAX_TOKEN_LEN 
         config->host, (unsigned)strlen(config->password), config->password);
     size_t sent = 0;
     while (sent < (size_t)length) {
-        ssize_t amount = send(socket_fd, request + sent, (size_t)length - sent, 0);
+        ssize_t amount = send(socket_fd, request + sent,
+                              (size_t)length - sent, 0);
+        if (amount < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            svcSleepThread(1000000LL);
+            continue;
+        }
         if (amount <= 0) {
             close_socket();
             return LOGIN_CONNECT_FAILED;
@@ -209,8 +235,12 @@ static int login_password(const AppConfig *config, char token[C2S_MAX_TOKEN_LEN 
     char reply[1024];
     size_t received = 0;
     while (received < sizeof(reply) - 1) {
-        ssize_t amount = recv(socket_fd, reply + received,
-                              sizeof(reply) - 1 - received, 0);
+        ssize_t amount = soc_recv_safe(
+            socket_fd, reply + received, sizeof(reply) - 1 - received, 0);
+        if (amount < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            svcSleepThread(1000000LL);
+            continue;
+        }
         if (amount <= 0) break;
         received += (size_t)amount;
     }
@@ -247,14 +277,14 @@ static int reserve_video_slot(uint8_t incoming_codec)
     }
     if (chosen >= 0) {
         if (g_video[chosen].state == SLOT_READY) {
-            if (g_video[chosen].codec == C2S_CODEC_OLD3DS_MPEG4) {
+            if (c2s_old3ds_predictive_codec(g_video[chosen].codec)) {
                 g_need_keyframe = true;
             }
             g_stats.video_dropped++;
         }
         g_video[chosen].state = SLOT_WRITING;
     } else {
-        if (incoming_codec == C2S_CODEC_OLD3DS_MPEG4) g_need_keyframe = true;
+        if (c2s_old3ds_predictive_codec(incoming_codec)) g_need_keyframe = true;
         g_stats.video_dropped++;
     }
     LightLock_Unlock(&g_lock);
@@ -322,7 +352,11 @@ static void audio_udp_thread(void *unused)
                    C2S_PCM_UDP_MAX_FRAMES * 4u];
     static const uint8_t silence[C2S_PCM_UDP_MAX_FRAMES * 4u];
     while (g_audio_running) {
-        ssize_t got = recv(g_audio_socket, packet, sizeof(packet), 0);
+        if (!g_audio_udp_active) {
+            svcSleepThread(2000000LL);
+            continue;
+        }
+        ssize_t got = soc_recv_safe(g_audio_socket, packet, sizeof(packet), 0);
         if (got < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 svcSleepThread(1000000LL);
@@ -330,10 +364,11 @@ static void audio_udp_thread(void *unused)
             }
             break;
         }
-        if ((size_t)got < sizeof(uint32_t) || !g_audio_udp_active) continue;
+        if ((size_t)got < sizeof(uint32_t)) continue;
         uint32_t magic;
         memcpy(&magic, packet, sizeof(magic));
         magic = c2s_le32(magic);
+        if (!g_audio_udp_active) continue;
         uint32_t sequence;
         uint32_t bytes;
         uint32_t payload_offset;
@@ -423,6 +458,8 @@ static int discard_payload(int socket_fd, uint32_t size)
 
 static int stream_session(const AppConfig *config)
 {
+    g_audio_udp_active = false;
+
     char token[C2S_MAX_TOKEN_LEN + 1];
     const int login = login_password(config, token);
     if (login != LOGIN_OK) {
@@ -472,8 +509,7 @@ static int stream_session(const AppConfig *config)
     C2sHelloAck ack;
     if (!hello_ok || !receive_exact(socket_fd, &ack, sizeof(ack)) || !ack.accepted ||
         ack.magic != C2S_MAGIC || ack.version != C2S_VERSION ||
-        (ack.video_codec != C2S_CODEC_OLD3DS_JPEG &&
-         ack.video_codec != C2S_CODEC_OLD3DS_MPEG4)) {
+        !c2s_old3ds_video_codec(ack.video_codec)) {
         set_status(NETWORK_ERROR, "Server refused the OLD3DS profile");
         close_socket();
         return 0;
@@ -486,9 +522,13 @@ static int stream_session(const AppConfig *config)
              ack.may_control ? " (player)" : " (viewer)");
     g_video_codec = ack.video_codec;
     g_stats.video_codec = ack.video_codec;
+    g_need_keyframe = c2s_old3ds_predictive_codec(ack.video_codec);
     g_audio_codec = ack.audio_codec;
     g_stats.audio_codec = ack.audio_codec;
     LightLock_Unlock(&g_lock);
+
+    g_audio_udp_active = false;
+    g_audio_udp_sequence_valid = false;
 
     g_audio_udp_active =
         (ack.audio_codec == C2S_CODEC_PCM_S16LE &&
@@ -497,13 +537,14 @@ static int stream_session(const AppConfig *config)
          (ack.reserved & C2S_ACK_FLAG_OPUS_UDP) != 0) ||
         (ack.audio_codec == C2S_CODEC_OLD3DS_ADPCM &&
          (ack.reserved & C2S_ACK_FLAG_ADPCM_UDP) != 0);
-    g_audio_udp_sequence_valid = false;
-
     if (config->video_codec != ack.video_codec) {
         send_message(C2S_MSG_CODEC, &config->video_codec, 1);
     }
 
-    C2sProfile profile = {400, 240, 30, 1200};
+    /* A nominal 1.2 Mbit/s still overflowed the retail Old 3DS TCP receive
+     * path (hundreds of server-side frame drops per session).  900 kbit/s
+     * leaves room for WLAN jitter while preserving 400x240 at a real 30 FPS. */
+    C2sProfile profile = {400, 240, 30, 900};
     send_message(C2S_MSG_PROFILE, &profile, sizeof(profile));
 
     while (g_running && g_wanted) {
@@ -518,11 +559,10 @@ static int stream_session(const AppConfig *config)
             send_message(C2S_MSG_PING, NULL, 0);
         } else if (header.type == C2S_MSG_VIDEO) {
             const uint32_t receive_start = osGetTime();
-            const uint8_t frame_codec = (header.flags & C2S_FLAG_OLD3DS_MPEG4)
-                ? C2S_CODEC_OLD3DS_MPEG4 : C2S_CODEC_OLD3DS_JPEG;
+            const uint8_t frame_codec = video_codec_from_flags(header.flags);
             if (header.size > VIDEO_CAPACITY) {
                 LightLock_Lock(&g_lock);
-                if (frame_codec == C2S_CODEC_OLD3DS_MPEG4) {
+                if (c2s_old3ds_predictive_codec(frame_codec)) {
                     g_need_keyframe = true;
                 }
                 g_stats.video_dropped++;
@@ -559,11 +599,11 @@ static int stream_session(const AppConfig *config)
                    header.size == sizeof(C2sStreamInfo)) {
             C2sStreamInfo info;
             if (!receive_exact(socket_fd, &info, sizeof(info))) break;
-            if (info.video_codec == C2S_CODEC_OLD3DS_JPEG ||
-                info.video_codec == C2S_CODEC_OLD3DS_MPEG4) {
+            if (c2s_old3ds_video_codec(info.video_codec)) {
                 LightLock_Lock(&g_lock);
                 g_video_codec = info.video_codec;
                 g_stats.video_codec = info.video_codec;
+                g_need_keyframe = c2s_old3ds_predictive_codec(info.video_codec);
                 /* Frames decoded under the old codec are stale by
                  * definition once the switch marker arrives. */
                 for (int i = 0; i < VIDEO_SLOTS; i++) {
@@ -579,8 +619,8 @@ static int stream_session(const AppConfig *config)
         }
     }
 
-    close_socket();
     g_audio_udp_active = false;
+    close_socket();
     if (g_wanted) set_status(NETWORK_ERROR, "Connection lost");
     else set_status(NETWORK_DISCONNECTED, "Disconnected");
     return 1;
@@ -627,7 +667,6 @@ bool network_init(void)
         g_soc_buffer = NULL;
         return false;
     }
-
     g_audio_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (g_audio_socket >= 0) {
         int receive_buffer = 64 * 1024;
@@ -656,10 +695,10 @@ bool network_init(void)
     g_running = true;
     if (g_audio_socket >= 0) {
         g_audio_running = true;
-        g_audio_thread = threadCreate(audio_udp_thread, NULL, 16 * 1024,
+        g_audio_thread = threadCreate(audio_udp_thread, NULL, 32 * 1024,
                                       0x31, 1, false);
         if (!g_audio_thread) {
-            g_audio_thread = threadCreate(audio_udp_thread, NULL, 16 * 1024,
+            g_audio_thread = threadCreate(audio_udp_thread, NULL, 32 * 1024,
                                           0x31, -2, false);
         }
         if (!g_audio_thread) {
@@ -759,7 +798,7 @@ bool network_acquire_video(const uint8_t **data, uint32_t *size,
     int chosen = -1;
     bool request_keyframe = false;
     LightLock_Lock(&g_lock);
-    if (g_video_codec == C2S_CODEC_OLD3DS_MPEG4) {
+    if (c2s_old3ds_predictive_codec(g_video_codec)) {
         /* Predictive video must be consumed in order.  If any reference
          * was lost, discard P-frames until the clean I-frame requested
          * below arrives. */
@@ -879,8 +918,7 @@ void network_send_capture(void) { send_message(C2S_MSG_CAPTURE, NULL, 0); }
 
 void network_request_codec(uint8_t codec)
 {
-    if (codec != C2S_CODEC_OLD3DS_JPEG &&
-        codec != C2S_CODEC_OLD3DS_MPEG4) return;
+    if (!c2s_old3ds_video_codec(codec)) return;
     LightLock_Lock(&g_lock);
     g_config.video_codec = codec;
     const bool connected = g_stats.state == NETWORK_CONNECTED;
