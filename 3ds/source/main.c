@@ -121,6 +121,7 @@ int main(void)
     bool loaded = config_load(&config);
     char message[80] = "";
     bool video_ok = video_init();
+    if (video_ok) video_set_aspect_16_9(config.aspect_16_9);
     if (!video_ok) snprintf(message, sizeof(message), "VIDEO INIT FAILED");
     if (video_ok) {
         /* Initialise both top-screen buffers before the normal double-
@@ -182,6 +183,11 @@ int main(void)
             if (ui_event.home_pressed && network_stats.may_control) network_send_home();
             if (ui_event.capture_pressed && network_stats.may_control) network_send_capture();
             if (ui_event.toggle_stats) config.stats_enabled = !config.stats_enabled;
+            if (ui_event.toggle_aspect) {
+                config.aspect_16_9 = !config.aspect_16_9;
+                video_set_aspect_16_9(config.aspect_16_9);
+                config_save(&config);
+            }
             if (ui_event.toggle_codec) {
                 config.video_codec = next_video_codec(config.video_codec);
                 network_request_codec(config.video_codec);
@@ -223,6 +229,11 @@ int main(void)
                 case CONFIG_TOGGLE_CODEC:
                     config.video_codec = next_video_codec(config.video_codec);
                     network_request_codec(config.video_codec);
+                    changed = true;
+                    break;
+                case CONFIG_TOGGLE_ASPECT:
+                    config.aspect_16_9 = !config.aspect_16_9;
+                    video_set_aspect_16_9(config.aspect_16_9);
                     changed = true;
                     break;
                 case CONFIG_SAVE:
@@ -306,7 +317,8 @@ int main(void)
             if (controller_mode) {
                 touch_ui_draw_controller(&ui_event, &network_stats, &video_stats,
                                          &audio_stats, config.stats_enabled,
-                                         config.video_codec);
+                                         config.video_codec,
+                                         config.aspect_16_9);
             } else {
                 touch_ui_draw_config(&config, &network_stats, message);
             }

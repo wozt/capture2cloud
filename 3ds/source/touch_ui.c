@@ -39,7 +39,8 @@ enum {
     TOUCH_STICK,
     TOUCH_CONFIG,
     TOUCH_STATS,
-    TOUCH_CODEC
+    TOUCH_CODEC,
+    TOUCH_ASPECT
 };
 
 static uint16_t color(int red, int green, int blue)
@@ -184,6 +185,7 @@ void touch_ui_update_controller(u32 keys_down, u32 keys_held, u32 keys_up,
     event->open_config = false;
     event->toggle_stats = false;
     event->toggle_codec = false;
+    event->toggle_aspect = false;
     memset(&event->controls, 0, sizeof(event->controls));
 
     if (keys_down & KEY_TOUCH) {
@@ -206,6 +208,9 @@ void touch_ui_update_controller(u32 keys_down, u32 keys_held, u32 keys_up,
         } else if (inside(position, 60, 210, 48, 26)) {
             g_active = TOUCH_CODEC;
             event->toggle_codec = true;
+        } else if (inside(position, 210, 210, 50, 26)) {
+            g_active = TOUCH_ASPECT;
+            event->toggle_aspect = true;
         } else if (inside(position, 262, 210, 54, 26)) {
             g_active = TOUCH_STATS;
             event->toggle_stats = true;
@@ -250,9 +255,10 @@ ConfigAction touch_ui_config_action(u32 keys_down, const touchPosition *position
     if (inside(position, 8, 52, 148, 28)) return CONFIG_EDIT_STREAM_PORT;
     if (inside(position, 164, 52, 148, 28)) return CONFIG_EDIT_WEB_PORT;
     if (inside(position, 8, 84, 304, 28)) return CONFIG_EDIT_PASSWORD;
-    if (inside(position, 8, 117, 94, 25)) return CONFIG_TOGGLE_AUTO;
-    if (inside(position, 106, 117, 94, 25)) return CONFIG_TOGGLE_AUDIO;
-    if (inside(position, 204, 117, 108, 25)) return CONFIG_TOGGLE_CODEC;
+    if (inside(position, 8, 117, 72, 25)) return CONFIG_TOGGLE_AUTO;
+    if (inside(position, 84, 117, 82, 25)) return CONFIG_TOGGLE_AUDIO;
+    if (inside(position, 170, 117, 82, 25)) return CONFIG_TOGGLE_CODEC;
+    if (inside(position, 256, 117, 56, 25)) return CONFIG_TOGGLE_ASPECT;
     if (inside(position, 8, 151, 60, 29)) return CONFIG_SAVE;
     if (inside(position, 72, 151, 74, 29)) return CONFIG_CONNECT;
     if (inside(position, 150, 151, 72, 29)) return CONFIG_RECONNECT;
@@ -266,7 +272,8 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
                               const VideoStats *video,
                               const AudioStats *audio,
                               bool show_stats,
-                              uint8_t video_codec)
+                              uint8_t video_codec,
+                              bool aspect_16_9)
 {
     begin_draw();
     rectangle(0, 0, 320, 240, color(14, 20, 29));
@@ -282,6 +289,8 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
     button(4, 210, 54, 26, "CFG", g_active == TOUCH_CONFIG);
     button(60, 210, 48, 26, codec_short_name(video_codec),
            g_active == TOUCH_CODEC);
+    button(210, 210, 50, 26, aspect_16_9 ? "16:9" : "FULL",
+           g_active == TOUCH_ASPECT);
     button(262, 210, 54, 26, "STAT", g_active == TOUCH_STATS);
 
     circle(246, 126, 56, color(31, 44, 58));
@@ -342,11 +351,13 @@ void touch_ui_draw_config(const AppConfig *config, const NetworkStats *network,
     snprintf(label, sizeof(label), "PASSWORD %s", config->password[0] ? "********" : "(NONE)");
     button(8, 84, 304, 28, label, false);
     snprintf(label, sizeof(label), "AUTO %s", config->auto_connect ? "ON" : "OFF");
-    button(8, 117, 94, 25, label, config->auto_connect);
-    snprintf(label, sizeof(label), "AUDIO %s", config->audio_enabled ? "ON" : "OFF");
-    button(106, 117, 94, 25, label, config->audio_enabled);
+    button(8, 117, 72, 25, label, config->auto_connect);
+    snprintf(label, sizeof(label), "AUD %s", config->audio_enabled ? "ON" : "OFF");
+    button(84, 117, 82, 25, label, config->audio_enabled);
     snprintf(label, sizeof(label), "%s", codec_name(config->video_codec));
-    button(204, 117, 108, 25, label, false);
+    button(170, 117, 82, 25, label, false);
+    button(256, 117, 56, 25, config->aspect_16_9 ? "16:9" : "FULL",
+           config->aspect_16_9);
     button(8, 151, 60, 29, "SAVE", false);
     button(72, 151, 74, 29, "CONNECT", false);
     button(150, 151, 72, 29, "RECON", false);

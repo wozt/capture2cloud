@@ -41,6 +41,7 @@ static uint32_t g_window_displayed;
 static uint64_t g_window_bytes;
 static uint64_t g_decode_total_ms;
 static uint64_t g_upload_total_ms;
+static volatile bool g_aspect_16_9;
 
 /*
  * FFmpeg normally allocates decoded pictures from its regular heap.
@@ -252,6 +253,11 @@ void video_note_received_bytes(uint32_t frame_size)
     g_window_bytes += frame_size;
 }
 
+void video_set_aspect_16_9(bool enabled)
+{
+    g_aspect_16_9 = enabled;
+}
+
 static void refresh_rates(uint32_t now)
 {
     uint32_t elapsed = now - g_window_start;
@@ -437,18 +443,79 @@ bool video_decode_and_present(const uint8_t *data, uint32_t size,
     if (!framebuffer || framebuffer_width < VIDEO_HEIGHT ||
         framebuffer_height < VIDEO_WIDTH) return false;
 
-    /* Y2R and libjpeg both produce row-major pixels.  The 3DS framebuffer
-     * is rotated, so transpose here.  Work in 8x8 tiles: the old full-column
-     * walk jumped 800 bytes between every source pixel and repeatedly missed
-     * the tiny Old 3DS data cache.  A tile loads eight source rows once while
-     * retaining contiguous writes on each framebuffer row. */
-    for (int block_y = 0; block_y < VIDEO_HEIGHT; block_y += 8) {
-        for (int block_x = 0; block_x < VIDEO_WIDTH; block_x += 8) {
-            for (int x = block_x; x < block_x + 8; x++) {
-                uint16_t *dst = framebuffer + (size_t)x * framebuffer_width;
-                for (int y = block_y; y < block_y + 8; y++) {
-                    dst[VIDEO_HEIGHT - 1 - y] =
-                        g_pixels[(size_t)y * VIDEO_WIDTH + x];
+    /*
+     * Y2R and libjpeg both produce 400x240 row-major pixels.  The physical
+     * top LCD is 400x240 (5:3), while normal console output is 16:9.
+     *
+     * FULL preserves the historical Capture2Cloud behaviour and fills the
+     * complete LCD.  16:9 restores the source aspect ratio by vertically
+     * scaling 240 rows to 225 and centering them, leaving 7 black rows above
+     * and 8 below.
+     *
+     * Nearest-neighbour vertical scaling is intentional: it is extremely
+     * cheap on Old 3DS and avoids adding another filtering pass to the video
+     * pipeline.  240/225 simplifies exactly to 16/15.
+     */
+    if (g_aspect_16_9) {
+        enum {
+            ASPECT_HEIGHT = 225,
+            ASPECT_Y = (VIDEO_HEIGHT - ASPECT_HEIGHT) / 2
+        };
+
+        /* Clear only the letterbox rows rather than the entire framebuffer. */
+        for (int x = 0; x < VIDEO_WIDTH; x++) {
+            uint16_t *dst = framebuffer + (size_t)x * framebuffer_width;
+
+            for (int y = 0; y < ASPECT_Y; y++)
+                dst[VIDEO_HEIGHT - 1 - y] = 0;
+
+            for (int y = ASPECT_Y + ASPECT_HEIGHT;
+                 y < VIDEO_HEIGHT; y++)
+                dst[VIDEO_HEIGHT - 1 - y] = 0;
+        }
+
+        /*
+         * Keep the same cache-friendly 8-row tiling as the normal path.
+         * Mapping is:
+         *
+         *   source_y = destination_y * 240 / 225
+         *            = destination_y * 16 / 15
+         */
+        for (int block_y = 0; block_y < ASPECT_HEIGHT; block_y += 8) {
+            const int block_end =
+                block_y + 8 < ASPECT_HEIGHT ? block_y + 8 : ASPECT_HEIGHT;
+
+            for (int block_x = 0; block_x < VIDEO_WIDTH; block_x += 8) {
+                for (int x = block_x; x < block_x + 8; x++) {
+                    uint16_t *dst =
+                        framebuffer + (size_t)x * framebuffer_width;
+
+                    for (int y = block_y; y < block_end; y++) {
+                        const int source_y = y * 16 / 15;
+                        const int screen_y = ASPECT_Y + y;
+
+                        dst[VIDEO_HEIGHT - 1 - screen_y] =
+                            g_pixels[(size_t)source_y * VIDEO_WIDTH + x];
+                    }
+                }
+            }
+        }
+    } else {
+        /*
+         * Native 400x240 fill.  Work in 8x8 tiles so the source accesses
+         * remain cache-friendly while writes stay contiguous in the rotated
+         * 3DS framebuffer.
+         */
+        for (int block_y = 0; block_y < VIDEO_HEIGHT; block_y += 8) {
+            for (int block_x = 0; block_x < VIDEO_WIDTH; block_x += 8) {
+                for (int x = block_x; x < block_x + 8; x++) {
+                    uint16_t *dst =
+                        framebuffer + (size_t)x * framebuffer_width;
+
+                    for (int y = block_y; y < block_y + 8; y++) {
+                        dst[VIDEO_HEIGHT - 1 - y] =
+                            g_pixels[(size_t)y * VIDEO_WIDTH + x];
+                    }
                 }
             }
         }

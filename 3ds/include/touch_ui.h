@@ -18,6 +18,7 @@ typedef enum {
     CONFIG_TOGGLE_AUTO,
     CONFIG_TOGGLE_AUDIO,
     CONFIG_TOGGLE_CODEC,
+    CONFIG_TOGGLE_ASPECT,
     CONFIG_SAVE,
     CONFIG_CONNECT,
     CONFIG_RECONNECT,
@@ -32,6 +33,7 @@ typedef struct {
     bool open_config;
     bool toggle_stats;
     bool toggle_codec;
+    bool toggle_aspect;
 } TouchUiEvent;
 
 void touch_ui_update_controller(u32 keys_down, u32 keys_held, u32 keys_up,
@@ -43,6 +45,7 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
                               const VideoStats *video,
                               const AudioStats *audio,
                               bool show_stats,
-                              uint8_t video_codec);
+                              uint8_t video_codec,
+                              bool aspect_16_9);
 void touch_ui_draw_config(const AppConfig *config, const NetworkStats *network,
                           const char *message);

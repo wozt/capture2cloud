@@ -16,6 +16,7 @@ void config_defaults(AppConfig *config)
     config->auto_connect = false;
     config->audio_enabled = true;
     config->stats_enabled = false;
+    config->aspect_16_9 = false;
     config->video_codec = C2S_CODEC_OLD3DS_MPEG1;
     config->right_stick_deadzone = 12;
 }
@@ -53,6 +54,8 @@ bool config_load(AppConfig *config)
             config->audio_enabled = atoi(equals) != 0;
         } else if (!strcmp(line, "stats")) {
             config->stats_enabled = atoi(equals) != 0;
+        } else if (!strcmp(line, "aspect")) {
+            config->aspect_16_9 = !strcmp(equals, "16:9");
         } else if (!strcmp(line, "codec")) {
             if (!strcmp(equals, "jpeg")) {
                 config->video_codec = C2S_CODEC_OLD3DS_JPEG;
@@ -85,6 +88,7 @@ bool config_save(const AppConfig *config)
     fprintf(file, "auto_connect=%d\n", config->auto_connect ? 1 : 0);
     fprintf(file, "audio=%d\n", config->audio_enabled ? 1 : 0);
     fprintf(file, "stats=%d\n", config->stats_enabled ? 1 : 0);
+    fprintf(file, "aspect=%s\n", config->aspect_16_9 ? "16:9" : "full");
     const char *codec = config->video_codec == C2S_CODEC_OLD3DS_JPEG
         ? "jpeg" : config->video_codec == C2S_CODEC_OLD3DS_MPEG1
             ? "mpeg1" : config->video_codec == C2S_CODEC_OLD3DS_MPEG2

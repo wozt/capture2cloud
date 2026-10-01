@@ -13,6 +13,7 @@ typedef struct {
     bool auto_connect;
     bool audio_enabled;
     bool stats_enabled;
+    bool aspect_16_9;
     uint8_t video_codec;
     int right_stick_deadzone;
 } AppConfig;
