@@ -544,7 +544,12 @@ static int stream_session(const AppConfig *config)
     /* A nominal 1.2 Mbit/s still overflowed the retail Old 3DS TCP receive
      * path (hundreds of server-side frame drops per session).  900 kbit/s
      * leaves room for WLAN jitter while preserving 400x240 at a real 30 FPS. */
-    C2sProfile profile = {400, 240, 30, 900};
+    /*
+     * MPEG-1 is now the performance-oriented Old 3DS default.  750 kbit/s
+     * deliberately trades some texture detail for fewer coded residuals on
+     * motion-heavy frames, reducing ARM11 decode cost as well as WLAN bursts.
+     */
+    C2sProfile profile = {400, 240, 30, 750};
     send_message(C2S_MSG_PROFILE, &profile, sizeof(profile));
 
     while (g_running && g_wanted) {

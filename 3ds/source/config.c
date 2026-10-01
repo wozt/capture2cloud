@@ -16,7 +16,7 @@ void config_defaults(AppConfig *config)
     config->auto_connect = false;
     config->audio_enabled = true;
     config->stats_enabled = false;
-    config->video_codec = C2S_CODEC_OLD3DS_MPEG4;
+    config->video_codec = C2S_CODEC_OLD3DS_MPEG1;
     config->right_stick_deadzone = 12;
 }
 

@@ -94,6 +94,25 @@ static int open_video(Old3dsEncoder *encoder)
     encoder->video->gop_size = OLD3DS_VIDEO_FPS * 10;
     encoder->video->max_b_frames = 0;
     encoder->video->thread_count = 1;
+
+    /*
+     * Old 3DS MPEG-1 profile:
+     *
+     * Prefer a simpler, more heavily quantised bitstream over squeezing
+     * every possible detail into the negotiated bitrate.  On the ARM11
+     * decoder, high-motion frames are the expensive case; fewer residual
+     * coefficients matter more than compression efficiency.
+     *
+     * Keep this MPEG-1-specific so MPEG-2/MPEG-4 remain useful comparison
+     * modes from the client menu.
+     */
+    if (encoder->codec == C2S_CODEC_OLD3DS_MPEG1) {
+        encoder->video->qmin = 8;
+        encoder->video->qmax = 24;
+        encoder->video->max_qdiff = 3;
+        encoder->video->qcompress = 0.5f;
+        encoder->video->mb_decision = FF_MB_DECISION_SIMPLE;
+    }
     /* max_b_frames=0 removes reordering latency for all three MPEG
      * comparison codecs without relying on codec-specific flags. */
     if (avcodec_open2(encoder->video, codec, NULL) < 0) {
@@ -135,7 +154,7 @@ Old3dsEncoder *old3ds_encoder_create(void)
     }
     encoder->quality = 45;
     encoder->bitrate_kbps = OLD3DS_VIDEO_BITRATE_KBPS;
-    encoder->codec = C2S_CODEC_OLD3DS_JPEG;
+    encoder->codec = C2S_CODEC_OLD3DS_MPEG1;
     encoder->source_format = AV_PIX_FMT_NONE;
     return encoder;
 }

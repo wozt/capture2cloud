@@ -1979,7 +1979,7 @@ SwitchStream *switch_stream_start(WebStream *ws,
     s->drc_listen_fd = -1;
     s->wiiu_listen_fd = -1;
     s->old3ds_listen_fd = -1;
-    s->old3ds_codec = C2S_CODEC_OLD3DS_JPEG;
+    s->old3ds_codec = C2S_CODEC_OLD3DS_MPEG1;
     s->port = native_port ? native_port : C2S_DEFAULT_PORT;
     drc_port = drc_port ? drc_port : C2S_DRC_PORT;
     wiiu_port = wiiu_port ? wiiu_port : C2S_WIIU_PORT;
