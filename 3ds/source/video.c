@@ -7,6 +7,7 @@
 #include <jpeglib.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/buffer.h>
+#include <libavutil/cpu.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
@@ -121,7 +122,19 @@ static bool open_video_decoder(uint8_t codec)
     avcodec_free_context(&g_video_decoder);
     g_video_decoder = avcodec_alloc_context3(decoder);
     if (!g_video_decoder) return false;
+
+    /*
+     * This binary only targets Old 3DS/2DS ARM11 MPCore hardware.
+     * Do not depend on FFmpeg's Linux-style runtime probing here:
+     * explicitly enable the ARMv6 DSP paths used by MPEG motion
+     * compensation and IDCT.
+     */
+    av_force_cpu_flags(AV_CPU_FLAG_ARMV5TE |
+                       AV_CPU_FLAG_ARMV6 |
+                       AV_CPU_FLAG_VFP);
+
     g_video_decoder->flags2 |= AV_CODEC_FLAG2_FAST;
+    g_video_decoder->idct_algo = FF_IDCT_SIMPLEARMV6;
 
     /*
      * Decode directly into DMA-friendly linear memory.  This removes the
