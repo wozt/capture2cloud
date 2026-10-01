@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <jpeglib.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/buffer.h>
 #include <libavutil/error.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 #include <setjmp.h>
@@ -39,6 +41,72 @@ static uint64_t g_window_bytes;
 static uint64_t g_decode_total_ms;
 static uint64_t g_upload_total_ms;
 
+/*
+ * FFmpeg normally allocates decoded pictures from its regular heap.
+ * Y2R is a DMA-backed service and performs best with 3DS linear memory.
+ *
+ * Allocate MPEG decode pictures directly from linear memory so Y2R can
+ * consume the decoder's Y/U/V planes without copying the complete
+ * 400x240 YUV420 image into a second staging buffer first.
+ *
+ * The MPEG decoders used here operate on 16x16 macroblocks.  400x240 is
+ * already a multiple of 16, but keep the alignment explicit so this
+ * callback remains correct if the stream geometry changes later.
+ */
+static void video_linear_buffer_free(void *opaque, uint8_t *data)
+{
+    (void)opaque;
+    linearFree(data);
+}
+
+static int video_linear_get_buffer2(AVCodecContext *context,
+                                    AVFrame *frame, int flags)
+{
+    (void)flags;
+
+    if (frame->format != AV_PIX_FMT_YUV420P &&
+        frame->format != AV_PIX_FMT_YUVJ420P) {
+        return avcodec_default_get_buffer2(context, frame, flags);
+    }
+
+    int width = frame->width;
+    int height = frame->height;
+
+    width = (width + 15) & ~15;
+    height = (height + 15) & ~15;
+
+    const int buffer_size =
+        av_image_get_buffer_size((enum AVPixelFormat)frame->format,
+                                 width, height, 1);
+    if (buffer_size <= 0) return AVERROR(ENOMEM);
+
+    uint8_t *buffer = linearAlloc((size_t)buffer_size);
+    if (!buffer) return AVERROR(ENOMEM);
+
+    memset(buffer, 0, (size_t)buffer_size);
+
+    if (av_image_fill_arrays(frame->data, frame->linesize, buffer,
+                             (enum AVPixelFormat)frame->format,
+                             width, height, 1) < 0) {
+        linearFree(buffer);
+        return AVERROR(EINVAL);
+    }
+
+    /*
+     * A single AVBufferRef owns the complete planar allocation.  data[1]
+     * and data[2] simply point inside it; they do not need separate owners.
+     */
+    frame->buf[0] =
+        av_buffer_create(buffer, (size_t)buffer_size,
+                         video_linear_buffer_free, NULL, 0);
+    if (!frame->buf[0]) {
+        linearFree(buffer);
+        return AVERROR(ENOMEM);
+    }
+
+    return 0;
+}
+
 static enum AVCodecID decoder_id(uint8_t codec)
 {
     if (codec == C2S_CODEC_OLD3DS_MPEG1) return AV_CODEC_ID_MPEG1VIDEO;
@@ -54,6 +122,13 @@ static bool open_video_decoder(uint8_t codec)
     g_video_decoder = avcodec_alloc_context3(decoder);
     if (!g_video_decoder) return false;
     g_video_decoder->flags2 |= AV_CODEC_FLAG2_FAST;
+
+    /*
+     * Decode directly into DMA-friendly linear memory.  This removes the
+     * old full-frame YUV420 copy before every Y2R conversion.
+     */
+    g_video_decoder->get_buffer2 = video_linear_get_buffer2;
+
     if (avcodec_open2(g_video_decoder, decoder, NULL) < 0) {
         avcodec_free_context(&g_video_decoder);
         return false;
@@ -207,19 +282,6 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
     if (g_y2r &&
         (g_video_frame->format == AV_PIX_FMT_YUV420P ||
          g_video_frame->format == AV_PIX_FMT_YUVJ420P)) {
-        uint8_t *destination = g_yuv420;
-        for (int plane = 0; plane < 3; plane++) {
-            const int plane_width = plane == 0 ? VIDEO_WIDTH : VIDEO_WIDTH / 2;
-            const int plane_height = plane == 0 ? VIDEO_HEIGHT : VIDEO_HEIGHT / 2;
-            for (int row = 0; row < plane_height; row++) {
-                memcpy(destination + (size_t)row * plane_width,
-                       g_video_frame->data[plane] +
-                           (size_t)row * g_video_frame->linesize[plane],
-                       (size_t)plane_width);
-            }
-            destination += (size_t)plane_width * plane_height;
-        }
-
         Y2RU_ConversionParams parameters;
         memset(&parameters, 0, sizeof(parameters));
         parameters.input_format = INPUT_YUV420_INDIV_8;
@@ -238,15 +300,22 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
         const uint32_t rgb_size = y_size * sizeof(uint16_t);
         Result result = Y2RU_SetConversionParams(&parameters);
         if (R_SUCCEEDED(result)) {
-            result = Y2RU_SetSendingY(g_yuv420, y_size, VIDEO_WIDTH, 0);
+            result = Y2RU_SetSendingY(
+                g_video_frame->data[0], y_size,
+                VIDEO_WIDTH,
+                g_video_frame->linesize[0] - VIDEO_WIDTH);
         }
         if (R_SUCCEEDED(result)) {
-            result = Y2RU_SetSendingU(g_yuv420 + y_size, uv_size,
-                                      VIDEO_WIDTH / 2, 0);
+            result = Y2RU_SetSendingU(
+                g_video_frame->data[1], uv_size,
+                VIDEO_WIDTH / 2,
+                g_video_frame->linesize[1] - VIDEO_WIDTH / 2);
         }
         if (R_SUCCEEDED(result)) {
-            result = Y2RU_SetSendingV(g_yuv420 + y_size + uv_size, uv_size,
-                                      VIDEO_WIDTH / 2, 0);
+            result = Y2RU_SetSendingV(
+                g_video_frame->data[2], uv_size,
+                VIDEO_WIDTH / 2,
+                g_video_frame->linesize[2] - VIDEO_WIDTH / 2);
         }
         if (R_SUCCEEDED(result)) {
             /* Four rows per DMA transfer avoids the documented early
