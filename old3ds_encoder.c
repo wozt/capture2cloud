@@ -112,6 +112,16 @@ static int open_video(Old3dsEncoder *encoder)
         encoder->video->max_qdiff = 3;
         encoder->video->qcompress = 0.5f;
         encoder->video->mb_decision = FF_MB_DECISION_SIMPLE;
+
+        /*
+         * Split each 400x240 MPEG-1 picture into two independent slices.
+         * The Old 3DS decoder can then reconstruct both halves in
+         * parallel on its two ARM11 cores.
+         *
+         * This changes packetisation inside the MPEG picture, not the
+         * visual quality or the Capture2Cloud wire protocol.
+         */
+        encoder->video->slices = 2;
     }
     /* max_b_frames=0 removes reordering latency for all three MPEG
      * comparison codecs without relying on codec-specific flags. */

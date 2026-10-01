@@ -33,7 +33,7 @@ make distclean >/dev/null 2>&1 || true
     --enable-optimizations --disable-everything --disable-debug --disable-doc \
     --disable-programs --disable-avdevice --disable-avfilter --disable-avformat \
     --disable-swresample --disable-network --disable-autodetect --disable-neon \
-    --disable-armv6t2 --disable-pthreads --enable-inline-asm --enable-vfp \
+    --disable-armv6t2 --enable-pthreads --enable-inline-asm --enable-vfp \
     --enable-armv5te --enable-armv6 --enable-avcodec --enable-avutil \
     --enable-swscale --enable-decoder=mpeg1video,mpeg2video,mpeg4
 
