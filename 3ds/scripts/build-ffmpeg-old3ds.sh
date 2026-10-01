@@ -27,7 +27,7 @@ make distclean >/dev/null 2>&1 || true
     --cross-prefix="$devkitpro_dir/devkitARM/bin/arm-none-eabi-" \
     --prefix="$prefix_dir" \
     --cpu=armv6k --arch=arm --target-os=linux \
-    --extra-cflags="-mfloat-abi=hard -mtune=mpcore -mtp=soft -Wno-error=incompatible-pointer-types -I$devkitpro_dir/libctru/include" \
+    --extra-cflags="-O3 -mfloat-abi=hard -mtune=mpcore -mtp=soft -Wno-error=incompatible-pointer-types -I$devkitpro_dir/libctru/include" \
     --extra-ldflags="-mfloat-abi=hard -L$devkitpro_dir/libctru/lib -specs=3dsx.specs" \
     --extra-libs=-lctru \
     --enable-optimizations --disable-everything --disable-debug --disable-doc \

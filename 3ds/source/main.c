@@ -162,6 +162,7 @@ int main(void)
     TouchUiEvent ui_event;
     memset(&ui_event, 0, sizeof(ui_event));
     uint32_t last_input_ms = 0;
+    bool draw_bottom_this_frame = true;
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -290,12 +291,25 @@ int main(void)
         AudioStats audio_stats;
         video_get_stats(&video_stats);
         audio_get_stats(&audio_stats);
-        if (controller_mode) {
-            touch_ui_draw_controller(&ui_event, &network_stats, &video_stats,
-                                     &audio_stats, config.stats_enabled,
-                                     config.video_codec);
-        } else {
-            touch_ui_draw_config(&config, &network_stats, message);
+
+        /*
+         * Input continues to run once per VBlank, but the lower screen does
+         * not need a fresh framebuffer at 60 Hz while streaming 30 FPS video.
+         * Drawing and swapping it every other VBlank reduces CPU/cache work
+         * on Old 3DS without changing controller polling latency.
+         *
+         * Keep the configuration screen at 60 Hz because text entry and menu
+         * feedback are interactive and video performance is irrelevant there.
+         */
+        const bool draw_bottom = !controller_mode || draw_bottom_this_frame;
+        if (draw_bottom) {
+            if (controller_mode) {
+                touch_ui_draw_controller(&ui_event, &network_stats, &video_stats,
+                                         &audio_stats, config.stats_enabled,
+                                         config.video_codec);
+            } else {
+                touch_ui_draw_config(&config, &network_stats, message);
+            }
         }
 
         LightLock_Lock(&g_video_present_lock);
@@ -310,8 +324,17 @@ int main(void)
             gfxScreenSwapBuffers(GFX_TOP, false);
             g_video_frame_ready = false;
         }
-        gfxScreenSwapBuffers(GFX_BOTTOM, false);
+        if (draw_bottom) {
+            gfxScreenSwapBuffers(GFX_BOTTOM, false);
+        }
         LightLock_Unlock(&g_video_present_lock);
+
+        if (controller_mode) {
+            draw_bottom_this_frame = !draw_bottom_this_frame;
+        } else {
+            draw_bottom_this_frame = true;
+        }
+
         gspWaitForVBlank();
     }
 

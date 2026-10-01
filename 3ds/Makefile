@@ -22,7 +22,7 @@ APP_AUTHOR      := wozt
 APP_ICON        := $(DEVKITPRO)/libctru/default_icon.png
 
 ARCH    := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
-CFLAGS  := -g -Wall -Wextra -Werror -O2 -ffunction-sections $(ARCH) $(DEFINES)
+CFLAGS  := -g -Wall -Wextra -Werror -O3 -ffunction-sections $(ARCH) $(DEFINES)
 CFLAGS  += $(INCLUDE) -D__3DS__
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS := -g $(ARCH)
