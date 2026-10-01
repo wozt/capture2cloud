@@ -397,20 +397,75 @@ bool video_decode_and_present(const uint8_t *data, uint32_t size,
     if (!framebuffer || framebuffer_width < VIDEO_HEIGHT ||
         framebuffer_height < VIDEO_WIDTH) return false;
 
-    /* Y2R and libjpeg both produce row-major pixels.  The 3DS framebuffer
-     * is rotated, so transpose here.  Work in 8x8 tiles: the old full-column
-     * walk jumped 800 bytes between every source pixel and repeatedly missed
-     * the tiny Old 3DS data cache.  A tile loads eight source rows once while
-     * retaining contiguous writes on each framebuffer row. */
-    for (int block_y = 0; block_y < VIDEO_HEIGHT; block_y += 8) {
-        for (int block_x = 0; block_x < VIDEO_WIDTH; block_x += 8) {
-            for (int x = block_x; x < block_x + 8; x++) {
-                uint16_t *dst = framebuffer + (size_t)x * framebuffer_width;
-                for (int y = block_y; y < block_y + 8; y++) {
-                    dst[VIDEO_HEIGHT - 1 - y] =
-                        g_pixels[(size_t)y * VIDEO_WIDTH + x];
-                }
-            }
+    /*
+     * Y2R/libjpeg output is ordinary row-major RGB565 while the 3DS top
+     * framebuffer is rotated.
+     *
+     * Transpose 4x4 blocks using packed 32-bit accesses.  Both dimensions
+     * and the framebuffer pitch are multiples of four, so every load/store
+     * below is naturally word-aligned.  Compared with the old pixel loop,
+     * this moves two RGB565 pixels per memory operation and removes the
+     * innermost per-pixel loop/branch overhead.
+     *
+     * For one source column:
+     *
+     *   p0 p1 p2 p3
+     *
+     * the framebuffer stores it in reverse Y order, hence the packed
+     * {p1,p0} and {p3,p2} words below.
+     */
+    typedef uint32_t alias_u32 __attribute__((__may_alias__));
+
+    for (int y = 0; y < VIDEO_HEIGHT; y += 4) {
+        const alias_u32 *r0 =
+            (const alias_u32 *)(g_pixels + (size_t)(y + 0) * VIDEO_WIDTH);
+        const alias_u32 *r1 =
+            (const alias_u32 *)(g_pixels + (size_t)(y + 1) * VIDEO_WIDTH);
+        const alias_u32 *r2 =
+            (const alias_u32 *)(g_pixels + (size_t)(y + 2) * VIDEO_WIDTH);
+        const alias_u32 *r3 =
+            (const alias_u32 *)(g_pixels + (size_t)(y + 3) * VIDEO_WIDTH);
+
+        for (int x = 0; x < VIDEO_WIDTH; x += 4) {
+            const int word = x >> 1;
+
+            const uint32_t a01 = r0[word + 0];
+            const uint32_t a23 = r0[word + 1];
+            const uint32_t b01 = r1[word + 0];
+            const uint32_t b23 = r1[word + 1];
+            const uint32_t c01 = r2[word + 0];
+            const uint32_t c23 = r2[word + 1];
+            const uint32_t d01 = r3[word + 0];
+            const uint32_t d23 = r3[word + 1];
+
+            alias_u32 *d0 = (alias_u32 *)(
+                framebuffer +
+                (size_t)(x + 0) * framebuffer_width +
+                (VIDEO_HEIGHT - 1 - y) - 3);
+            alias_u32 *d1 = (alias_u32 *)(
+                framebuffer +
+                (size_t)(x + 1) * framebuffer_width +
+                (VIDEO_HEIGHT - 1 - y) - 3);
+            alias_u32 *d2 = (alias_u32 *)(
+                framebuffer +
+                (size_t)(x + 2) * framebuffer_width +
+                (VIDEO_HEIGHT - 1 - y) - 3);
+            alias_u32 *d3 = (alias_u32 *)(
+                framebuffer +
+                (size_t)(x + 3) * framebuffer_width +
+                (VIDEO_HEIGHT - 1 - y) - 3);
+
+            d0[0] = (d01 & 0xffffu) | (c01 << 16);
+            d0[1] = (b01 & 0xffffu) | (a01 << 16);
+
+            d1[0] = (d01 >> 16) | (c01 & 0xffff0000u);
+            d1[1] = (b01 >> 16) | (a01 & 0xffff0000u);
+
+            d2[0] = (d23 & 0xffffu) | (c23 << 16);
+            d2[1] = (b23 & 0xffffu) | (a23 << 16);
+
+            d3[0] = (d23 >> 16) | (c23 & 0xffff0000u);
+            d3[1] = (b23 >> 16) | (a23 & 0xffff0000u);
         }
     }
     uint32_t upload_end = osGetTime();
