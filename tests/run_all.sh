@@ -55,11 +55,10 @@ needs_build() {
                     -newer "$bin" -print -quit 2>/dev/null)" ]; then
         return 0
     fi
-    for shared in "$PROJECT_DIR/c2s_protocol.h" "$PROJECT_DIR/version.h"; do
-        if [ "$shared" -nt "$bin" ]; then
-            return 0
-        fi
-    done
+    if [ -n "$(find "$PROJECT_DIR/shared" -maxdepth 1 -name '*.h' \
+                    -newer "$bin" -print -quit 2>/dev/null)" ]; then
+        return 0
+    fi
     [ -n "$(find "$SCRIPT_DIR/c" -newer "$bin" -print -quit 2>/dev/null)" ]
 }
 

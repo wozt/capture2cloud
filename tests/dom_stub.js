@@ -127,7 +127,7 @@ function createSandbox(srcPath, initialStorage, initialSessionStorage) {
    * happened to hide it on the way past -- which made the answer
    * depend on file order, and a split of this front end changed it.
    * Reading the markup is both more faithful and no longer a trap. */
-  const html = fs.readFileSync(path.join(__dirname, '..', 'page.html'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'page.html'), 'utf8');
   const tagRe = /<[a-zA-Z][^>]*>/g;
   let tag;
   while ((tag = tagRe.exec(html))) {

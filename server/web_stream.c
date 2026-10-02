@@ -206,7 +206,7 @@ static void send_204(int fd) {
     send_all(fd, response, sizeof(response) - 1);
 }
 
-/* Serves page.html and web/ straight from disk, next to this source file.
+/* Serves web/page.html and the rest of web/ straight from disk, next to this source file.
  *
  * Editing the front-end used to mean re-running an escaping script that
  * regenerated two big C string literals and splicing them back into this
@@ -277,7 +277,7 @@ static void send_static(int fd, const char *filename, const char *content_type) 
 }
 
 static void send_html_page(int fd) {
-    send_static(fd, "page.html", "text/html; charset=utf-8");
+    send_static(fd, "web/page.html", "text/html; charset=utf-8");
 }
 
 /* The front end, as a fixed list rather than a path taken from the

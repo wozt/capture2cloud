@@ -29,8 +29,8 @@ extern "C" {
 #include <opus/opus.h>
 }
 
-#include "../c2s_protocol.h"
-#include "../version.h"
+#include "../shared/c2s_protocol.h"
+#include "../shared/version.h"
 #include "pad_menu.h"
 #include "../server/gamepad_bridge.h"
 

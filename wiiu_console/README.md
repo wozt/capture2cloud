@@ -87,7 +87,7 @@ password entry, reconnect and resumed video.
 | Video decode | the console's hardware H.264 — `H264DECOpen` / `SetBitstream` / `Execute`, in [`src/video.c`](src/video.c) |
 | Display | SDL2/GX2 UI plus a custom zero-copy NV12 GX2 renderer |
 | Network | BSD sockets, ported from the Switch client |
-| Transport | [`../c2s_protocol.h`](../c2s_protocol.h), on port **5083** |
+| Transport | [`../shared/c2s_protocol.h`](../shared/c2s_protocol.h), on port **5083** |
 
 ### Display
 

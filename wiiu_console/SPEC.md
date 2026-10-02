@@ -26,7 +26,7 @@ invisible on the GamePad.
 ## What it does
 
 - **Video and sound** from the host, over the same binary protocol the
-  Switch homebrew and the Android app already speak (`../c2s_protocol.h`).
+  Switch homebrew and the Android app already speak (`../shared/c2s_protocol.h`).
 - **The GamePad drives the console being captured**: buttons, both
   sticks, triggers, sent as the same twenty-one bytes every other client
   sends.

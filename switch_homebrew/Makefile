@@ -43,7 +43,7 @@ SOURCES		:=	src
 DATA		:=	data
 # The parent directory holds c2s_protocol.h, shared verbatim with the
 # host so the wire format cannot drift between the two.
-INCLUDES	:=	src ..
+INCLUDES	:=	src ../shared
 ROMFS		:=	resources
 
 APP_TITLE	:=	Capture2Cloud Client

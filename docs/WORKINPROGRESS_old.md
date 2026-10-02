@@ -32,7 +32,7 @@ on a Wii U. The native clients use the binary protocol in
 | Native transport | `server/switch_stream.c` | routed by **stream**, not codec |
 | Input → USB | `server/gamepad_bridge.c` | GCAPI over libusb |
 | Config | `server/app_config.c` | everything from `scripts/.env` |
-| Front end | `page.html` + `web/` | eleven scripts, served from disk |
+| Front end | `web/page.html` + `web/` | eleven scripts, served from disk |
 
 **Five main encodes, each fed only while watched**: browser WebRTC VP8,
 browser WebSocket H.264, common Switch/Android H.264, Wii U GamePad H.264

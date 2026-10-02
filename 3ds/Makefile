@@ -12,7 +12,7 @@ TARGET      := capture2cloud-old3ds
 BUILD       := build
 SOURCES     := source
 DATA        :=
-INCLUDES    := include ..
+INCLUDES    := include ../shared
 FFMPEG_PREFIX := $(TOPDIR)/build-tools/ffmpeg
 FFMPEG_LIB := $(FFMPEG_PREFIX)/lib/libavcodec.a
 

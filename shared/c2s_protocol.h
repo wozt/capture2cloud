@@ -405,7 +405,7 @@ typedef struct __attribute__((packed)) {
 /*
  * The controller state carried by C2S_MSG_INPUT.
  *
- * These are GAMEPAD_XB360_* from gamepad_bridge.h, same order, same
+ * These are GAMEPAD_XB360_* from server/gamepad_bridge.h, same order, same
  * -100..100 range -- the identical array the browser sends over its data
  * channel. Keeping one representation means the host applies native and
  * browser input through the same code path, so a button behaves the same

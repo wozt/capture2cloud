@@ -38,7 +38,7 @@ LDLIBS   := -ldrc -lx264 \
 
 all: wiiu_pad
 
-wiiu_pad: wiiu_pad.cpp pad_menu.cpp pad_menu.h ../c2s_protocol.h ../server/gamepad_bridge.h
+wiiu_pad: wiiu_pad.cpp pad_menu.cpp pad_menu.h ../shared/c2s_protocol.h ../server/gamepad_bridge.h
 	@test -d $(VENDOR)/libdrc || { \
 	  echo "No libdrc under $(VENDOR). It is not in git; copy it back:"; \
 	  echo "  cp -a ../../bottom_screen_server/gamepad/vendor ."; \

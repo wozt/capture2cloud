@@ -1,5 +1,5 @@
 #include "pad_menu.h"
-#include "../version.h"
+#include "../shared/version.h"
 
 #include <cairo/cairo.h>
 #include <drc/screen.h>

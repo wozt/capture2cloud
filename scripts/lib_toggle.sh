@@ -31,7 +31,7 @@ C2C_SOURCES=(
     "$C2C_DIR/server/local_pad.c"
 )
 C2C_HEADERS=(
-    "$C2C_DIR/version.h"
+    "$C2C_DIR/shared/version.h"
     "$C2C_DIR/server/ws_frame.h"
     "$C2C_DIR/server/gtk_shell.h"
     "$C2C_DIR/server/web_stream.h"
@@ -50,7 +50,7 @@ C2C_HEADERS=(
     "$C2C_DIR/server/video_capture.h"
     "$C2C_DIR/server/audio_capture.h"
     "$C2C_DIR/server/switch_stream.h"
-    "$C2C_DIR/c2s_protocol.h"
+    "$C2C_DIR/shared/c2s_protocol.h"
     "$C2C_DIR/server/app_settings.h"
     "$C2C_DIR/server/local_pad.h"
 )
@@ -178,6 +178,7 @@ c2c_build_if_needed() {
     # convenience. -ldl for that, and it stays one gcc line of C.
     gcc -O2 -Wall -Wextra \
         -I"$C2C_DIR" \
+        -I"$C2C_DIR/shared" \
         -I"$C2C_DIR/server" \
         -I"$C2C_DIR/wiiu_gamepad/include" \
         -o "$C2C_BIN" "${C2C_SOURCES[@]}" \

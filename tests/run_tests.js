@@ -1017,7 +1017,7 @@ group('every place that names a version names the same one', () => {
   check('VERSION looks like a release', /^\d+\.\d+\.\d+(\.\d+)?$/.test(version), true);
 
   const fromHeader = /#define C2C_VERSION "([^"]+)"/.exec(
-    fs.readFileSync(path.join(root, 'version.h'), 'utf8'));
+    fs.readFileSync(path.join(root, 'shared', 'version.h'), 'utf8'));
   check('version.h matches VERSION', fromHeader && fromHeader[1], version);
 
   const fromPage = /var C2C_VERSION = '([^']+)'/.exec(
@@ -1040,7 +1040,7 @@ group('the page and the test suite agree on what to load', () => {
   // a file added to page.html and not to WEB_FILES (or the reverse)
   // would be tested in an order the browser never uses -- green here,
   // broken there. So the two lists are compared.
-  const html = fs.readFileSync(path.join(__dirname, '..', 'page.html'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'web', 'page.html'), 'utf8');
   const inPage = [];
   const re = /<script src="\/web\/([^"]+)"><\/script>/g;
   let m;
@@ -1097,7 +1097,7 @@ group('the websocket handshake is read where the struct actually puts it', () =>
   // here. Add a field to the struct and this test moves with it; get
   // the JS out of step with it and this fails.
   const header = fs.readFileSync(
-    path.join(__dirname, '..', 'c2s_protocol.h'), 'utf8');
+    path.join(__dirname, '..', 'shared', 'c2s_protocol.h'), 'utf8');
   const body = /typedef struct __attribute__\(\(packed\)\) \{([^}]*)\} C2sHelloAck;/
     .exec(header);
   check('the ack struct is still in the header', !!body, true);

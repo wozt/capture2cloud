@@ -24,8 +24,7 @@ DATA		:=	data
 # The parent directory holds c2s_protocol.h, shared verbatim with the
 # host so the wire format cannot drift between the two. Exactly what the
 # Switch client does.
-INCLUDES	:=	src ..
-
+INCLUDES	:=	src ../shared
 # These become the channel's name, icon and splash on the Wii U menu.
 # A .wuhb is an .rpx plus this metadata, and the homebrew_on_menu plugin
 # is what puts one on the menu as a channel -- see README.md.
