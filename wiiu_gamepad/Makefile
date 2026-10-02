@@ -38,14 +38,14 @@ LDLIBS   := -ldrc -lx264 \
 
 all: wiiu_pad
 
-wiiu_pad: server/wiiu_pad.cpp pad_menu.cpp pad_menu.h ../c2s_protocol.h ../server/gamepad_bridge.h
+wiiu_pad: wiiu_pad.cpp pad_menu.cpp pad_menu.h ../c2s_protocol.h ../server/gamepad_bridge.h
 	@test -d $(VENDOR)/libdrc || { \
 	  echo "No libdrc under $(VENDOR). It is not in git; copy it back:"; \
 	  echo "  cp -a ../../bottom_screen_server/gamepad/vendor ."; \
 	  echo "or build against it where it is:"; \
 	  echo "  make VENDOR=../../bottom_screen_server/gamepad/vendor"; \
 	  exit 1; }
-	$(CXX) $(CXXFLAGS) -o $@ server/wiiu_pad.cpp pad_menu.cpp $(LDFLAGS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $@ wiiu_pad.cpp pad_menu.cpp $(LDFLAGS) $(LDLIBS)
 
 clean:
 	rm -f wiiu_pad
