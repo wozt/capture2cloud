@@ -370,4 +370,5 @@ The Bluetooth controller backend includes work developed as **pcble2gamepad** an
 
 ## Licence
 
-No licence has been selected yet. Treat the repository as **all rights reserved** unless stated otherwise.
+Capture2Cloud is licensed under the GNU General Public License v3.0.
+See [LICENSE](LICENSE) for details.
