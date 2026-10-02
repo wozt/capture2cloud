@@ -2,11 +2,13 @@
 
 # Capture2Cloud
 
-**Play a game console remotely from a browser, Android device, Nintendo Switch or Wii U.**
+**Play a game console remotely from a browser, Android device, Nintendo Switch, Wii U or Nintendo 3DS.**
 
 <br clear="left">
 
-Capture2Cloud captures HDMI video and audio on a Linux host, streams it to one or more clients, and sends controller input back to the console.
+Capture2Cloud is an open-source, low-latency game streaming and remote play solution for Linux. It captures HDMI video and audio from a game console, streams it to one or more clients, and sends controller input back to the console.
+
+Supported clients include web browsers, Android, Nintendo Switch, Wii U, Wii U GamePad and the original Nintendo 3DS / 2DS family.
 
 It is a personal project built and tested on real hardware, not a commercial product.
 
@@ -19,6 +21,7 @@ It is a personal project built and tested on real hardware, not a commercial pro
 * Browser client with WebRTC or WebSocket/WebCodecs
 * Native Android client
 * Nintendo Switch homebrew client
+* Native Old 3DS / Old 2DS client
 * Native Wii U console client
 * Direct Wii U GamePad streaming
 * Physical, virtual, keyboard/mouse and local controller input
@@ -46,6 +49,7 @@ Capture2Cloud
     ├── Browser
     ├── Android
     ├── Nintendo Switch
+    ├── Old 3DS / Old 2DS
     ├── Wii U Console
     └── Wii U GamePad
 
@@ -242,6 +246,7 @@ Controller input can come from:
 * keyboard and mouse
 * Android
 * Nintendo Switch
+* Old 3DS / Old 2DS
 * Wii U
 * a controller connected directly to the Linux host
 
@@ -264,6 +269,8 @@ Built-in web client supporting:
 * keyboard/mouse
 * authentication
 
+No native application is required on the client device.
+
 ### Android
 
 Located in:
@@ -283,6 +290,33 @@ switch_homebrew/
 ```
 
 Native H.264 homebrew client with controller and touch input.
+
+### Nintendo 3DS / 2DS
+
+Located in:
+
+```text
+3ds/
+```
+
+Native client designed for the original Nintendo 3DS, Nintendo 3DS XL and Nintendo 2DS.
+
+It does not require New Nintendo 3DS CPU features.
+
+The server provides a dedicated 400×240 at 30 FPS stream optimized for the limited CPU and Wi-Fi hardware of the original 3DS family.
+
+Available video modes include:
+
+* MPEG-1 Video
+* MPEG-2 Video
+* MPEG-4 Part 2
+* JPEG
+
+The client includes physical controller input, touchscreen virtual controls, a virtual right stick, missing Switch-style buttons, authentication, runtime codec selection, aspect-ratio controls and performance statistics.
+
+Video decoding and rendering are specifically optimized for Old 3DS hardware, including use of the 3DS Y2R hardware for colour conversion where applicable.
+
+See [3ds/README.md](3ds/README.md).
 
 ### Wii U Console
 
@@ -324,19 +358,21 @@ scripts/.env.example
 
 Important options include:
 
-| Setting                  | Purpose                     |
-| ------------------------ | --------------------------- |
-| `VIDEO_DEVICE`           | V4L2 capture device         |
-| `AUDIO_SOURCE`           | Audio capture source        |
-| `PLAYER_PASSWORD`        | Controller-access password  |
-| `CAPTURE_FORMAT`         | `yuyv` or `mjpeg`           |
-| `WEB_PORT`               | Browser server port         |
-| `SWITCH_PORT`            | Native client port          |
-| `GAMEPAD_OUTPUT_BACKEND` | `titan` or `pcble`          |
-| `PCBLE_CONTROLLER`       | Nintendo controller profile |
-| `RESET_METHOD`           | `script` or `bluetooth`     |
-| `RESET_SCRIPT`           | Script wake command         |
-| `RESET_BT_ADAPTER`       | Bluetooth wake adapter MAC  |
+| Setting | Purpose |
+| --- | --- |
+| `VIDEO_DEVICE` | V4L2 capture device |
+| `AUDIO_SOURCE` | Audio capture source |
+| `PLAYER_PASSWORD` | Controller-access password |
+| `CAPTURE_FORMAT` | `yuyv` or `mjpeg` |
+| `WEB_PORT` | Browser server port |
+| `SWITCH_PORT` | Switch / Android native-client port |
+| `WIIU_CONSOLE_PORT` | Wii U console client port |
+| `OLD3DS_PORT` | Old 3DS / Old 2DS client port |
+| `GAMEPAD_OUTPUT_BACKEND` | `titan` or `pcble` |
+| `PCBLE_CONTROLLER` | Nintendo controller profile |
+| `RESET_METHOD` | `script` or `bluetooth` |
+| `RESET_SCRIPT` | Script wake command |
+| `RESET_BT_ADAPTER` | Bluetooth wake adapter MAC |
 
 Most runtime configuration can also be changed from the GTK interface.
 
@@ -356,6 +392,7 @@ Useful project documentation:
 
 * [WORKINPROGRESS.md](docs/WORKINPROGRESS.md) — development notes and measurements
 * [SHARED_SETTINGS.md](docs/SHARED_SETTINGS.md) — host/client setting ownership
+* [3ds/README.md](3ds/README.md) — Old 3DS / Old 2DS client
 * [wiiu_console/README.md](wiiu_console/README.md) — Wii U console client
 
 ---
@@ -371,4 +408,5 @@ The Bluetooth controller backend includes work developed as **pcble2gamepad** an
 ## Licence
 
 Capture2Cloud is licensed under the GNU General Public License v3.0.
+
 See [LICENSE](LICENSE) for details.
