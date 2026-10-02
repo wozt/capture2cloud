@@ -27,8 +27,8 @@
 
 /* The .c files are #included the way the other C tests do it, so the
  * window under test is the real one and not a copy. */
-#include "../../app_config.c"
-#include "../../reset_method.h"
+#include "../../server/app_config.c"
+#include "../../server/reset_method.h"
 
 /* Reset-method backend is stubbed here: this test validates GTK layout
  * and wiring, not HCI operations. */
@@ -156,7 +156,7 @@ int reset_method_test_bluetooth_beacon(
 
 
 
-#include "../../gtk_shell.c"
+#include "../../server/gtk_shell.c"
 
 #include "test_util.h"
 
@@ -186,7 +186,7 @@ static void on_settings(void *u, const AppSettings *s) { (void)u; (void)s; }
 static void on_action(void *u, GtkShellAction a) { (void)u; (void)a; }
 static void on_pair(void *u, const char *pin) { (void)u; (void)pin; }
 
-/* What gtk_shell.c calls into the USB bridge. Linking the real one would
+/* What server/gtk_shell.c calls into the USB bridge. Linking the real one would
  * drag libusb and an adapter into a test about a window. */
 int gamepad_bridge_link_up(void) { return 0; }
 double gamepad_bridge_report_rate(void) { return 0.0; }

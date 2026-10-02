@@ -1,4 +1,4 @@
-/* Unit tests for web_stream.c's authentication logic -- the part that
+/* Unit tests for server/web_stream.c's authentication logic -- the part that
  * decides whether a connecting client may drive the console.
  *
  * This is security-relevant code, so it's worth testing directly rather
@@ -6,16 +6,16 @@
  * silently stops being constant-time, or a token generator that repeats
  * itself, would both be invisible from the outside until abused.
  *
- * web_stream.c is #included so its `static` functions are reachable. It
- * calls two functions from gst_webrtc.c; those are stubbed below rather
+ * server/web_stream.c is #included so its `static` functions are reachable. It
+ * calls two functions from server/gst_webrtc.c; those are stubbed below rather
  * than linking the real GStreamer pipeline in, since none of the code
  * under test here touches WebRTC at all. */
-#include "../../app_config.c"
-#include "../../ws_frame.c"
+#include "../../server/app_config.c"
+#include "../../server/ws_frame.c"
 
 int reset_method_wake(void) { return 0; }
 
-#include "../../web_stream.c"
+#include "../../server/web_stream.c"
 
 #include "test_util.h"
 
@@ -23,7 +23,7 @@ int reset_method_wake(void) { return 0; }
 #include <sys/un.h>
 #include <sys/types.h>
 
-/* --- stubs for the gst_webrtc.c side (never actually exercised here) --- */
+/* --- stubs for the server/gst_webrtc.c side (never actually exercised here) --- */
 char *gst_webrtc_stream_handle_offer(GstWebrtcStream *g, const char *offer_sdp, int may_control,
                                      const struct sockaddr *peer, socklen_t peer_len,
                                      char *out_id, size_t out_id_size) {
@@ -57,7 +57,7 @@ void gst_webrtc_stream_set_browser_resolution(GstWebrtcStream *g, int w, int h) 
 void gst_webrtc_stream_get_browser_resolution(GstWebrtcStream *g, int *w, int *h) {
     (void)g; if (w) *w = stub_res_w; if (h) *h = stub_res_h;
 }
-/* video_capture.c is not linked here; the format endpoint only needs to
+/* server/video_capture.c is not linked here; the format endpoint only needs to
  * be seen refusing a viewer. */
 static VideoFormat stub_requested = VIDEO_FORMAT_YUYV;
 void video_capture_request_format(VideoFormat f) { stub_requested = f; }

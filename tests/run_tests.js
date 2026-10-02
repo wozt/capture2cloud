@@ -1069,7 +1069,7 @@ group('every offered width is a whole number of macroblocks', () => {
   // does and the one crop no decoder gets wrong. It is the width that
   // went wrong here, and the width that is pinned.
   const src = fs.readFileSync(
-    path.join(__dirname, '..', 'web_stream.c'), 'utf8');
+    path.join(__dirname, '..', 'server/web_stream.c'), 'utf8');
   const re = /strcmp\(body, "(\d+)"\) == 0\)\s*\{\s*w = (\d+);\s*h = (\d+);/g;
   const offered = [];
   let m;

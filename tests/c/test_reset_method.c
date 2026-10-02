@@ -1,4 +1,4 @@
-#include "../../app_config.c"
+#include "../../server/app_config.c"
 
 void video_capture_watch_for_change(void) {}
 
@@ -7,7 +7,7 @@ int gamepad_bridge_console_wake_ready(void) { return 1; }
 void gamepad_bridge_reset(void) {}
 
 
-#include "../../reset_method.c"
+#include "../../server/reset_method.c"
 #include "test_util.h"
 
 #include <limits.h>

@@ -11,7 +11,7 @@
  * Everyone can watch; driving the console needs a password. The token
  * below is what the server checks -- this UI only reflects that state,
  * it does not enforce it (the real gate is server-side, in
- * on_gamepad_message() in gst_webrtc.c: a viewer's gamepad messages are
+ * on_gamepad_message() in server/gst_webrtc.c: a viewer's gamepad messages are
  * dropped there, so bypassing this UI achieves nothing).
  *
  * The token is kept in `sessionStorage`, deliberately NOT in the

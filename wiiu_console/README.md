@@ -74,7 +74,7 @@ not require a console reboot.
 ## Configuring it
 
 Host, native port, web/login port and the temporary session token are
-stored in `sd:/wiiu/apps/capture2cloud/capture2cloud.cfg`. The password
+stored in `sd:/wiiu/apps/capture2cloud/server/capture2cloud.cfg`. The password
 is entered with the Wii U keyboard and is never stored. Closing that
 keyboard rebuilds SDL/GX2 because the keyboard changes raw GX2 state.
 This rebuild was validated on hardware: menu glyphs remain readable after

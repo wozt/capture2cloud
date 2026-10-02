@@ -122,7 +122,7 @@ on another client first:
 
 Both are wrong by default, and both were wrong on the last client too.
 
-**The vertical axes are inverted.** `gamepad_bridge.h` wants up
+**The vertical axes are inverted.** `server/gamepad_bridge.h` wants up
 positive. The handover document for the other client says libdrc already
 reports it that way and not to negate it — and on the bench, pushing up
 moved the character down until it was negated. Whatever VPAD reports,

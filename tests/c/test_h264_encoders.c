@@ -21,8 +21,8 @@
 #include <net/if.h>
 #include <string.h>
 
-#include "../../app_config.c"
-#include "../../gst_webrtc.c"
+#include "../../server/app_config.c"
+#include "../../server/gst_webrtc.c"
 
 #include "gst_webrtc_stubs.h"
 #include "test_util.h"

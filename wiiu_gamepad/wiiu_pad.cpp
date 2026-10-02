@@ -32,7 +32,7 @@ extern "C" {
 #include "../c2s_protocol.h"
 #include "../version.h"
 #include "pad_menu.h"
-#include "../gamepad_bridge.h"
+#include "../server/gamepad_bridge.h"
 
 #include <arpa/inet.h>
 #include <atomic>
@@ -407,7 +407,7 @@ private:
  *
  * Sticks are NOT negated. libdrc already reports them the way this
  * protocol wants -- up is positive on both sides, which is what
- * `gamepad_bridge.h` says about GAMEPAD_XB360_LY and RY. This was got
+ * `server/gamepad_bridge.h` says about GAMEPAD_XB360_LY and RY. This was got
  * wrong three separate times in the sibling project by reasoning from
  * the screen's Y axis growing downward. That is a rule about screens,
  * not about sticks.
@@ -468,7 +468,7 @@ void fill_slots(const drc::InputData &in, int8_t *slots, const PadSettings &set)
      * handover.
      *
      * Section 4 of WIIU_GAMEPAD_HANDOVER.md says not to: libdrc reports
-     * a stick with up positive, gamepad_bridge.h wants up positive, so
+     * a stick with up positive, server/gamepad_bridge.h wants up positive, so
      * a negation would be someone reasoning from a screen's Y axis
      * rather than from a stick. It says this was got wrong three times
      * in three clients.

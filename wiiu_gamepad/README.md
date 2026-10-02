@@ -20,7 +20,7 @@ under the console port it connects to. `WIIU_PAD_AUTOSTART=1` in the
 `.env` starts it with the host.
 
 The host starts and stops this program; it is not a thread in there.
-Three reasons, in `../wiiu_pad.h`, and the first decides it on its own:
+Three reasons, in `../server/wiiu_pad.h`, and the first decides it on its own:
 the host builds from one `gcc` line over a list of C files, and this
 needs C++ and two vendored libraries.
 
@@ -115,7 +115,7 @@ the Switch down with it. It takes what the stream is and scales locally
 eight pixels of black each side.
 
 **It does not negate the sticks.** libdrc already reports them the way
-this protocol wants — up is positive, which is what `gamepad_bridge.h`
+this protocol wants — up is positive, which is what `server/gamepad_bridge.h`
 says about `GAMEPAD_XB360_LY`. This was got wrong three times in the
 sibling project by reasoning from the screen's Y axis.
 

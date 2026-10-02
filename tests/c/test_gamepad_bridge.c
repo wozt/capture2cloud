@@ -1,4 +1,4 @@
-/* Unit tests for gamepad_bridge.c's pure logic: the GCAPI wire format
+/* Unit tests for server/gamepad_bridge.c's pure logic: the GCAPI wire format
  * and value clamping.
  *
  * The .c file is #included directly so its `static` functions are
@@ -12,9 +12,9 @@
  * bug lived (a 65-byte packet where the firmware wants 64, shifting
  * every field by one). That was expensive to find; these tests pin the
  * layout down so it can't silently regress. */
-#include "../../app_config.c"
-#include "../../gamepad_bridge.h"
-#include "../../output_titan.c"
+#include "../../server/app_config.c"
+#include "../../server/gamepad_bridge.h"
+#include "../../server/output_titan.c"
 
 #include "test_util.h"
 

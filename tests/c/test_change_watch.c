@@ -1,5 +1,5 @@
 /* Unit tests for the "has the picture changed?" watch in
- * video_capture.c.
+ * server/video_capture.c.
  *
  * This is what decides when to re-enumerate the adapter after waking the
  * console. Getting it wrong is expensive to discover on hardware: too
@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../../video_capture.c"
+#include "../../server/video_capture.c"
 
 #include "test_util.h"
 

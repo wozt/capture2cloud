@@ -11,7 +11,7 @@
 
 /* --- gamepad: browser Gamepad API -> DataChannel -> Titan One.
  * Order of the 21 bytes sent = the GAMEPAD_XB360_* entries from
- * gamepad_bridge.h on the server side (signed values, -100..100). The
+ * server/gamepad_bridge.h on the server side (signed values, -100..100). The
  * server does no transformation at all: all the mapping happens here.
  * Unreliable/unordered channel (like UDP): this is a current state sent
  * continuously, no point retransmitting a stale value. */

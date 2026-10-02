@@ -46,7 +46,7 @@ const req = (method, path, headers = '', payload = '') =>
   for (const p of [
     '/../../../../etc/passwd', '/..%2f..%2f..%2fetc/passwd',
     '/%2e%2e/%2e%2e/etc/passwd', '/./../scripts/.env', '/scripts/.env',
-    '/../scripts/.env', '/app.js/../scripts/.env', '/capture2cloud.c',
+    '/../scripts/.env', '/app.js/../scripts/.env', '/server/capture2cloud.c',
     '/.env', '/page.html%00.js', '//etc/passwd',
     /* The front end moved into web/, and a directory is exactly what
      * invites a server to build a path out of what was asked for. It

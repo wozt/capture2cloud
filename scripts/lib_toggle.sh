@@ -11,48 +11,48 @@
 C2C_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 C2C_SOURCES=(
-    "$C2C_DIR/capture2cloud.c"
-    "$C2C_DIR/gtk_shell.c"
-    "$C2C_DIR/web_stream.c"
-    "$C2C_DIR/reset_method.c"
-    "$C2C_DIR/gst_webrtc.c"
-    "$C2C_DIR/gamepad_bridge.c"
-    "$C2C_DIR/controller_shaping.c"
-    "$C2C_DIR/output_titan.c"
-    "$C2C_DIR/output_pcble.c"
-    "$C2C_DIR/wiiu_pad.c"
-    "$C2C_DIR/drc_encoder.c"
-    "$C2C_DIR/old3ds_encoder.c"
-    "$C2C_DIR/app_config.c"
-    "$C2C_DIR/ws_frame.c"
-    "$C2C_DIR/video_capture.c"
-    "$C2C_DIR/audio_capture.c"
-    "$C2C_DIR/switch_stream.c"
-    "$C2C_DIR/local_pad.c"
+    "$C2C_DIR/server/capture2cloud.c"
+    "$C2C_DIR/server/gtk_shell.c"
+    "$C2C_DIR/server/web_stream.c"
+    "$C2C_DIR/server/reset_method.c"
+    "$C2C_DIR/server/gst_webrtc.c"
+    "$C2C_DIR/server/gamepad_bridge.c"
+    "$C2C_DIR/server/controller_shaping.c"
+    "$C2C_DIR/server/output_titan.c"
+    "$C2C_DIR/server/output_pcble.c"
+    "$C2C_DIR/server/wiiu_pad.c"
+    "$C2C_DIR/server/drc_encoder.c"
+    "$C2C_DIR/server/old3ds_encoder.c"
+    "$C2C_DIR/server/app_config.c"
+    "$C2C_DIR/server/ws_frame.c"
+    "$C2C_DIR/server/video_capture.c"
+    "$C2C_DIR/server/audio_capture.c"
+    "$C2C_DIR/server/switch_stream.c"
+    "$C2C_DIR/server/local_pad.c"
 )
 C2C_HEADERS=(
     "$C2C_DIR/version.h"
-    "$C2C_DIR/ws_frame.h"
-    "$C2C_DIR/gtk_shell.h"
-    "$C2C_DIR/web_stream.h"
-    "$C2C_DIR/reset_method.h"
-    "$C2C_DIR/gst_webrtc.h"
-    "$C2C_DIR/gamepad_bridge.h"
-    "$C2C_DIR/controller_state.h"
-    "$C2C_DIR/controller_shaping.h"
-    "$C2C_DIR/output_backend.h"
-    "$C2C_DIR/output_titan.h"
-    "$C2C_DIR/output_pcble.h"
-    "$C2C_DIR/wiiu_pad.h"
-    "$C2C_DIR/drc_encoder.h"
-    "$C2C_DIR/old3ds_encoder.h"
-    "$C2C_DIR/app_config.h"
-    "$C2C_DIR/video_capture.h"
-    "$C2C_DIR/audio_capture.h"
-    "$C2C_DIR/switch_stream.h"
+    "$C2C_DIR/server/ws_frame.h"
+    "$C2C_DIR/server/gtk_shell.h"
+    "$C2C_DIR/server/web_stream.h"
+    "$C2C_DIR/server/reset_method.h"
+    "$C2C_DIR/server/gst_webrtc.h"
+    "$C2C_DIR/server/gamepad_bridge.h"
+    "$C2C_DIR/server/controller_state.h"
+    "$C2C_DIR/server/controller_shaping.h"
+    "$C2C_DIR/server/output_backend.h"
+    "$C2C_DIR/server/output_titan.h"
+    "$C2C_DIR/server/output_pcble.h"
+    "$C2C_DIR/server/wiiu_pad.h"
+    "$C2C_DIR/server/drc_encoder.h"
+    "$C2C_DIR/server/old3ds_encoder.h"
+    "$C2C_DIR/server/app_config.h"
+    "$C2C_DIR/server/video_capture.h"
+    "$C2C_DIR/server/audio_capture.h"
+    "$C2C_DIR/server/switch_stream.h"
     "$C2C_DIR/c2s_protocol.h"
-    "$C2C_DIR/app_settings.h"
-    "$C2C_DIR/local_pad.h"
+    "$C2C_DIR/server/app_settings.h"
+    "$C2C_DIR/server/local_pad.h"
 )
 C2C_BIN="$C2C_DIR/capture2cloud"
 C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libavcodec libavutil libswscale libusb-1.0 glib-2.0 gio-2.0"
@@ -174,9 +174,13 @@ c2c_build_if_needed() {
     # distribution's x264.h has, and the struct layout differs between
     # builds, so this must be the fork's. The header is vendored under
     # wiiu_gamepad/include (source, and committed); the LIBRARY is opened at run
-    # time rather than linked -- see drc_encoder.c for why that is not a
+    # time rather than linked -- see server/drc_encoder.c for why that is not a
     # convenience. -ldl for that, and it stays one gcc line of C.
-    gcc -O2 -Wall -Wextra -I"$C2C_DIR/wiiu_gamepad/include" -o "$C2C_BIN" "${C2C_SOURCES[@]}" \
+    gcc -O2 -Wall -Wextra \
+        -I"$C2C_DIR" \
+        -I"$C2C_DIR/server" \
+        -I"$C2C_DIR/wiiu_gamepad/include" \
+        -o "$C2C_BIN" "${C2C_SOURCES[@]}" \
         $(pkg-config --cflags --libs $C2C_PKGCONFIG_DEPS) -lm -ldl
 }
 

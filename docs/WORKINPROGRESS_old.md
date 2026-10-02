@@ -23,15 +23,15 @@ on a Wii U. The native clients use the binary protocol in
 
 | Piece | File | Note |
 | --- | --- | --- |
-| Orchestration | `capture2cloud.c` | ~400 lines; was a 755-line catch-all |
-| V4L2 / MJPEG | `video_capture.c` | opaque handle, no shared globals |
-| PulseAudio + hum filter | `audio_capture.c` | playback on its own thread |
-| WebRTC | `gst_webrtc.c` | one payloader per client |
-| HTTP / WebSocket | `web_stream.c` | exact-match route whitelist |
-| WebSocket framing | `ws_frame.c` | RFC 6455, checked against its test vector |
-| Native transport | `switch_stream.c` | routed by **stream**, not codec |
-| Input → USB | `gamepad_bridge.c` | GCAPI over libusb |
-| Config | `app_config.c` | everything from `scripts/.env` |
+| Orchestration | `server/capture2cloud.c` | ~400 lines; was a 755-line catch-all |
+| V4L2 / MJPEG | `server/video_capture.c` | opaque handle, no shared globals |
+| PulseAudio + hum filter | `server/audio_capture.c` | playback on its own thread |
+| WebRTC | `server/gst_webrtc.c` | one payloader per client |
+| HTTP / WebSocket | `server/web_stream.c` | exact-match route whitelist |
+| WebSocket framing | `server/ws_frame.c` | RFC 6455, checked against its test vector |
+| Native transport | `server/switch_stream.c` | routed by **stream**, not codec |
+| Input → USB | `server/gamepad_bridge.c` | GCAPI over libusb |
+| Config | `server/app_config.c` | everything from `scripts/.env` |
 | Front end | `page.html` + `web/` | eleven scripts, served from disk |
 
 **Five main encodes, each fed only while watched**: browser WebRTC VP8,

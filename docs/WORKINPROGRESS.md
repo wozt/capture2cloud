@@ -44,18 +44,18 @@ Important host-side pieces:
 
 | File               | Role                                            |
 | ------------------ | ----------------------------------------------- |
-| `capture2cloud.c`  | application orchestration                       |
-| `video_capture.c`  | V4L2 capture and signal-change detection        |
-| `audio_capture.c`  | audio capture and local playback                |
-| `gst_webrtc.c`     | browser/native encoder pipelines                |
-| `web_stream.c`     | HTTP/WebSocket server                           |
-| `switch_stream.c`  | native client protocol                          |
-| `gamepad_bridge.c` | merges controller input and owns output backend |
-| `output_titan.c`   | ConsoleTuner/Titan backend                      |
-| `output_pcble.c`   | Bluetooth Nintendo controller backend           |
-| `reset_method.c`   | console wake abstraction                        |
-| `gtk_shell.c`      | host configuration UI                           |
-| `app_config.c`     | `scripts/.env` configuration                    |
+| `server/capture2cloud.c`  | application orchestration                       |
+| `server/video_capture.c`  | V4L2 capture and signal-change detection        |
+| `server/audio_capture.c`  | audio capture and local playback                |
+| `server/gst_webrtc.c`     | browser/native encoder pipelines                |
+| `server/web_stream.c`     | HTTP/WebSocket server                           |
+| `server/switch_stream.c`  | native client protocol                          |
+| `server/gamepad_bridge.c` | merges controller input and owns output backend |
+| `server/output_titan.c`   | ConsoleTuner/Titan backend                      |
+| `server/output_pcble.c`   | Bluetooth Nintendo controller backend           |
+| `server/reset_method.c`   | console wake abstraction                        |
+| `server/gtk_shell.c`      | host configuration UI                           |
+| `server/app_config.c`     | `scripts/.env` configuration                    |
 
 The main rule is separation of responsibilities:
 
@@ -117,7 +117,7 @@ For interactive streaming, WebRTC is normally the better transport when network 
 
 ## Controller architecture
 
-Every input source is converted to the same controller state and merged by `gamepad_bridge.c`.
+Every input source is converted to the same controller state and merged by `server/gamepad_bridge.c`.
 
 Sources include:
 
@@ -219,7 +219,7 @@ gamepad_bridge_reset()
 
 The capture device generates its own no-signal image, so V4L2 status alone cannot tell whether the console is awake.
 
-`video_capture.c` therefore compares samples from consecutive frames.
+`server/video_capture.c` therefore compares samples from consecutive frames.
 
 ### Switch 2 Bluetooth wake
 
@@ -264,7 +264,7 @@ This coordination matters. A pending pcble reconnect must not restart its helper
 
 The wake layer temporarily suspends pcble recovery, then the normal `gamepad_bridge_reset()` resumes it afterwards.
 
-Do not implement a second Bluetooth reconnect mechanism inside `reset_method.c`.
+Do not implement a second Bluetooth reconnect mechanism inside `server/reset_method.c`.
 
 ---
 

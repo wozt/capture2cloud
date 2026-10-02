@@ -309,7 +309,7 @@ var padTestSvg = document.getElementById('padtest-svg');
 var padTestReadout = document.getElementById('padtest-readout');
 var padTestSource = document.getElementById('padtest-source');
 
-/* Slots, from gamepad_bridge.h's GAMEPAD_XB360_* order. */
+/* Slots, from server/gamepad_bridge.h's GAMEPAD_XB360_* order. */
 var PT = { GUIDE: 0, BACK: 1, START: 2, RB: 3, RT: 4, RS: 5, LB: 6, LT: 7, LS: 8,
            RX: 9, RY: 10, LX: 11, LY: 12, UP: 13, DOWN: 14, LEFT: 15, RIGHT: 16,
            Y: 17, B: 18, A: 19, X: 20 };

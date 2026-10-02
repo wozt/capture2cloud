@@ -51,10 +51,15 @@ needs_build() {
     # second -name, so every .c matched unconditionally and printed
     # nothing, and the answer was always "no rebuild needed". A cache
     # that never invalidates is worse than no cache.
-    if [ -n "$(find "$PROJECT_DIR" -maxdepth 1 \( -name '*.c' -o -name '*.h' \) \
+    if [ -n "$(find "$PROJECT_DIR/server" -maxdepth 1 \( -name '*.c' -o -name '*.h' \) \
                     -newer "$bin" -print -quit 2>/dev/null)" ]; then
         return 0
     fi
+    for shared in "$PROJECT_DIR/c2s_protocol.h" "$PROJECT_DIR/version.h"; do
+        if [ "$shared" -nt "$bin" ]; then
+            return 0
+        fi
+    done
     [ -n "$(find "$SCRIPT_DIR/c" -newer "$bin" -print -quit 2>/dev/null)" ]
 }
 
@@ -70,7 +75,8 @@ run_c_test_x11() {
 
     echo "═══ C: $name ═══"
     if needs_build "$BUILD_DIR/$name"; then
-        if ! $LOW gcc -O1 -Wall -Wextra -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
+        if ! $LOW gcc -O1 -Wall -Wextra -I"$PROJECT_DIR" -I"$PROJECT_DIR/server" \
+            -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
             $(pkg-config --cflags --libs $pkgs) $extra 2>&1; then
             echo "  COMPILE FAILED"
             failed=1
@@ -93,7 +99,8 @@ run_c_test() {
 
     echo "═══ C: $name ═══"
     if needs_build "$BUILD_DIR/$name"; then
-        if ! $LOW gcc -O1 -Wall -Wextra -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
+        if ! $LOW gcc -O1 -Wall -Wextra -I"$PROJECT_DIR" -I"$PROJECT_DIR/server" \
+            -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
             $(pkg-config --cflags --libs $pkgs) $extra 2>&1; then
             echo "  COMPILE FAILED"
             failed=1
@@ -112,7 +119,7 @@ timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
 timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
 timed "C: pcble protocol"   run_c_test test_pcble_protocol ""
 timed "C: reset method"     run_c_test test_reset_method "sdl2 gio-2.0"
-# glib because web_stream.c now answers a WebSocket upgrade, whose
+# glib because server/web_stream.c now answers a WebSocket upgrade, whose
 # handshake is a SHA-1 and a base64 -- both GLib's.
 timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 glib-2.0"
 timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscale libavcodec libavutil"

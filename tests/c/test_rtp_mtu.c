@@ -1,4 +1,4 @@
-/* Unit tests for the RTP packet sizing in gst_webrtc.c.
+/* Unit tests for the RTP packet sizing in server/gst_webrtc.c.
  *
  * This is the logic that got video working over Tailscale: GStreamer's
  * payloaders default to 1400-byte packets, which do not fit a tunnel
@@ -7,15 +7,15 @@
  * healthy while every single video packet is dropped.
  *
  * The .c file is #included directly so its `static` functions are
- * reachable; gst_webrtc.c's own deps are supplied by run_all.sh.
+ * reachable; server/gst_webrtc.c's own deps are supplied by run_all.sh.
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <string.h>
 
-#include "../../app_config.c"
-#include "../../gst_webrtc.c"
+#include "../../server/app_config.c"
+#include "../../server/gst_webrtc.c"
 
 #include "test_util.h"
 

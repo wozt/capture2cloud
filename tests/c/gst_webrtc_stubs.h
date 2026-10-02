@@ -2,20 +2,20 @@
 #define GST_WEBRTC_STUBS_H
 
 /*
- * What gst_webrtc.c calls and a test does not want to link.
+ * What server/gst_webrtc.c calls and a test does not want to link.
  *
- * The tests #include gst_webrtc.c directly so its `static` functions are
+ * The tests #include server/gst_webrtc.c directly so its `static` functions are
  * reachable, which means satisfying every symbol it references. Linking
  * the real ones would drag libusb, sockets, threads and drc-x264 into
  * tests that are about packet arithmetic and element names. This lived
  * inside test_rtp_mtu.c until a second test needed the same seventy
  * lines.
  *
- * Include it AFTER gst_webrtc.c, which is where the types come from.
+ * Include it AFTER server/gst_webrtc.c, which is where the types come from.
  */
 
-/* gst_webrtc.c forwards gamepad DataChannel messages to the USB bridge.
- * None of that is exercised here, and pulling in gamepad_bridge.c would
+/* server/gst_webrtc.c forwards gamepad DataChannel messages to the USB bridge.
+ * None of that is exercised here, and pulling in server/gamepad_bridge.c would
  * drag libusb into a test about packet sizes, so a stub satisfies the
  * linker instead. */
 void gamepad_bridge_update(unsigned source, const int8_t state[GAMEPAD_BRIDGE_STATE_COUNT]) {
@@ -26,12 +26,12 @@ void gamepad_bridge_forget(unsigned source) {
     (void)source;
 }
 
-/* gst_webrtc.c hands encoded frames to the native transport. None of
- * that is exercised here, and linking switch_stream.c would drag its
+/* server/gst_webrtc.c hands encoded frames to the native transport. None of
+ * that is exercised here, and linking server/switch_stream.c would drag its
  * sockets and threads into a test about packet sizes. */
 /* The Wii U encode, stubbed for the same reason as the rest: this test
  * is about packet sizes, and drc-x264 is a library that may not be
- * installed. test_drc_encoder.c is where that chain is actually
+ * installed. test_server/drc_encoder.c is where that chain is actually
  * exercised. */
 DrcEncoder *drc_encoder_open(const char *so, const char *preset, char *err, size_t n) {
     (void)so; (void)preset;

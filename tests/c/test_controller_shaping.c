@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "../../controller_shaping.c"
+#include "../../server/controller_shaping.c"
 
 #include "test_util.h"
 

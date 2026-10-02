@@ -7,7 +7,7 @@
 #include <whb/sdcard.h>
 
 #define SETTINGS_LEAF \
-    "/wiiu/apps/capture2cloud/capture2cloud.cfg"
+    "/wiiu/apps/capture2cloud/server/capture2cloud.cfg"
 
 static const Settings DEFAULTS = {
     .host = { 0, 0, 0, 0 },

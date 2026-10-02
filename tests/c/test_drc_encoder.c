@@ -10,7 +10,7 @@
  *
  * So the danger is not theoretical and it is not visible: an encoder
  * opened by one build and driven by the other's code corrupts silently.
- * This pins down that drc_encoder.c keeps them apart, and that it still
+ * This pins down that server/drc_encoder.c keeps them apart, and that it still
  * produces what the pad's protocol demands.
  *
  * Skipped, not failed, where drc-x264 is absent: a machine with no
@@ -27,7 +27,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "../../drc_encoder.c"
+#include "../../server/drc_encoder.c"
 
 /* A picture with something in it. A flat field encodes to almost
  * nothing and would pass this test while telling us very little. */

@@ -32,10 +32,10 @@ for section 4 instead, which is where it actually goes.
 
 ### Confusing name
 
-Capture2Cloud already has a `gamepad_bridge.c`, and it is something
+Capture2Cloud already has a `server/gamepad_bridge.c`, and it is something
 else entirely — the ConsoleTuner USB adapter that drives the console.
 Call the new one something that cannot be mistaken for it:
-`wiiu_pad.c`, `drc_client.c`. Two files named for the same word, meaning
+`server/wiiu_pad.c`, `drc_client.c`. Two files named for the same word, meaning
 opposite directions of travel, is a bug waiting for a tired evening.
 
 ---
@@ -369,7 +369,7 @@ applies to browsers and the Switch:
 > same codec at different sizes, so they cannot share one. The routing
 > key had to stop being the codec.
 >
-> — `switch_stream.h`
+> — `server/switch_stream.h`
 
 A GamePad is one more of those: **`SS_STREAM_DRC 3`**, fed by
 **drc-x264** instead of x264enc or a VA element. `switch_wanted[]`

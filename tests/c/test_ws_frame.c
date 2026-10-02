@@ -1,6 +1,6 @@
 /* La poignee de main et le cadrage, verifies contre les valeurs de la RFC. */
 /* The framing, verified against the RFC's own test vector. */
-#include "../../ws_frame.c"
+#include "../../server/ws_frame.c"
 #include <stdio.h>
 #include <string.h>
 static int fails = 0;

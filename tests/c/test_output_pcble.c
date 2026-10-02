@@ -2,9 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../../app_config.h"
+#include "../../server/app_config.h"
 
-/* output_pcble.c references the config reader from init(). The mapping
+/* server/output_pcble.c references the config reader from init(). The mapping
  * test never calls init, so a tiny stub keeps this test hardware-free. */
 const char *config_get_str(
     const char *key,
@@ -30,7 +30,7 @@ long config_get_int(const char *key, long fallback, long min_value, long max_val
     return fallback;
 }
 
-#include "../../output_pcble.c"
+#include "../../server/output_pcble.c"
 #include "test_util.h"
 
 static void test_neutral(void)
