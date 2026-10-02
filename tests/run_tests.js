@@ -1007,12 +1007,10 @@ group('shared settings are followed, not imposed', () => {
 });
 
 group('every place that names a version names the same one', () => {
-  // Four files say which release this is: VERSION, version.h (the host
-  // and the console client), web/main.js (the page) and the Android
-  // build. They are separate because they are read by four different
-  // toolchains, which makes a bump that misses one both easy and
-  // invisible -- the symptom is a client confidently reporting a
-  // version nobody shipped.
+  // VERSION, version.h, the page, Android and the Switch NACP are read by
+  // different toolchains. Keep them pinned so every packaged client reports
+  // the release that actually contains it. Wii U and Old 3DS include
+  // version.h directly.
   const root = path.join(__dirname, '..');
   const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
   // Three parts, or four for a hotfix on top of one.
@@ -1029,6 +1027,10 @@ group('every place that names a version names the same one', () => {
   const fromGradle = /versionName = "([^"]+)"/.exec(
     fs.readFileSync(path.join(root, 'android', 'app', 'build.gradle.kts'), 'utf8'));
   check('the Android build matches VERSION', fromGradle && fromGradle[1], version);
+
+  const fromSwitch = /APP_VERSION\s*:=\s*([^\s]+)/.exec(
+    fs.readFileSync(path.join(root, 'switch_homebrew', 'Makefile'), 'utf8'));
+  check('the Switch metadata matches VERSION', fromSwitch && fromSwitch[1], version);
 });
 
 group('the page and the test suite agree on what to load', () => {

@@ -3,11 +3,10 @@
 
 /* The release this build is.
  *
- * Kept here so the host, the console client and the page all say the
- * same thing, and pinned by a test against the VERSION file and the
- * Android build so a bump that misses one of them fails the suite
- * rather than shipping three answers to "which version am I running".
+ * Kept here so the host and native clients all say the same thing, and
+ * pinned by a test against the VERSION file, web page, Android build and
+ * Switch metadata so a partial bump fails before release.
  */
-#define C2C_VERSION "1.4.2.0"
+#define C2C_VERSION "1.5.0.0"
 
 #endif

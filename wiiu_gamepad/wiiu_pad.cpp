@@ -30,6 +30,7 @@ extern "C" {
 }
 
 #include "../c2s_protocol.h"
+#include "../version.h"
 #include "pad_menu.h"
 #include "../gamepad_bridge.h"
 
@@ -768,7 +769,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--preset") && next)     { setenv("DRC_PRESET", next, 1); i++; }
         else {
             fprintf(stderr,
-                "wiiu_pad -- Capture2Cloud on a real Wii U GamePad\n"
+                "wiiu_pad v%s -- Capture2Cloud on a real Wii U GamePad\n"
                 "\n"
                 "  --host ADDR      where the host is (default 127.0.0.1)\n"
                 "  --port N         the gamepad's own port (default %d)\n"
@@ -783,7 +784,7 @@ int main(int argc, char **argv)
                 "\n"
                 "Everything it needs from the radio is in\n"
                 "../WIIU_GAMEPAD_HANDOVER.md.\n",
-                C2S_DRC_PORT);
+                C2C_VERSION, C2S_DRC_PORT);
             return a[0] == '-' && a[1] == '-' ? 1 : 1;
         }
     }

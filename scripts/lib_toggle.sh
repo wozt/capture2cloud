@@ -31,6 +31,7 @@ C2C_SOURCES=(
     "$C2C_DIR/local_pad.c"
 )
 C2C_HEADERS=(
+    "$C2C_DIR/version.h"
     "$C2C_DIR/ws_frame.h"
     "$C2C_DIR/gtk_shell.h"
     "$C2C_DIR/web_stream.h"

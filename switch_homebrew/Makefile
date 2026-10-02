@@ -48,7 +48,7 @@ ROMFS		:=	resources
 
 APP_TITLE	:=	Capture2Cloud Client
 APP_AUTHOR	:=	wozt
-APP_VERSION	:=	0.1.0
+APP_VERSION	:=	1.5.0.0
 
 #---------------------------------------------------------------------------------
 # options for code generation

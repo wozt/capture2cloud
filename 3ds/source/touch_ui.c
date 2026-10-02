@@ -1,4 +1,5 @@
 #include "touch_ui.h"
+#include "version.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -268,7 +269,8 @@ void touch_ui_draw_controller(const TouchUiEvent *event,
     begin_draw();
     rectangle(0, 0, 320, 240, color(14, 20, 29));
 
-    text(6, 2, "CAPTURE2CLOUD OLD3DS", 1, color(127, 205, 235));
+    text(6, 2, "CAPTURE2CLOUD OLD3DS v" C2C_VERSION, 1,
+         color(127, 205, 235));
 
     /* Missing Switch controls. */
     button(8, 12, 57, 36, "ZL", event->controls.zl);
@@ -374,7 +376,8 @@ void touch_ui_draw_config(const AppConfig *config, const NetworkStats *network,
     begin_draw();
     rectangle(0, 0, 320, 240, color(14, 20, 29));
 
-    text(8, 5, "CAPTURE2CLOUD SETTINGS", 1, color(127, 205, 235));
+    text(8, 5, "CAPTURE2CLOUD v" C2C_VERSION " SETTINGS", 1,
+         color(127, 205, 235));
 
     char label[96];
 

@@ -1,4 +1,5 @@
 #include "pad_menu.h"
+#include "../version.h"
 
 #include <cairo/cairo.h>
 #include <drc/screen.h>
@@ -368,7 +369,9 @@ void PadMenu::Draw(std::vector<unsigned char> &rgba) {
     cairo_rectangle(cr, 0, 0, W, H);
     cairo_fill(cr);
 
-    text(28, 44, "Wii U GamePad", 22);
+    char title[64];
+    snprintf(title, sizeof(title), "Wii U GamePad v%s", C2C_VERSION);
+    text(28, 44, title, 22);
 
     const auto tab = [&](float x, const char *label, int id, bool on) {
         box(x, 60, 150, 30, on ? .16 : .09, on ? .22 : .11, on ? .30 : .14);

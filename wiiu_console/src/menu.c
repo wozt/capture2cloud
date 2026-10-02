@@ -1,4 +1,5 @@
 #include "menu.h"
+#include "version.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -315,7 +316,7 @@ static void add_shell(MenuCanvas *canvas,
     box(canvas, R_SIDEBAR, MENU_CARD, UI_PANEL);
 
     text_at(canvas, 100, 64, UI_SIZE_BODY,
-            UI_TEXT, "Capture2Cloud");
+            UI_TEXT, "Capture2Cloud v%s", C2C_VERSION);
     text_at(canvas, 100, 116, UI_SIZE_BODY,
             control ? MENU_GREEN : UI_DIM,
             "%s", control ? "CONTROL" : "VIEWER");
