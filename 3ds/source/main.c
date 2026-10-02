@@ -45,20 +45,29 @@ static void video_worker(void *unused)
             const bool present = !predictive || queued_stats.queue_depth == 0 ||
                                  video_work == 3;
             video_note_received_bytes(frame_size);
-            const bool decoded = video_decode_and_present(
-                frame, frame_size, received_ms, video_codec, present);
+            const VideoDecodeResult decode_result =
+                video_decode_and_present(
+                    frame, frame_size, received_ms, video_codec, present);
             network_release_video(video_slot);
             did_work = true;
-            if (!decoded && predictive) {
+
+            if (decode_result == VIDEO_DECODE_ERROR && predictive) {
                 network_request_keyframe();
                 break;
             }
-            if (decoded && present) {
+
+            if (decode_result == VIDEO_DECODE_FRAME && present) {
                 LightLock_Lock(&g_video_present_lock);
                 g_video_frame_ready = true;
                 LightLock_Unlock(&g_video_present_lock);
                 break;
             }
+
+            /*
+             * VIDEO_DECODE_BUFFERED is expected while MPEG-4 frame threading
+             * fills its pipeline.  Do not request a keyframe and do not swap
+             * the top framebuffer until an actual frame is returned.
+             */
             if (present || !predictive) break;
         }
         if (!did_work) svcSleepThread(500000LL);
@@ -280,10 +289,16 @@ int main(void)
             if (network_acquire_video(&frame, &frame_size, &received_ms,
                                       &video_codec, &video_slot)) {
                 video_note_received_bytes(frame_size);
-                fallback_video_presented = video_decode_and_present(
-                    frame, frame_size, received_ms, video_codec, true);
+                const VideoDecodeResult decode_result =
+                    video_decode_and_present(
+                        frame, frame_size, received_ms, video_codec, true);
+
+                fallback_video_presented =
+                    decode_result == VIDEO_DECODE_FRAME;
+
                 network_release_video(video_slot);
-                if (!fallback_video_presented &&
+
+                if (decode_result == VIDEO_DECODE_ERROR &&
                     c2s_old3ds_predictive_codec(video_codec)) {
                     network_request_keyframe();
                 }

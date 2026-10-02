@@ -27,7 +27,6 @@ typedef struct {
 static struct jpeg_decompress_struct g_jpeg;
 static DecodeError g_error;
 static uint16_t *g_pixels;
-static uint8_t *g_yuv420;
 static bool g_y2r;
 static AVCodecContext *g_video_decoder;
 static AVFrame *g_video_frame;
@@ -42,6 +41,7 @@ static uint64_t g_window_bytes;
 static uint64_t g_decode_total_ms;
 static uint64_t g_upload_total_ms;
 static volatile bool g_aspect_16_9;
+static LightLock g_stats_lock;
 
 /*
  * FFmpeg normally allocates decoded pictures from its regular heap.
@@ -71,32 +71,70 @@ static int video_linear_get_buffer2(AVCodecContext *context,
         return avcodec_default_get_buffer2(context, frame, flags);
     }
 
+    /*
+     * Do not merely round MPEG dimensions to a macroblock boundary here.
+     *
+     * FFmpeg's video buffer allocator calls avcodec_align_dimensions2().
+     * For YUV420 in this build that means, among other constraints, a
+     * vertical alignment of 32 pixels.  A visible 400x240 picture therefore
+     * needs backing storage for 256 rows.
+     *
+     * The returned stride requirements matter as well.  Increase the backing
+     * width using the same rule as FFmpeg's default frame pool until every
+     * plane stride satisfies its required alignment.
+     */
     int width = frame->width;
     int height = frame->height;
+    int stride_align[AV_NUM_DATA_POINTERS] = {0};
+    int linesize[4] = {0};
 
-    width = (width + 15) & ~15;
-    height = (height + 15) & ~15;
+    avcodec_align_dimensions2(context, &width, &height, stride_align);
+
+    for (;;) {
+        int result = av_image_fill_linesizes(
+            linesize, (enum AVPixelFormat)frame->format, width);
+        if (result < 0) return result;
+
+        bool unaligned = false;
+        for (int i = 0; i < 4; i++) {
+            if (linesize[i] && stride_align[i] &&
+                linesize[i] % stride_align[i] != 0) {
+                unaligned = true;
+                break;
+            }
+        }
+
+        if (!unaligned) break;
+
+        /*
+         * Same progression used by FFmpeg's update_frame_pool():
+         * add the lowest set bit of the current width.
+         */
+        width += width & ~(width - 1);
+    }
 
     const int buffer_size =
         av_image_get_buffer_size((enum AVPixelFormat)frame->format,
                                  width, height, 1);
-    if (buffer_size <= 0) return AVERROR(ENOMEM);
+    if (buffer_size <= 0) return AVERROR(EINVAL);
 
     uint8_t *buffer = linearAlloc((size_t)buffer_size);
     if (!buffer) return AVERROR(ENOMEM);
 
     memset(buffer, 0, (size_t)buffer_size);
 
-    if (av_image_fill_arrays(frame->data, frame->linesize, buffer,
+    const int result =
+        av_image_fill_arrays(frame->data, frame->linesize, buffer,
                              (enum AVPixelFormat)frame->format,
-                             width, height, 1) < 0) {
+                             width, height, 1);
+    if (result < 0) {
         linearFree(buffer);
-        return AVERROR(EINVAL);
+        return result;
     }
 
     /*
-     * A single AVBufferRef owns the complete planar allocation.  data[1]
-     * and data[2] simply point inside it; they do not need separate owners.
+     * One AVBufferRef owns the complete contiguous planar allocation.
+     * data[1] and data[2] point inside that allocation.
      */
     frame->buf[0] =
         av_buffer_create(buffer, (size_t)buffer_size,
@@ -185,6 +223,9 @@ static void decode_failed(j_common_ptr jpeg)
 
 bool video_init(void)
 {
+    LightLock_Init(&g_stats_lock);
+    memset(&g_stats, 0, sizeof(g_stats));
+
     g_pixels = linearAlloc(VIDEO_WIDTH * VIDEO_HEIGHT * sizeof(uint16_t));
     if (!g_pixels) return false;
     g_jpeg.err = jpeg_std_error(&g_error.base);
@@ -208,16 +249,13 @@ bool video_init(void)
         return false;
     }
 
-    /* Y2R is the 3DS' hardware YUV-to-RGB converter.  MPEG video still
-     * decodes on ARM11, but the colour conversion no longer consumes
-     * that same core.  Keep libswscale as a complete runtime fallback. */
+    /*
+     * Y2R is the 3DS hardware YUV-to-RGB converter.  MPEG frames are already
+     * decoded directly into linear memory by video_linear_get_buffer2(), so
+     * no additional 144 KiB YUV staging buffer is required.
+     */
     if (R_SUCCEEDED(y2rInit())) {
-        g_yuv420 = linearAlloc(VIDEO_WIDTH * VIDEO_HEIGHT * 3 / 2);
-        if (g_yuv420) {
-            g_y2r = true;
-        } else {
-            y2rExit();
-        }
+        g_y2r = true;
     }
     g_window_start = osGetTime();
     video_clear();
@@ -236,8 +274,6 @@ void video_exit(void)
 {
     if (g_y2r) y2rExit();
     g_y2r = false;
-    linearFree(g_yuv420);
-    g_yuv420 = NULL;
     sws_freeContext(g_video_scale);
     g_video_scale = NULL;
     av_frame_free(&g_video_frame);
@@ -263,6 +299,7 @@ static void refresh_rates(uint32_t now)
     uint32_t elapsed = now - g_window_start;
     if (elapsed < 1000) return;
     float seconds = elapsed / 1000.0f;
+    LightLock_Lock(&g_stats_lock);
     g_stats.receive_fps = g_window_received / seconds;
     g_stats.decode_fps = g_window_decoded / seconds;
     g_stats.display_fps = g_window_displayed / seconds;
@@ -271,6 +308,7 @@ static void refresh_rates(uint32_t now)
         g_stats.decode_ms = (float)g_decode_total_ms / g_window_decoded;
         g_stats.upload_ms = (float)g_upload_total_ms / g_window_decoded;
     }
+    LightLock_Unlock(&g_stats_lock);
     g_window_start = now;
     g_window_received = 0;
     g_window_decoded = 0;
@@ -306,24 +344,69 @@ static bool decode_jpeg(const uint8_t *data, uint32_t size)
     return true;
 }
 
-static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
+static VideoDecodeResult decode_mpeg_video(const uint8_t *data, uint32_t size,
+                                           bool convert)
 {
     AVPacket packet;
     memset(&packet, 0, sizeof(packet));
     packet.data = (uint8_t *)data;
     packet.size = (int)size;
-    if (!g_video_decoder ||
-        avcodec_send_packet(g_video_decoder, &packet) < 0 ||
-        avcodec_receive_frame(g_video_decoder, g_video_frame) < 0) {
-        return false;
-    }
-    if (g_video_frame->width != VIDEO_WIDTH ||
-        g_video_frame->height != VIDEO_HEIGHT) return false;
 
-    /* A predictive stream must decode every reference frame, but an old
-     * frame need not also pay for Y2R, a 192 KiB RGB write and a framebuffer
-     * transpose.  The caller uses this when catching up to the live edge. */
-    if (!convert) return true;
+    if (!g_video_decoder) return VIDEO_DECODE_ERROR;
+
+    /*
+     * Frame-threaded codecs may have a decoded frame waiting when
+     * avcodec_send_packet() is called.  Drain that frame and retry the same
+     * packet rather than dropping it.
+     */
+    bool have_frame = false;
+
+    int result = avcodec_send_packet(g_video_decoder, &packet);
+    if (result == AVERROR(EAGAIN)) {
+        result = avcodec_receive_frame(g_video_decoder, g_video_frame);
+        if (result == 0) {
+            have_frame = true;
+
+            result = avcodec_send_packet(g_video_decoder, &packet);
+            if (result < 0)
+                return VIDEO_DECODE_ERROR;
+        } else {
+            /*
+             * EAGAIN from both send and receive would mean the API state
+             * cannot make progress without losing this packet.
+             */
+            return VIDEO_DECODE_ERROR;
+        }
+    } else if (result < 0) {
+        return VIDEO_DECODE_ERROR;
+    }
+
+    if (!have_frame) {
+        result = avcodec_receive_frame(g_video_decoder, g_video_frame);
+
+        /*
+         * Normal while a frame-threaded MPEG-4 decoder fills its pipeline.
+         * The packet was accepted successfully; there is simply no output
+         * picture to present yet.
+         */
+        if (result == AVERROR(EAGAIN))
+            return VIDEO_DECODE_BUFFERED;
+
+        if (result < 0)
+            return VIDEO_DECODE_ERROR;
+    }
+
+    if (g_video_frame->width != VIDEO_WIDTH ||
+        g_video_frame->height != VIDEO_HEIGHT)
+        return VIDEO_DECODE_ERROR;
+
+    /*
+     * A predictive stream must decode every reference frame, but an old
+     * frame need not also pay for Y2R, the RGB write and framebuffer
+     * transpose while catching up.
+     */
+    if (!convert)
+        return VIDEO_DECODE_FRAME;
 
     if (g_y2r &&
         (g_video_frame->format == AV_PIX_FMT_YUV420P ||
@@ -344,7 +427,8 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
         const uint32_t y_size = VIDEO_WIDTH * VIDEO_HEIGHT;
         const uint32_t uv_size = y_size / 4;
         const uint32_t rgb_size = y_size * sizeof(uint16_t);
-        Result result = Y2RU_SetConversionParams(&parameters);
+
+        result = Y2RU_SetConversionParams(&parameters);
         if (R_SUCCEEDED(result)) {
             result = Y2RU_SetSendingY(
                 g_video_frame->data[0], y_size,
@@ -364,28 +448,35 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
                 g_video_frame->linesize[2] - VIDEO_WIDTH / 2);
         }
         if (R_SUCCEEDED(result)) {
-            /* Four rows per DMA transfer avoids the documented early
-             * completion interrupt at exactly 400x240. */
-            result = Y2RU_SetReceiving(g_pixels, rgb_size,
-                                       VIDEO_WIDTH * (int)sizeof(uint16_t) * 4, 0);
+            result = Y2RU_SetReceiving(
+                g_pixels, rgb_size,
+                VIDEO_WIDTH * (int)sizeof(uint16_t) * 4, 0);
         }
         if (R_SUCCEEDED(result)) {
             result = Y2RU_StartConversion();
             conversion_started = R_SUCCEEDED(result);
         }
-        if (R_SUCCEEDED(result)) result = Y2RU_GetTransferEndEvent(&finished);
-        if (R_SUCCEEDED(result)) {
+        if (R_SUCCEEDED(result))
+            result = Y2RU_GetTransferEndEvent(&finished);
+        if (R_SUCCEEDED(result))
             result = svcWaitSynchronization(finished, 100000000LL);
-        }
+
         if (finished) svcCloseHandle(finished);
+
         if (R_SUCCEEDED(result)) {
+            LightLock_Lock(&g_stats_lock);
             g_stats.hardware_conversion = true;
-            return true;
+            LightLock_Unlock(&g_stats_lock);
+            return VIDEO_DECODE_FRAME;
         }
-        if (conversion_started) Y2RU_StopConversion();
+
+        if (conversion_started)
+            Y2RU_StopConversion();
     }
 
+    LightLock_Lock(&g_stats_lock);
     g_stats.hardware_conversion = false;
+    LightLock_Unlock(&g_stats_lock);
 
     g_video_scale = sws_getCachedContext(
         g_video_scale,
@@ -393,47 +484,86 @@ static bool decode_mpeg_video(const uint8_t *data, uint32_t size, bool convert)
         (enum AVPixelFormat)g_video_frame->format,
         VIDEO_WIDTH, VIDEO_HEIGHT, AV_PIX_FMT_RGB565LE,
         SWS_FAST_BILINEAR, NULL, NULL, NULL);
-    if (!g_video_scale) return false;
-    uint8_t *destination[4] = {(uint8_t *)g_pixels, NULL, NULL, NULL};
-    int destination_stride[4] = {VIDEO_WIDTH * (int)sizeof(uint16_t), 0, 0, 0};
-    return sws_scale(g_video_scale,
-                     (const uint8_t *const *)g_video_frame->data,
-                     g_video_frame->linesize, 0, g_video_frame->height,
-                     destination, destination_stride) == VIDEO_HEIGHT;
+    if (!g_video_scale)
+        return VIDEO_DECODE_ERROR;
+
+    uint8_t *destination[4] = {
+        (uint8_t *)g_pixels, NULL, NULL, NULL
+    };
+    int destination_stride[4] = {
+        VIDEO_WIDTH * (int)sizeof(uint16_t), 0, 0, 0
+    };
+
+    if (sws_scale(g_video_scale,
+                  (const uint8_t *const *)g_video_frame->data,
+                  g_video_frame->linesize, 0, g_video_frame->height,
+                  destination, destination_stride) != VIDEO_HEIGHT) {
+        return VIDEO_DECODE_ERROR;
+    }
+
+    return VIDEO_DECODE_FRAME;
 }
 
-bool video_decode_and_present(const uint8_t *data, uint32_t size,
-                              uint32_t received_ms, uint8_t codec,
-                              bool present)
+VideoDecodeResult video_decode_and_present(const uint8_t *data, uint32_t size,
+                                             uint32_t received_ms, uint8_t codec,
+                                             bool present)
 {
     uint32_t decode_start = osGetTime();
     if (codec != g_last_codec) {
         if (c2s_old3ds_predictive_codec(codec) &&
             !open_video_decoder(codec)) {
+            LightLock_Lock(&g_stats_lock);
             g_stats.decode_errors++;
+            LightLock_Unlock(&g_stats_lock);
             refresh_rates(osGetTime());
-            return false;
+            return VIDEO_DECODE_ERROR;
         }
         g_last_codec = codec;
     }
     if (!c2s_old3ds_predictive_codec(codec)) {
+        LightLock_Lock(&g_stats_lock);
         g_stats.hardware_conversion = false;
+        LightLock_Unlock(&g_stats_lock);
     }
-    const bool decoded = c2s_old3ds_predictive_codec(codec)
-        ? decode_mpeg_video(data, size, present) : decode_jpeg(data, size);
-    if (!decoded) {
+
+    VideoDecodeResult decode_result;
+    if (c2s_old3ds_predictive_codec(codec)) {
+        decode_result = decode_mpeg_video(data, size, present);
+    } else {
+        decode_result = decode_jpeg(data, size)
+            ? VIDEO_DECODE_FRAME
+            : VIDEO_DECODE_ERROR;
+    }
+
+    if (decode_result == VIDEO_DECODE_ERROR) {
+        LightLock_Lock(&g_stats_lock);
         g_stats.decode_errors++;
+        LightLock_Unlock(&g_stats_lock);
         refresh_rates(osGetTime());
-        return false;
+        return VIDEO_DECODE_ERROR;
     }
+
+    /*
+     * The packet was accepted but a frame-threaded decoder may not have
+     * emitted a picture yet.  This is normal and must not trigger a keyframe
+     * request or a framebuffer swap.
+     */
+    if (decode_result == VIDEO_DECODE_BUFFERED) {
+        refresh_rates(osGetTime());
+        return VIDEO_DECODE_BUFFERED;
+    }
+
     uint32_t decode_end = osGetTime();
 
     g_decode_total_ms += decode_end - decode_start;
     g_window_decoded++;
+
+    LightLock_Lock(&g_stats_lock);
     g_stats.decoded++;
+    LightLock_Unlock(&g_stats_lock);
     if (!present) {
         refresh_rates(decode_end);
-        return true;
+        return VIDEO_DECODE_FRAME;
     }
 
     u16 framebuffer_width = 0;
@@ -523,9 +653,17 @@ bool video_decode_and_present(const uint8_t *data, uint32_t size,
     uint32_t upload_end = osGetTime();
     g_upload_total_ms += upload_end - decode_end;
     g_window_displayed++;
+    LightLock_Lock(&g_stats_lock);
     g_stats.local_latency_ms = upload_end - received_ms;
+    LightLock_Unlock(&g_stats_lock);
+
     refresh_rates(upload_end);
-    return true;
+    return VIDEO_DECODE_FRAME;
 }
 
-void video_get_stats(VideoStats *stats) { *stats = g_stats; }
+void video_get_stats(VideoStats *stats)
+{
+    LightLock_Lock(&g_stats_lock);
+    *stats = g_stats;
+    LightLock_Unlock(&g_stats_lock);
+}
