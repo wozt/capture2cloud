@@ -10,6 +10,7 @@
 *.o
 /server/*.o
 /pcble_backend/capture2cloud-pcble-backend
+/pcble_backend/capture2cloud-pcble-joycon2-backend
 
 # Secrets: never commit real tokens/credentials (HA_TOKEN,
 # PLAYER_PASSWORD). Copy scripts/.env.example to scripts/.env and fill it

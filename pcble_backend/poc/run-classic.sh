@@ -82,12 +82,52 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
-[[ $profile == pro || $profile == joycon-pair ]] || { echo 'Profile must be pro or joycon-pair' >&2; exit 2; }
-if [[ $profile == joycon-pair ]]; then
+if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
+    # Joy-Con 2 runs its own BLE stack on an exclusive HCI user channel. It
+    # does not touch the bluetoothd configuration; the kernel hands the
+    # adapter back to BlueZ when the backend exits.
+    jc2=
+    for candidate in \
+        "$script_dir/capture2cloud-pcble-joycon2-backend" \
+        "$script_dir/../capture2cloud-pcble-joycon2-backend"; do
+        if [[ -x "$candidate" ]]; then jc2=$candidate; break; fi
+    done
+    [[ -n "$jc2" ]] || { echo 'Build the Joy-Con 2 backend first.' >&2; exit 1; }
+    [[ -d /sys/class/bluetooth/$adapter ]] || { echo 'Adapter not present' >&2; exit 1; }
+    jc2_options=(--side "${profile#joycon2-}")
+    $verbose && jc2_options+=(--verbose)
+    [[ -n $reconnect ]] && jc2_options+=(--reconnect)
+    if $desktop; then
+        [[ -n ${PKEXEC_UID:-} ]] || { echo 'Desktop mode requires pkexec.' >&2; exit 1; }
+        jc2_options+=(--desktop "$PKEXEC_UID")
+    fi
+    capture_owner=${PKEXEC_UID:-${SUDO_UID:-0}}
+    capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
+    chmod 700 "$capture"
+    status=0
+    "$jc2" "$adapter" "${jc2_options[@]}" 2>&1 | tee "$capture/joycon2.log" || status=$?
+    chmod 600 "$capture/joycon2.log"
+    [[ $capture_owner == 0 ]] || chown -R "$capture_owner" "$capture"
+    echo "Adapter returned to BlueZ. Private log: $capture"
+    exit $status
+fi
+[[ $profile == pro || $profile == joycon-pair || $profile == joycon-mixed ]] || { echo 'Profile must be pro, joycon-pair, joycon-mixed, joycon2-left or joycon2-right' >&2; exit 2; }
+jc2=
+if [[ $profile == joycon-mixed ]]; then
+    # Joy-Con 1 (L) Classic on the primary adapter, Joy-Con 2 (R) BLE on the
+    # secondary adapter through its own HCI user-channel backend.
+    for candidate in \
+        "$script_dir/capture2cloud-pcble-joycon2-backend" \
+        "$script_dir/../capture2cloud-pcble-joycon2-backend"; do
+        if [[ -x "$candidate" ]]; then jc2=$candidate; break; fi
+    done
+    [[ -n "$jc2" ]] || { echo 'Build the Joy-Con 2 backend first.' >&2; exit 1; }
+fi
+if [[ $profile == joycon-pair || $profile == joycon-mixed ]]; then
     $desktop || { echo 'Joy-Con pair currently requires desktop mode' >&2; exit 2; }
     [[ -n $secondary && $secondary != "$adapter" ]] || { echo 'Joy-Con pair requires two distinct adapters' >&2; exit 2; }
 fi
-[[ -z $reconnect || $profile == pro ]] || { echo 'Reconnect is currently implemented for the Pro Controller profile only.' >&2; exit 2; }
+[[ -z $reconnect || $profile == pro || $profile == joycon-mixed ]] || { echo 'Reconnect is implemented for the Pro Controller and the Joy-Con 1 (L) + Joy-Con 2 (R) profiles.' >&2; exit 2; }
 backend_options=()
 $verbose && backend_options+=(--verbose)
 [[ -n $reconnect ]] && backend_options+=(--reconnect "$reconnect")
@@ -182,13 +222,20 @@ capture_owner=${PKEXEC_UID:-${SUDO_UID:-0}}
 # Keep every capture in a private random directory under /tmp.
 capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
 chmod 700 "$capture"
+# Keep the launcher output with the session logs; the desktop app does not
+# show it.
+exec > >(tee -a "$capture/runner.log") 2>&1
+trap 'echo "runner: line $LINENO failed: $BASH_COMMAND"' ERR
 monitor_pids=()
 backend_pids=()
 cleanup() {
     trap - EXIT INT TERM
     app_target=$(readlink -f "$app")
+    jc2_target=
+    [[ -n $jc2 ]] && jc2_target=$(readlink -f "$jc2")
     for pid in "${backend_pids[@]}"; do
-        [[ -e /proc/$pid/exe && $(readlink -f "/proc/$pid/exe") == "$app_target" ]] && kill -TERM "$pid" 2>/dev/null || true
+        exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
+        [[ -n $exe && ( $exe == "$app_target" || $exe == "$jc2_target" ) ]] && kill -TERM "$pid" 2>/dev/null || true
     done
     for pid in "${backend_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
     for pid in "${monitor_pids[@]}"; do kill -INT "$pid" 2>/dev/null || true; wait "$pid" || true; done
@@ -242,6 +289,26 @@ if $desktop; then
     chmod 700 "/run/capture2cloud/pcble/$PKEXEC_UID"
     if [[ $profile == pro ]]; then
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type pro "${backend_options[@]}" | tee "$capture/daemon.log"
+    elif [[ $profile == joycon-mixed ]]; then
+        jc2_options=(--side right --vertical --socket joycon-right.sock --desktop "$PKEXEC_UID")
+        [[ -n $reconnect ]] && jc2_options+=(--reconnect)
+        $verbose && jc2_options+=(--verbose)
+        "$jc2" "$secondary" "${jc2_options[@]}" > "$capture/joycon2-right.log" 2>&1 &
+        right_pid=$!;backend_pids+=("$right_pid")
+        right_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-right.sock"
+        for _ in {1..100}; do [[ -S $right_socket ]] && break; kill -0 "$right_pid" 2>/dev/null || break; sleep .05; done
+        [[ -S $right_socket ]] || { echo 'Joy-Con 2 (R) backend failed to start' >&2; wait "$right_pid" || true; exit 1; }
+        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
+        left_pid=$!;backend_pids+=("$left_pid")
+        set +e
+        # One half alone is not a usable pair: stop the other when either exits.
+        wait -n "$left_pid" "$right_pid"
+        kill -TERM "$left_pid" "$right_pid" 2>/dev/null
+        wait "$left_pid"; left_status=$?
+        wait "$right_pid"; right_status=$?
+        backend_pids=()
+        set -e
+        echo "Joy-Con 1 (L) exit $left_status, Joy-Con 2 (R) exit $right_status"
     else
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
         left_pid=$!;backend_pids+=("$left_pid")

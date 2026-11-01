@@ -160,6 +160,18 @@ The GTK **Controller output** page provides adapter discovery, pairing, reconnec
 
 Bluetooth adapters are remembered by their physical MAC address rather than `hci0`, `hci1`, etc.
 
+Controllers (`PCBLE_CONTROLLER`):
+
+| Profile | Hardware |
+| --- | --- |
+| `pro` | Pro Controller, one Classic adapter |
+| `joycon-pair` | Joy-Con (L) + Joy-Con (R), two Classic adapters |
+| `joycon-mixed` | Joy-Con 1 (L) on a Classic adapter + Joy-Con 2 (R) on a Bluetooth LE adapter with LE 2M (`PCBLE_SECONDARY_ADAPTER`) |
+
+The Joy-Con 2 half runs its own BLE stack on an exclusive HCI user channel, so that adapter is unavailable to BlueZ while the session runs. Pair / Sync on a Joy-Con profile holds L+R automatically once both halves are connected; press A to leave Change Grip/Order. Reconnect works for `pro` and `joycon-mixed`.
+
+With `joycon-mixed` running, clicking the stream window captures the PC mouse for the Joy-Con 2 mouse mode: movement drives the optical sensor, left/right/middle click are R/ZR/stick click and the wheel nudges the stick. Right Ctrl, or the window losing focus, releases it. `PCBLE_MOUSE_SENSITIVITY` (default `1.5`) scales the movement. Other profiles never capture the mouse.
+
 The same recovery path is used by:
 
 * startup reconnect
@@ -369,7 +381,9 @@ Important options include:
 | `WIIU_CONSOLE_PORT` | Wii U console client port |
 | `OLD3DS_PORT` | Old 3DS / Old 2DS client port |
 | `GAMEPAD_OUTPUT_BACKEND` | `titan` or `pcble` |
-| `PCBLE_CONTROLLER` | Nintendo controller profile |
+| `PCBLE_CONTROLLER` | `pro`, `joycon-pair` or `joycon-mixed` |
+| `PCBLE_SECONDARY_ADAPTER` | Right Joy-Con (Classic) or Joy-Con 2 (BLE) adapter MAC |
+| `PCBLE_MOUSE_SENSITIVITY` | Joy-Con 2 mouse scale, default `1.5` |
 | `RESET_METHOD` | `script` or `bluetooth` |
 | `RESET_SCRIPT` | Script wake command |
 | `RESET_BT_ADAPTER` | Bluetooth wake adapter MAC |

@@ -78,6 +78,26 @@ C2C_PCBLE_HEADERS=(
 )
 C2C_PCBLE_PKGCONFIG_DEPS="gio-unix-2.0 json-glib-1.0 bluez"
 
+# Joy-Con 2 BLE backend: its own BLE stack on an exclusive HCI user channel,
+# plus the Joy-Con 2 protocol and Nintendo pairing crypto.
+C2C_PCBLE_JC2_BIN="$C2C_PCBLE_DIR/capture2cloud-pcble-joycon2-backend"
+C2C_PCBLE_JC2_SOURCES=(
+    "$C2C_PCBLE_DIR/src/jc2-backend.c"
+    "$C2C_PCBLE_DIR/src/jc2.c"
+    "$C2C_PCBLE_DIR/src/pairing.c"
+    "$C2C_PCBLE_DIR/poc/control.c"
+    "$C2C_PCBLE_DIR/src/ipc.c"
+)
+C2C_PCBLE_JC2_HEADERS=(
+    "$C2C_PCBLE_DIR/src/jc2.h"
+    "$C2C_PCBLE_DIR/src/jc2-data.h"
+    "$C2C_PCBLE_DIR/src/pairing.h"
+    "$C2C_PCBLE_DIR/poc/control.h"
+    "$C2C_PCBLE_DIR/poc/protocol.h"
+    "$C2C_PCBLE_DIR/src/ipc.h"
+)
+C2C_PCBLE_JC2_PKGCONFIG_DEPS="gio-unix-2.0 json-glib-1.0 bluez openssl"
+
 # The launchers read the same .env the app itself does, so a different
 # capture card is configured in one place.
 c2c_load_env() {
@@ -106,6 +126,29 @@ c2c_check_devices() {
         pactl list short sources
         return 1
     fi
+}
+
+# Rebuilds BIN from SOURCES/HEADERS when one of them is newer.
+c2c_pcble_stale() {
+    local bin=$1 f
+    shift
+    [ -x "$bin" ] || return 0
+    for f in "$@"; do
+        [ "$f" -nt "$bin" ] && return 0
+    done
+    return 1
+}
+
+c2c_build_pcble_joycon2_if_needed() {
+    c2c_pcble_stale "$C2C_PCBLE_JC2_BIN" "${C2C_PCBLE_JC2_SOURCES[@]}" "${C2C_PCBLE_JC2_HEADERS[@]}" || return 0
+    if ! pkg-config --exists $C2C_PCBLE_JC2_PKGCONFIG_DEPS; then
+        echo "Error: missing Joy-Con 2 backend dependencies. Run: $C2C_DIR/scripts/install_deps.sh"
+        return 1
+    fi
+    echo "Building Capture2Cloud Joy-Con 2 BLE backend..."
+    gcc -O2 -Wall -Wextra -Werror -std=c11 -o "$C2C_PCBLE_JC2_BIN" \
+        "${C2C_PCBLE_JC2_SOURCES[@]}" \
+        $(pkg-config --cflags --libs $C2C_PCBLE_JC2_PKGCONFIG_DEPS)
 }
 
 # Rebuilds the vendored Bluetooth helper only when needed.
@@ -147,6 +190,7 @@ c2c_build_if_needed() {
     # The privileged helper is part of the project build, but remains a
     # separate executable at runtime.
     c2c_build_pcble_if_needed || return 1
+    c2c_build_pcble_joycon2_if_needed || return 1
     local need=0
     if [ ! -x "$C2C_BIN" ]; then
         need=1

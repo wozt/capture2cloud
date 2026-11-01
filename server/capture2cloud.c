@@ -17,6 +17,7 @@
 #include <execinfo.h>
 
 #include "gamepad_bridge.h"
+#include "output_pcble.h"
 #include "wiiu_pad.h"
 #include "app_config.h"
 #include "audio_capture.h"
@@ -1056,6 +1057,108 @@ static void remember_project_dir(const char *argv0) {
     snprintf(g_project_dir, sizeof(g_project_dir), "%s", buf);
 }
 
+/*
+ * Joy-Con 2 mouse mode. With the Joy-Con 1 (L) + Joy-Con 2 (R) profile
+ * running, a click in the stream window captures the PC mouse (SDL
+ * relative mode: hidden, confined, relative motion) and forwards it to
+ * the Joy-Con 2 optical sensor. Right Ctrl, losing focus or leaving that
+ * profile releases it. Any other profile leaves the mouse alone.
+ */
+static int g_mouse_captured;
+static unsigned g_mouse_buttons;
+static double g_mouse_gain = 1.5;
+static double g_mouse_rem_x;
+static double g_mouse_rem_y;
+
+static void mouse_capture_set(int on)
+{
+    if (!g_window || g_mouse_captured == on) {
+        return;
+    }
+
+    if (on) {
+        char buf[32];
+        const char *value =
+            config_get_str("PCBLE_MOUSE_SENSITIVITY", buf, sizeof(buf), "1.5");
+        const double gain = strtod(value, NULL);
+
+        g_mouse_gain = gain >= 0.1 && gain <= 10.0 ? gain : 1.5;
+        g_mouse_rem_x = 0;
+        g_mouse_rem_y = 0;
+    }
+
+    g_mouse_captured = on;
+    g_mouse_buttons = 0;
+    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+    SDL_SetWindowTitle(
+        g_window,
+        on ? APP_NAME " - mouse captured (Right Ctrl releases)" : APP_NAME);
+    output_pcble_mouse(0, 0, 0, 0, on);
+}
+
+/* Returns 1 when the event belongs to the mouse capture. */
+static int mouse_capture_event(const SDL_Event *event)
+{
+    if (!g_mouse_captured) {
+        if (event->type == SDL_MOUSEBUTTONDOWN &&
+            event->button.button == SDL_BUTTON_LEFT &&
+            event->button.clicks == 1 &&
+            output_pcble_mouse_enabled()) {
+            mouse_capture_set(1);
+            return 1;
+        }
+        return 0;
+    }
+
+    switch (event->type) {
+    case SDL_KEYDOWN:
+        if (event->key.keysym.scancode == SDL_SCANCODE_RCTRL) {
+            mouse_capture_set(0);
+            return 1;
+        }
+        return 0;
+    case SDL_WINDOWEVENT:
+        if (event->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            mouse_capture_set(0);
+        }
+        return 0;
+    case SDL_MOUSEMOTION: {
+        g_mouse_rem_x += event->motion.xrel * g_mouse_gain;
+        g_mouse_rem_y += event->motion.yrel * g_mouse_gain;
+        const int dx = (int)g_mouse_rem_x;
+        const int dy = (int)g_mouse_rem_y;
+        g_mouse_rem_x -= dx;
+        g_mouse_rem_y -= dy;
+        output_pcble_mouse(dx, dy, 0, g_mouse_buttons, 1);
+        return 1;
+    }
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP: {
+        const unsigned bit =
+            event->button.button == SDL_BUTTON_LEFT ? 1u :
+            event->button.button == SDL_BUTTON_RIGHT ? 2u :
+            event->button.button == SDL_BUTTON_MIDDLE ? 4u : 0u;
+        if (event->type == SDL_MOUSEBUTTONDOWN) {
+            g_mouse_buttons |= bit;
+        } else {
+            g_mouse_buttons &= ~bit;
+        }
+        output_pcble_mouse(0, 0, 0, g_mouse_buttons, 1);
+        return 1;
+    }
+    case SDL_MOUSEWHEEL: {
+        int wheel = event->wheel.y;
+        if (event->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+            wheel = -wheel;
+        }
+        output_pcble_mouse(0, 0, wheel, g_mouse_buttons, 1);
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
 int main(int argc, char **argv) {
     remember_project_dir(argv[0]);
     /* Precedence: command line (handy for a one-off), then the .env,
@@ -1556,6 +1659,9 @@ int main(int argc, char **argv) {
 
         if (g_window) {
             SDL_Event event;
+            if (g_mouse_captured && !output_pcble_mouse_enabled()) {
+                mouse_capture_set(0);
+            }
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_QUIT) {
                     /* The window's own close button. The program keeps
@@ -1569,6 +1675,8 @@ int main(int argc, char **argv) {
                      * the way while still listening. */
                     SDL_HideWindow(g_window);
                     audio_capture_set_local_output(g_audio, 0);
+                } else if (mouse_capture_event(&event)) {
+                    /* consumed by the Joy-Con 2 mouse capture */
                 } else if ((event.type == SDL_MOUSEBUTTONDOWN && event.button.clicks == 2) ||
                            (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F11)) {
                     const Uint32 flags = SDL_GetWindowFlags(g_window);

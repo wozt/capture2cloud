@@ -66,4 +66,13 @@ int output_pcble_session_running(void);
 int output_pcble_session_stopping(void);
 void output_pcble_peer(char *out, size_t out_size);
 
+/*
+ * Joy-Con 2 mouse sensor, for the Joy-Con 1 (L) + Joy-Con 2 (R) profile.
+ * Enabled only while that profile is selected and its helper is up; the
+ * stream window captures the PC mouse and forwards relative motion.
+ * buttons: bit 0 left (R), bit 1 right (ZR), bit 2 middle (stick click).
+ */
+int output_pcble_mouse_enabled(void);
+void output_pcble_mouse(int dx, int dy, int wheel, unsigned buttons, int active);
+
 #endif

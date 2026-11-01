@@ -1007,10 +1007,22 @@ static const char *pcble_profile(void)
         return "pro";
     }
 
-    return gtk_combo_box_get_active(
-               GTK_COMBO_BOX(g_c.pcble_controller)) == 1
-        ? "joycon-pair"
-        : "pro";
+    switch (gtk_combo_box_get_active(
+                GTK_COMBO_BOX(g_c.pcble_controller))) {
+    case 1:
+        return "joycon-pair";
+    case 2:
+        return "joycon-mixed";
+    default:
+        return "pro";
+    }
+}
+
+/* Both Joy-Con profiles need a second adapter and the left/right sockets. */
+static int pcble_profile_is_pair(const char *profile)
+{
+    return strcmp(profile, "joycon-pair") == 0 ||
+           strcmp(profile, "joycon-mixed") == 0;
 }
 
 static int pcble_selected_adapter(GtkWidget *combo)
@@ -1094,7 +1106,10 @@ static void pcble_update_controls(GtkShell *shell)
         backend == pcble;
 
     const int pair =
-        strcmp(pcble_profile(), "joycon-pair") == 0;
+        pcble_profile_is_pair(pcble_profile());
+
+    const int mixed =
+        strcmp(pcble_profile(), "joycon-mixed") == 0;
 
     const int running =
         output_pcble_session_running() ||
@@ -1196,7 +1211,7 @@ static void pcble_update_controls(GtkShell *shell)
 
     int reconnect_ok = 0;
 
-    if (!pair &&
+    if ((!pair || mixed) &&
         primary >= 0 &&
         g_c.pcble_paired_switch[0] &&
         g_c.pcble_paired_adapter[0]) {
@@ -1511,9 +1526,7 @@ static void pcble_start_pair(
         pcble_profile();
 
     const int pair =
-        strcmp(
-            profile,
-            "joycon-pair") == 0;
+        pcble_profile_is_pair(profile);
 
     int secondary =
         pcble_selected_adapter(
@@ -1665,9 +1678,11 @@ static void pcble_load_config(GtkShell *shell)
 
     gtk_combo_box_set_active(
         GTK_COMBO_BOX(g_c.pcble_controller),
-        strcmp(profile, "joycon-pair") == 0
-            ? 1
-            : 0);
+        strcmp(profile, "joycon-mixed") == 0
+            ? 2
+            : strcmp(profile, "joycon-pair") == 0
+                ? 1
+                : 0);
 
     config_get_str(
         "PCBLE_SWITCH_ADDRESS",
@@ -1790,7 +1805,8 @@ static void pcble_refresh_status(GtkShell *shell)
          * Remember it together with the physical adapter identity so a
          * later reconnect cannot accidentally use another dongle.
          */
-        if (strcmp(profile, "pro") == 0 &&
+        if ((strcmp(profile, "pro") == 0 ||
+             strcmp(profile, "joycon-mixed") == 0) &&
             pcble_mac_valid(peer)) {
             int primary =
                 pcble_selected_adapter(
@@ -3299,6 +3315,18 @@ static void build_settings_window(GtkShell *shell) {
             GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
             "Nintendo Joy-Con Pair");
 
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Joy-Con 1 (L) Classic + Joy-Con 2 (R) BLE");
+
+        gtk_widget_set_tooltip_text(
+            g_c.pcble_controller,
+            "Joy-Con 1 (L) + Joy-Con 2 (R): the right adapter must support "
+            "Bluetooth LE with LE 2M and is taken over exclusively during "
+            "the session. Pair / Sync validates the pair with L+R "
+            "automatically. Click the stream window to capture the mouse "
+            "for the Joy-Con 2 mouse mode; Right Ctrl releases it.");
+
         g_signal_connect(
             g_c.pcble_controller,
             "changed",
@@ -3349,8 +3377,9 @@ static void build_settings_window(GtkShell *shell) {
 
         gtk_widget_set_tooltip_text(
             g_c.pcble_secondary,
-            "Only used by the Joy-Con Pair profile. "
-            "It must be different from the primary adapter.");
+            "Used by the Joy-Con profiles: right Joy-Con, or the Joy-Con 2 "
+            "(R) Bluetooth LE adapter. It must be different from the "
+            "primary adapter.");
 
         g_c.pcble_paired =
             gtk_label_new("not paired yet");

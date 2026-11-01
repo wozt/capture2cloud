@@ -33,6 +33,27 @@ static SDL_Thread *g_thread;
 static int g_running;
 static int g_dirty;
 static int g_pair_mode;
+static int g_mixed;
+
+/*
+ * Joy-Con 2 mouse sensor input (Joy-Con 1 (L) + Joy-Con 2 (R) profile).
+ * Deltas accumulate between reports and are consumed by the next send.
+ */
+static int g_mouse_dx;
+static int g_mouse_dy;
+static int g_mouse_wheel;
+static unsigned g_mouse_buttons;
+static int g_mouse_active;
+
+/*
+ * After Pair / Sync of a Joy-Con pair, hold L+R twice (1.5 s each, 6 s
+ * apart) once both halves are initialised, as Change Grip/Order requires.
+ * Player lights are already set during that menu, so they cannot tell
+ * whether the pair was validated.
+ */
+static int g_auto_validate;
+static Uint32 g_validate_at;
+static int g_validate_attempts;
 static int g_ipc_up;
 static int g_link_up;
 
@@ -88,6 +109,30 @@ static Uint32 g_reconnect_not_before;
 static int g_reconnect_attempt;
 
 #define PCBLE_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
+
+/*
+ * Controller profiles:
+ *   pro           Pro Controller (Classic)
+ *   joycon-pair   Joy-Con 1 (L) + Joy-Con 1 (R), two Classic adapters
+ *   joycon-mixed  Joy-Con 1 (L) Classic + Joy-Con 2 (R) Bluetooth LE
+ * Both pair profiles use the joycon-left/joycon-right sockets.
+ */
+static int parse_profile(const char *profile, int *pair_mode, int *mixed)
+{
+    if (!profile || strcmp(profile, "pro") == 0) {
+        *pair_mode = 0;
+        *mixed = 0;
+    } else if (strcmp(profile, "joycon-pair") == 0) {
+        *pair_mode = 1;
+        *mixed = 0;
+    } else if (strcmp(profile, "joycon-mixed") == 0) {
+        *pair_mode = 1;
+        *mixed = 1;
+    } else {
+        return 0;
+    }
+    return 1;
+}
 
 static int pressed(const int8_t state[CONTROLLER_STATE_COUNT], int index)
 {
@@ -365,6 +410,8 @@ static int send_input(
     const int8_t state[CONTROLLER_STATE_COUNT],
     int home_override,
     int capture_override,
+    int validate_override,
+    const int *mouse,
     int pair_mode,
     int *initialized,
     char *peer,
@@ -380,21 +427,41 @@ static int send_input(
         buttons,
         sticks);
 
-    char request[256];
+    if (validate_override) {
+        buttons[0] |= 1u << 6; /* R */
+        buttons[2] |= 1u << 6; /* L */
+    }
+
+    char mouse_field[96] = "";
+
+    if (mouse) {
+        snprintf(
+            mouse_field,
+            sizeof(mouse_field),
+            ",\"mouse\":[%d,%d,%d,%d,%d]",
+            mouse[0],
+            mouse[1],
+            mouse[2],
+            mouse[3],
+            mouse[4]);
+    }
+
+    char request[352];
 
     snprintf(
         request,
         sizeof(request),
         "{\"version\":1,\"method\":\"input\","
         "\"buttons\":[%u,%u,%u],"
-        "\"sticks\":[%u,%u,%u,%u]}\n",
+        "\"sticks\":[%u,%u,%u,%u]%s}\n",
         buttons[0],
         buttons[1],
         buttons[2],
         sticks[0],
         sticks[1],
         sticks[2],
-        sticks[3]);
+        sticks[3],
+        mouse_field);
 
     char path[320];
     int left_initialized = 0;
@@ -478,6 +545,9 @@ static int worker(void *unused)
         int capture = 0;
         int pair_mode = 0;
         int was_ipc_up = 0;
+        int validate = 0;
+        int mouse[5];
+        int send_mouse = 0;
 
         Uint32 now = SDL_GetTicks();
 
@@ -509,8 +579,36 @@ static int worker(void *unused)
                 g_capture_until != 0 &&
                 (Sint32)(g_capture_until - now) > 0;
 
+            if (g_auto_validate && g_link_up) {
+                if (!g_validate_at) {
+                    g_validate_at = now + 1500;
+                }
+                if ((Sint32)(now - (g_validate_at + 1500)) >= 0) {
+                    g_validate_attempts++;
+                    g_validate_at = now + 4500;
+                    if (g_validate_attempts >= 2) {
+                        g_auto_validate = 0;
+                    }
+                } else if ((Sint32)(now - g_validate_at) >= 0) {
+                    validate = 1;
+                }
+            }
+
+            if (g_mixed) {
+                mouse[0] = g_mouse_dx;
+                mouse[1] = g_mouse_dy;
+                mouse[2] = g_mouse_wheel;
+                mouse[3] = (int)g_mouse_buttons;
+                mouse[4] = g_mouse_active;
+                g_mouse_dx = 0;
+                g_mouse_dy = 0;
+                g_mouse_wheel = 0;
+                send_mouse = 1;
+            }
+
             g_dirty = 0;
             g_last_attempt = now;
+
         }
 
         SDL_UnlockMutex(g_lock);
@@ -528,6 +626,8 @@ static int worker(void *unused)
                 state,
                 home,
                 capture,
+                validate,
+                send_mouse ? mouse : NULL,
                 pair_mode,
                 &initialized,
                 peer,
@@ -611,16 +711,13 @@ static int output_pcble_init(void)
             sizeof(controller),
             "pro");
 
-    if (strcmp(profile, "joycon-pair") == 0) {
-        g_pair_mode = 1;
-    } else if (strcmp(profile, "pro") == 0) {
-        g_pair_mode = 0;
-    } else {
+    if (!parse_profile(profile, &g_pair_mode, &g_mixed)) {
         fprintf(
             stderr,
             "pcble: unknown PCBLE_CONTROLLER \"%s\"; using pro\n",
             profile);
         g_pair_mode = 0;
+        g_mixed = 0;
     }
 
     const char *override =
@@ -685,7 +782,7 @@ static int output_pcble_init(void)
     fprintf(
         stderr,
         "pcble: backend ready (%s), socket directory %s\n",
-        g_pair_mode ? "joycon-pair" : "pro",
+        g_mixed ? "joycon-mixed" : g_pair_mode ? "joycon-pair" : "pro",
         g_socket_dir);
 
     /*
@@ -1201,23 +1298,27 @@ int output_pcble_scan_adapters(
 int output_pcble_set_controller(const char *profile)
 {
     int pair_mode;
+    int mixed;
 
-    if (!profile || strcmp(profile, "pro") == 0) {
-        pair_mode = 0;
-    } else if (strcmp(profile, "joycon-pair") == 0) {
-        pair_mode = 1;
-    } else {
+    if (!parse_profile(profile, &pair_mode, &mixed)) {
         return 0;
     }
 
     if (!g_lock) {
         g_pair_mode = pair_mode;
+        g_mixed = mixed;
         return 1;
     }
 
     SDL_LockMutex(g_lock);
 
     g_pair_mode = pair_mode;
+    g_mixed = mixed;
+    g_mouse_dx = 0;
+    g_mouse_dy = 0;
+    g_mouse_wheel = 0;
+    g_mouse_buttons = 0;
+    g_mouse_active = 0;
     g_ipc_up = 0;
     g_link_up = 0;
     g_peer[0] = '\0';
@@ -1362,12 +1463,11 @@ int output_pcble_start_session(
         return 0;
     }
 
-    const int pair_mode =
-        profile &&
-        strcmp(profile, "joycon-pair") == 0;
+    int pair_mode = 0;
+    int mixed = 0;
 
     if (!profile ||
-        (strcmp(profile, "pro") != 0 && !pair_mode)) {
+        !parse_profile(profile, &pair_mode, &mixed)) {
         if (error && error_size) {
             snprintf(error, error_size, "Invalid controller profile");
         }
@@ -1513,6 +1613,16 @@ int output_pcble_start_session(
 
     output_pcble_set_controller(profile);
 
+    if (g_lock) {
+        SDL_LockMutex(g_lock);
+        g_auto_validate =
+            pair_mode &&
+            !(reconnect_address && *reconnect_address);
+        g_validate_at = 0;
+        g_validate_attempts = 0;
+        SDL_UnlockMutex(g_lock);
+    }
+
     fprintf(
         stderr,
         "pcble: starting %s session on %s%s%s\n",
@@ -1557,12 +1667,14 @@ static int output_pcble_start_saved_reconnect(
             sizeof(paired_adapter_buf),
             "");
 
-    if (strcmp(profile, "pro") != 0) {
+    const int mixed = strcmp(profile, "joycon-mixed") == 0;
+
+    if (strcmp(profile, "pro") != 0 && !mixed) {
         if (error && error_size) {
             snprintf(
                 error,
                 error_size,
-                "Reconnect is currently supported only for the Pro Controller profile");
+                "Reconnect is supported for the Pro Controller and Joy-Con 1 (L) + Joy-Con 2 (R) profiles");
         }
 
         return 0;
@@ -1607,8 +1719,37 @@ static int output_pcble_start_saved_reconnect(
         return 0;
     }
 
+    /* The Joy-Con 2 half needs its own LE adapter, stored by address. */
+    char secondary_hci[16] = "";
+
+    if (mixed) {
+        char secondary_buf[32];
+        const char *secondary =
+            config_get_str(
+                "PCBLE_SECONDARY_ADAPTER",
+                secondary_buf,
+                sizeof(secondary_buf),
+                "");
+
+        if (!valid_mac(secondary) ||
+            !resolve_hci_for_address(
+                secondary,
+                secondary_hci,
+                sizeof(secondary_hci))) {
+            if (error && error_size) {
+                snprintf(
+                    error,
+                    error_size,
+                    "The Joy-Con 2 Bluetooth adapter is not present");
+            }
+
+            return 0;
+        }
+    }
+
     char body_buf[16];
     char buttons_buf[16];
+
     char left_buf[16];
     char right_buf[16];
 
@@ -1662,8 +1803,8 @@ static int output_pcble_start_saved_reconnect(
 
     return output_pcble_start_session(
         hci,
-        NULL,
-        "pro",
+        mixed ? secondary_hci : NULL,
+        mixed ? "joycon-mixed" : "pro",
         peer,
         body,
         buttons,
@@ -1985,8 +2126,47 @@ void output_pcble_peer(char *out, size_t out_size)
     SDL_UnlockMutex(g_lock);
 }
 
+int output_pcble_mouse_enabled(void)
+{
+    if (!g_lock) {
+        return 0;
+    }
+
+    SDL_LockMutex(g_lock);
+    const int enabled = g_mixed && g_ipc_up;
+    SDL_UnlockMutex(g_lock);
+
+    return enabled;
+}
+
+void output_pcble_mouse(
+    int dx,
+    int dy,
+    int wheel,
+    unsigned buttons,
+    int active)
+{
+    if (!g_lock) {
+        return;
+    }
+
+    SDL_LockMutex(g_lock);
+
+    if (g_mixed) {
+        g_mouse_dx = CLAMP(g_mouse_dx + dx, -32768, 32767);
+        g_mouse_dy = CLAMP(g_mouse_dy + dy, -32768, 32767);
+        g_mouse_wheel = CLAMP(g_mouse_wheel + wheel, -100, 100);
+        g_mouse_buttons = buttons & 7u;
+        g_mouse_active = active ? 1 : 0;
+        g_dirty = 1;
+    }
+
+    SDL_UnlockMutex(g_lock);
+}
+
 const GamepadOutputBackend *output_pcble_backend(void)
 {
+
     static const GamepadOutputBackend backend = {
         .name = "pcble",
         .init = output_pcble_init,

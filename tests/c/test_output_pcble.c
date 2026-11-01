@@ -172,6 +172,56 @@ static void test_home_override(void)
     t_ok("HOME override is set", (buttons[1] & 0x10) != 0);
 }
 
+static void test_profiles(void)
+{
+    t_begin("pcble controller profiles");
+
+    int pair = -1;
+    int mixed = -1;
+
+    t_ok("pro is valid", parse_profile("pro", &pair, &mixed));
+    t_eq_int("pro is not a pair", pair, 0);
+    t_ok("joycon-pair is valid", parse_profile("joycon-pair", &pair, &mixed));
+    t_eq_int("joycon-pair is a pair", pair, 1);
+    t_eq_int("joycon-pair is not mixed", mixed, 0);
+    t_ok("joycon-mixed is valid", parse_profile("joycon-mixed", &pair, &mixed));
+    t_eq_int("joycon-mixed is a pair", pair, 1);
+    t_eq_int("joycon-mixed is mixed", mixed, 1);
+    t_ok("unknown profile is rejected", !parse_profile("joycon2", &pair, &mixed));
+}
+
+static void test_mouse(void)
+{
+    t_begin("pcble Joy-Con 2 mouse");
+
+    g_lock = SDL_CreateMutex();
+
+    output_pcble_set_controller("pro");
+    g_ipc_up = 1;
+    t_eq_int("disabled for Pro", output_pcble_mouse_enabled(), 0);
+    output_pcble_mouse(5, 5, 1, 1, 1);
+    t_eq_int("ignored for Pro", g_mouse_dx, 0);
+
+    output_pcble_set_controller("joycon-mixed");
+    g_ipc_up = 1;
+    t_eq_int("enabled for Joy-Con 1 + Joy-Con 2", output_pcble_mouse_enabled(), 1);
+    output_pcble_mouse(5, -3, 1, 1, 1);
+    output_pcble_mouse(5, -3, 0, 3, 1);
+    t_eq_int("dx accumulates", g_mouse_dx, 10);
+    t_eq_int("dy accumulates", g_mouse_dy, -6);
+    t_eq_int("wheel accumulates", g_mouse_wheel, 1);
+    t_eq_int("buttons follow the last event", (int)g_mouse_buttons, 3);
+    output_pcble_mouse(40000, 0, 0, 0, 1);
+    t_eq_int("dx saturates", g_mouse_dx, 32767);
+
+    output_pcble_set_controller("joycon-pair");
+    t_eq_int("profile change clears motion", g_mouse_dx, 0);
+    t_eq_int("disabled for Joy-Con 1 pair", output_pcble_mouse_enabled(), 0);
+
+    SDL_DestroyMutex(g_lock);
+    g_lock = NULL;
+}
+
 int main(void)
 {
     test_neutral();
@@ -179,6 +229,8 @@ int main(void)
     test_axes();
     test_reconnect_request();
     test_home_override();
+    test_profiles();
+    test_mouse();
 
     return t_report();
 }

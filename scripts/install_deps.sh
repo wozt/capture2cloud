@@ -67,7 +67,7 @@ PACKAGES=(
     libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev
 
     # Classic Bluetooth controller backend
-    libglib2.0-dev libjson-glib-dev libbluetooth-dev
+    libglib2.0-dev libjson-glib-dev libbluetooth-dev libssl-dev
     bluez pkexec
 
     # handy for finding your capture device / debugging
