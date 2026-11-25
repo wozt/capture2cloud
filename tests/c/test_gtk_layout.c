@@ -1132,37 +1132,65 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_strcmp0(wozt_overview_client_summary("2 connected — 60 FPS"),
                    "2 connected — 60 FPS") == 0);
 
+    /* WOZT_0859_SERVER_ICONS: two legacy full-text labels remain accessible
+     * to the host but are HIDDEN; the only visible Server row holds exactly
+     * four images and three one-character dash separators. */
     GtkWidget *overview_grid = g_c.overview_status
         ? gtk_widget_get_parent(g_c.overview_status) : NULL;
-    gint server_x = -1, server_span = -1;
-    gint backend_x = -1, backend_span = -1;
-    if (GTK_IS_GRID(overview_grid) && g_c.backend_status) {
-        gtk_container_child_get(GTK_CONTAINER(overview_grid), g_c.overview_status,
-            "left-attach", &server_x, "width", &server_span, NULL);
-        gtk_container_child_get(GTK_CONTAINER(overview_grid), g_c.backend_status,
-            "left-attach", &backend_x, "width", &backend_span, NULL);
+    gint indicators_x = -1, indicators_span = -1;
+    if (GTK_IS_GRID(overview_grid) && g_c.overview_indicator_bar)
+        gtk_container_child_get(GTK_CONTAINER(overview_grid),
+            g_c.overview_indicator_bar, "left-attach", &indicators_x,
+            "width", &indicators_span, NULL);
+    GList *indicator_children = GTK_IS_BOX(g_c.overview_indicator_bar)
+        ? gtk_container_get_children(GTK_CONTAINER(g_c.overview_indicator_bar)) : NULL;
+    gboolean four_indicators = g_list_length(indicator_children) == 7;
+    for (int i = 0; i < 4 && four_indicators; ++i) {
+        GtkWidget *item = GTK_WIDGET(g_list_nth_data(indicator_children, 2 * i));
+        gchar *tip = GTK_IS_IMAGE(item) ? gtk_widget_get_tooltip_text(item) : NULL;
+        four_indicators = GTK_IS_IMAGE(item) &&
+                          item == g_c.overview_indicators[i] &&
+                          tip && *tip;
+        g_free(tip);
+        if (i < 3) {
+            GtkWidget *dash = GTK_WIDGET(g_list_nth_data(indicator_children, 2 * i + 1));
+            four_indicators = four_indicators && GTK_IS_LABEL(dash) &&
+                              g_strcmp0(gtk_label_get_text(GTK_LABEL(dash)), "-") == 0;
+        }
     }
-    t_ok("Overview Server statuses start left without label columns",
-         GTK_IS_GRID(overview_grid) &&
-         gtk_widget_get_parent(g_c.backend_status) == overview_grid &&
-         server_x == 0 && server_span == 2 &&
-         backend_x == 0 && backend_span == 2);
+    g_list_free(indicator_children);
+    t_ok("Overview Server is a single line of four live icons and three dashes",
+         GTK_IS_GRID(overview_grid) && four_indicators && indicators_x == 0 &&
+         indicators_span == 2 &&
+         gtk_widget_get_no_show_all(g_c.overview_status) &&
+         gtk_widget_get_no_show_all(g_c.backend_status) &&
+         !gtk_widget_get_visible(g_c.overview_status) &&
+         !gtk_widget_get_visible(g_c.backend_status));
 
+    /* Each line is its OWN GtkBox, so no spanning Server label or Quick
+     * actions can create a 100px blank column between icon and status. */
     gboolean compact_icons = GTK_IS_GRID(overview_grid);
+    GtkWidget *client_list = NULL;
     for (int client = 0; client < GTK_SHELL_CLIENT_COUNT && compact_icons; ++client) {
         GtkWidget *status = g_c.overview_client_status[client];
-        gint x = -1, y = -1;
-        if (!status || gtk_widget_get_parent(status) != overview_grid) {
-            compact_icons = FALSE;
-            break;
-        }
-        gtk_container_child_get(GTK_CONTAINER(overview_grid), status,
-            "left-attach", &x, "top-attach", &y, NULL);
-        GtkWidget *icon = gtk_grid_get_child_at(GTK_GRID(overview_grid), 0, y);
-        compact_icons = x == 1 && GTK_IS_BOX(icon);
+        GtkWidget *line = status ? gtk_widget_get_parent(status) : NULL;
+        GtkWidget *list = line ? gtk_widget_get_parent(line) : NULL;
+        GList *children = GTK_IS_BOX(line)
+            ? gtk_container_get_children(GTK_CONTAINER(line)) : NULL;
+        GtkWidget *icon = children ? GTK_WIDGET(children->data) : NULL;
+        GtkWidget *text = children && children->next
+            ? GTK_WIDGET(children->next->data) : NULL;
+        compact_icons = GTK_IS_BOX(line) && GTK_IS_BOX(list) &&
+            gtk_box_get_spacing(GTK_BOX(line)) == 3 &&
+            g_list_length(children) == 2 && GTK_IS_BOX(icon) && text == status &&
+            (!client_list || list == client_list);
+        g_list_free(children);
+        if (!client_list) client_list = list;
     }
-    t_ok("Overview SVG icons precede statuses with only 3px spacing",
-         compact_icons && gtk_grid_get_column_spacing(GTK_GRID(overview_grid)) == 3);
+    t_ok("Overview SVG icons are followed immediately by client statuses",
+         compact_icons && GTK_IS_BOX(client_list) &&
+         gtk_widget_get_parent(client_list) == overview_grid &&
+         gtk_box_get_spacing(GTK_BOX(client_list)) == 0);
 
     /* WOZT_0857_OVERVIEW_DYNAMIC_ACTIONS: Client rows increased from 5 to 7.
      * Resolve the actual Quick actions row by its two real button widgets,

@@ -118,6 +118,10 @@ typedef struct {
     char pcble_paired_adapter[18];
 
     GtkWidget *overview_status;
+    /* Exactly four small live server indicators, independent of the hidden
+     * full-length labels kept for the footer, diagnostics and tests. */
+    GtkWidget *overview_indicators[4];
+    GtkWidget *overview_indicator_bar;
 
     /* Console wake/reset method. */
     GtkWidget *reset_method;
@@ -3575,17 +3579,81 @@ static void wozt_compact_client_widgets(GtkWidget *widget)
     }
 }
 
-/* A client status keeps its original GtkLabel for live updates; replace only
- * the old, fixed-width left label with one small icon or icon pair. */
-static GtkWidget *add_client_icon_status(GtkWidget *grid, int row, const char *name)
+/* WOZT_0859_SERVER_ICONS: each client line owns its own 3px icon-to-text
+ * gap. A shared GtkGrid column must NEVER measure that gap: spanning server
+ * labels and quick-action buttons used to stretch the icon column to 100px. */
+static GtkWidget *add_client_icon_status(GtkWidget *list, const char *name)
 {
-    GtkWidget *status = add_client_status(grid, row, name);
-    GtkWidget *old = gtk_grid_get_child_at(GTK_GRID(grid), 0, row);
-    if (old) gtk_widget_destroy(old);
+    GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    gtk_widget_set_halign(line, GTK_ALIGN_START);
     GtkWidget *icon = wozt_client_icon_label(name);
-    gtk_grid_attach(GTK_GRID(grid), icon, 0, row, 1, 1);
-    gtk_widget_show_all(icon);
+    gtk_box_pack_start(GTK_BOX(line), icon, FALSE, FALSE, 0);
+    GtkWidget *status = gtk_label_new("idle — no-enc");
+    gtk_widget_set_halign(status, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(status), TRUE);
+    gtk_label_set_line_wrap(GTK_LABEL(status), FALSE);
+    gtk_label_set_single_line_mode(GTK_LABEL(status), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(status), 34);
+    gtk_label_set_ellipsize(GTK_LABEL(status), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_tooltip_text(status, "nothing connected — not encoding");
+    gtk_box_pack_start(GTK_BOX(line), status, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(list), line, FALSE, FALSE, 0);
     return status;
+}
+
+/* The complete status strings still belong to the footer/tray and the two
+ * original labels. This small indicator strip only visualizes that state;
+ * it does not guess stream metrics or replace their source of truth. */
+static void wozt_overview_update_indicator(GtkWidget *widget,
+                                           const char *enabled_icon,
+                                           const char *disabled_icon,
+                                           gboolean enabled,
+                                           const char *tooltip)
+{
+    if (!GTK_IS_IMAGE(widget)) return;
+    gpointer state = GINT_TO_POINTER(enabled ? 2 : 1);
+    if (g_object_get_data(G_OBJECT(widget), "wozt-indicator-state") != state) {
+        const char *icon = enabled ? enabled_icon : disabled_icon;
+        GtkIconTheme *theme = gtk_icon_theme_get_default();
+        if (theme && !gtk_icon_theme_has_icon(theme, icon))
+            icon = "computer-symbolic"; /* already used by the Clients frame */
+        gtk_image_set_from_icon_name(GTK_IMAGE(widget), icon, GTK_ICON_SIZE_MENU);
+        gtk_image_set_pixel_size(GTK_IMAGE(widget), 11);
+        gtk_widget_set_opacity(widget, enabled ? 1.0 : 0.45);
+        g_object_set_data(G_OBJECT(widget), "wozt-indicator-state", state);
+    }
+    gchar *old = gtk_widget_get_tooltip_text(widget);
+    if (g_strcmp0(old, tooltip) != 0) {
+        gtk_widget_set_tooltip_text(widget, tooltip);
+        AtkObject *accessible = gtk_widget_get_accessible(widget);
+        if (accessible) atk_object_set_name(accessible, tooltip);
+    }
+    g_free(old);
+}
+
+static void wozt_overview_update_server_indicators(const char *full,
+                                                   const char *backend)
+{
+    const gboolean running = full && g_str_has_prefix(full, "running");
+    const gboolean capture = full && strstr(full, "capture online") != NULL;
+    const gboolean browser = full && strstr(full, "browser server listening") != NULL;
+    const gboolean native = full && strstr(full, "native server listening") != NULL;
+    const char *run_text = full && g_str_has_prefix(full, "starting")
+        ? "starting" : (running ? "running" : "stopped");
+    gchar *server_tip = g_strdup_printf("Server: %s\nController output: %s",
+        run_text, backend && *backend ? backend : "unavailable");
+    wozt_overview_update_indicator(g_c.overview_indicators[0],
+        "emblem-ok-symbolic", "dialog-warning-symbolic", running, server_tip);
+    wozt_overview_update_indicator(g_c.overview_indicators[1],
+        "camera-video-symbolic", "camera-video-symbolic", capture,
+        capture ? "Capture: online" : "Capture: waiting / offline");
+    wozt_overview_update_indicator(g_c.overview_indicators[2],
+        "web-browser-symbolic", "web-browser-symbolic", browser,
+        browser ? "Browser server: listening" : "Browser server: off");
+    wozt_overview_update_indicator(g_c.overview_indicators[3],
+        "network-server-symbolic", "network-server-symbolic", native,
+        native ? "Native server: listening" : "Native server: off");
+    g_free(server_tip);
 }
 
 static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **grid_out) {
@@ -4045,52 +4113,65 @@ static void build_settings_window(GtkShell *shell) {
     gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
     add_section_header(grid, row++, "Server");
 
+    /* One compact row: server - capture - browser - native. The hyphens
+     * are plain separators, never icons or multi-line text. Hover each
+     * actual indicator for its live state and full explanation. */
+    GtkWidget *indicators = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    gtk_widget_set_halign(indicators, GTK_ALIGN_START);
+    g_c.overview_indicator_bar = indicators;
+    static const char *const icon_names[4] = {
+        "emblem-ok-symbolic", "camera-video-symbolic",
+        "web-browser-symbolic", "network-server-symbolic"
+    };
+    for (int k = 0; k < 4; ++k) {
+        GtkWidget *icon = gtk_image_new_from_icon_name(
+            icon_names[k], GTK_ICON_SIZE_MENU);
+        gtk_image_set_pixel_size(GTK_IMAGE(icon), 11);
+        g_c.overview_indicators[k] = icon;
+        gtk_box_pack_start(GTK_BOX(indicators), icon, FALSE, FALSE, 0);
+        if (k < 3) {
+            GtkWidget *dash = gtk_label_new("-");
+            gtk_box_pack_start(GTK_BOX(indicators), dash, FALSE, FALSE, 0);
+        }
+    }
+    gtk_grid_attach(GTK_GRID(grid), indicators, 0, row++, 2, 1);
+
+    /* Hidden full-text labels preserve the existing live status API and
+     * test probes without reserving any width or height in Overview. */
     g_c.overview_status = gtk_label_new("starting...");
-    gtk_widget_set_halign(g_c.overview_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.overview_status), TRUE);
     gtk_label_set_line_wrap(GTK_LABEL(g_c.overview_status), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(g_c.overview_status), 34);
+    gtk_widget_set_no_show_all(g_c.overview_status, TRUE);
     gtk_grid_attach(GTK_GRID(grid), g_c.overview_status, 0, row++, 2, 1);
-
     g_c.backend_status = gtk_label_new("");
-    gtk_widget_set_halign(g_c.backend_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.backend_status), TRUE);
     gtk_label_set_line_wrap(GTK_LABEL(g_c.backend_status), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(g_c.backend_status), 34);
+    gtk_widget_set_no_show_all(g_c.backend_status, TRUE);
     gtk_grid_attach(GTK_GRID(grid), g_c.backend_status, 0, row++, 2, 1);
 
     add_section_header(grid, row++, "Connected clients");
-
+    GtkWidget *overview_clients = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_halign(overview_clients, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(grid), overview_clients, 0, row++, 2, 1);
     g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] =
-        add_client_icon_status(grid, row++, "Browser");
-
+        add_client_icon_status(overview_clients, "Browser");
     g_c.overview_client_status[GTK_SHELL_CLIENT_NATIVE] =
-        add_client_icon_status(grid, row++, "Switch");
+        add_client_icon_status(overview_clients, "Switch");
     g_c.overview_client_status[GTK_SHELL_CLIENT_ANDROID] =
-        add_client_icon_status(grid, row++, "Android");
-
+        add_client_icon_status(overview_clients, "Android");
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_PAD] =
-        add_client_icon_status(grid, row++, "Wii U GamePad");
+        add_client_icon_status(overview_clients, "Wii U GamePad");
     g_c.overview_client_status[GTK_SHELL_CLIENT_WUPSTREAM] =
-        add_client_icon_status(grid, row++, "WUP Stream GamePad");
-
+        add_client_icon_status(overview_clients, "WUP Stream GamePad");
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
-        add_client_icon_status(grid, row++, "Wii U Console");
-
+        add_client_icon_status(overview_clients, "Wii U Console");
     g_c.overview_client_status[GTK_SHELL_CLIENT_OLD3DS] =
-        add_client_icon_status(grid, row++, "Old 3DS / Old 2DS");
+        add_client_icon_status(overview_clients, "Old 3DS / Old 2DS");
 
-    /* Overview is a one-line summary; the seven Client tabs retain the
-     * full selectable/wrapping messages. Longer live values may ellipsize
-     * instead of doubling the height of the compact status list. */
-    for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; ++i) {
-        GtkWidget *status = g_c.overview_client_status[i];
-        if (!status) continue;
-        gtk_label_set_max_width_chars(GTK_LABEL(status), 34);
-        gtk_label_set_line_wrap(GTK_LABEL(status), FALSE);
-        gtk_label_set_single_line_mode(GTK_LABEL(status), TRUE);
-        gtk_label_set_ellipsize(GTK_LABEL(status), PANGO_ELLIPSIZE_END);
-    }
+    /* All seven concise client labels are already single-line in their
+     * own horizontal icon/status rows; only the Client tabs wrap. */
 
     add_section_header(grid, row++, "Quick actions");
 
@@ -6252,6 +6333,13 @@ static gboolean on_tick(gpointer user_data) {
                 line);
         }
     }
+
+    /* Refresh all four symbols from the same full status messages used
+     * by the footer and the backend. No new polling or stream work. */
+    if (g_c.overview_status && g_c.backend_status)
+        wozt_overview_update_server_indicators(
+            gtk_label_get_text(GTK_LABEL(g_c.overview_status)),
+            gtk_label_get_text(GTK_LABEL(g_c.backend_status)));
 
     /*
      * GTK only observes backend recovery state. The backend itself is
