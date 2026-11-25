@@ -200,23 +200,22 @@ static const int wozt_group_first[3] = {0, 2, 4};
 static const int wozt_group_size[3] = {2, 2, 4};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
-    315, 435,   /* natural Overview + scrollable Clients at ~800px */
+    260, 435,   /* compact Overview fallback; Clients scroll independently */
     620, 350,   /* two output columns; compact one-column local input */
     /* Budgets MUST exceed the GTK minimum of each packed row. Otherwise
      * GTK blocks a resize before configure-event can reflow the row. */
     320, 455, 410, 340 /* Capture, Monitor, Reset, Maintenance */
 };
 
-/* WOZT_0849_CONTENT_AWARE_REFLOW
- * Fixed targets are fallbacks, not minimum or natural widget widths. A
- * controller's actual width changes with its backend, live language and
- * theme; its old 620/350 target forced the pair to wrap prematurely.
- * Overview/Clients and the four tools retain their independent, already
- * tested wrap thresholds; don't inadvertently widen their notebook tabs. */
+/* WOZT_0855_OVERVIEW_REFLOW
+ * The Overview no longer carries two fixed-width labels: its old 315px
+ * packing budget is therefore obsolete. Like the controller panels, its
+ * natural GTK width determines when it fits beside Clients. Clients and
+ * the four utility panels keep their independent, stable width budgets. */
 static int wozt_section_layout_width(int index)
 {
     const int fallback = wozt_section_target_width[index];
-    if (index != 2 && index != 3) return fallback;
+    if (index != 0 && index != 2 && index != 3) return fallback;
     GtkWidget *frame = g_c.wozt_sections[index];
     if (!GTK_IS_WIDGET(frame)) return fallback;
     gint minimum = 0, natural = 0;
@@ -3437,8 +3436,15 @@ static void wozt_compact_action_labels(GtkWidget *widget)
                 g_free(existing);
                 gtk_label_set_line_wrap(GTK_LABEL(child), FALSE);
                 gtk_label_set_single_line_mode(GTK_LABEL(child), TRUE);
-                gtk_label_set_ellipsize(GTK_LABEL(child), PANGO_ELLIPSIZE_END);
-                gtk_label_set_max_width_chars(GTK_LABEL(child), 18);
+                /* Overview's quick actions must NEVER show an ellipsis,
+                 * including after switching the live interface language. */
+                const gboolean full_text = gtk_style_context_has_class(
+                    gtk_widget_get_style_context(widget),
+                    "wozt-overview-action-fulltext");
+                gtk_label_set_ellipsize(GTK_LABEL(child),
+                    full_text ? PANGO_ELLIPSIZE_NONE : PANGO_ELLIPSIZE_END);
+                gtk_label_set_max_width_chars(GTK_LABEL(child),
+                    full_text ? -1 : 18);
             }
         }
     }
@@ -4004,26 +4010,28 @@ static void build_settings_window(GtkShell *shell) {
 
     row = 0;
 
+    /* WOZT_0855_OVERVIEW_COMPACT: only the SVG icons occupy column 0.
+     * The two Server status lines and the action row span both columns,
+     * preventing old text labels from widening the icon/status gap. */
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 0);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
     add_section_header(grid, row++, "Server");
 
     g_c.overview_status = gtk_label_new("starting...");
     gtk_widget_set_halign(g_c.overview_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.overview_status), TRUE);
-    /* add_row() assigns a generic GtkLabel width of 46 characters.
-     * Apply Overview's narrower width AFTER it attaches the control. */
     gtk_label_set_line_wrap(GTK_LABEL(g_c.overview_status), TRUE);
-    add_row(grid, row++, "status", g_c.overview_status);
     gtk_label_set_max_width_chars(GTK_LABEL(g_c.overview_status), 34);
+    gtk_grid_attach(GTK_GRID(grid), g_c.overview_status, 0, row++, 2, 1);
 
     g_c.backend_status = gtk_label_new("");
     gtk_widget_set_halign(g_c.backend_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.backend_status), TRUE);
     gtk_label_set_line_wrap(GTK_LABEL(g_c.backend_status), TRUE);
-    add_row(grid, row++, "controller output", g_c.backend_status);
     gtk_label_set_max_width_chars(GTK_LABEL(g_c.backend_status), 34);
+    gtk_grid_attach(GTK_GRID(grid), g_c.backend_status, 0, row++, 2, 1);
 
     add_section_header(grid, row++, "Connected clients");
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 0);
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] =
         add_client_icon_status(grid, row++, "Browser");
@@ -4050,27 +4058,22 @@ static void build_settings_window(GtkShell *shell) {
     add_section_header(grid, row++, "Quick actions");
 
     {
-        GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-
-        gtk_box_pack_start(
-            GTK_BOX(actions),
-            make_button(
-                shell,
-                "show capture window",
-                GTK_SHELL_ACTION_SHOW_CAPTURE,
-                "Shows the local capture monitor."),
-            FALSE, FALSE, 0);
-
-        gtk_box_pack_start(
-            GTK_BOX(actions),
-            make_button(
-                shell,
-                "wake console",
-                GTK_SHELL_ACTION_WAKE_CONSOLE,
-                "Runs the configured wake action, then recovers controller output."),
-            FALSE, FALSE, 0);
-
-        add_row(grid, row++, "", actions);
+        GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_widget_set_halign(actions, GTK_ALIGN_START);
+        gtk_widget_set_hexpand(actions, FALSE);
+        GtkWidget *show_capture = make_button(
+            shell, "show capture window", GTK_SHELL_ACTION_SHOW_CAPTURE,
+            "Shows the local capture monitor.");
+        GtkWidget *wake = make_button(
+            shell, "wake console", GTK_SHELL_ACTION_WAKE_CONSOLE,
+            "Runs the configured wake action, then recovers controller output.");
+        gtk_style_context_add_class(gtk_widget_get_style_context(show_capture),
+                                    "wozt-overview-action-fulltext");
+        gtk_style_context_add_class(gtk_widget_get_style_context(wake),
+                                    "wozt-overview-action-fulltext");
+        gtk_box_pack_start(GTK_BOX(actions), show_capture, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(actions), wake, FALSE, FALSE, 0);
+        gtk_grid_attach(GTK_GRID(grid), actions, 0, row++, 2, 1);
     }
 
     /* ===============================================================

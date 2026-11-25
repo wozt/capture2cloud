@@ -624,14 +624,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          GTK_IS_SCROLLED_WINDOW(dashboard_scroller) &&
          horizontal == GTK_POLICY_AUTOMATIC && vertical == GTK_POLICY_AUTOMATIC);
 
-    /* Each functional row picks its own capacity; no shared grid columns. */
-    t_eq_int("720px: overview and clients stack",
-             wozt_dashboard_group_columns(720, 0), 1);
-    /* WOZT_0840_RESPONSIVE_TESTS */
-    t_eq_int("820px: compact Overview and Clients share a line",
-             wozt_dashboard_group_columns(820, 0), 2);
-    t_eq_int("780px: Overview and Clients still stack when narrow",
-             wozt_dashboard_group_columns(780, 0), 1);
+    /* WOZT_0855: Overview's natural width, not a stale fixed budget,
+     * determines the exact breakpoint with the scrollable Clients panel. */
+    const int overview_join_width =
+        wozt_section_layout_width(0) + wozt_section_layout_width(1) + 36;
+    t_eq_int("Overview/Clients wrap just below their measured breakpoint",
+             wozt_dashboard_group_columns(overview_join_width - 1, 0), 1);
+    t_eq_int("Overview/Clients join at their measured breakpoint",
+             wozt_dashboard_group_columns(overview_join_width, 0), 2);
     t_eq_int("1144px: overview and clients fit on one line",
              wozt_dashboard_group_columns(1144, 0), 2);
     t_eq_int("1144px: compact input fits beside two-column Output",
@@ -650,8 +650,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          output_nat > 0 && input_nat > 0 &&
          wozt_section_layout_width(2) == MAX(output_min, output_nat) &&
          wozt_section_layout_width(3) == MAX(input_min, input_nat));
+    gint overview_min = 0, overview_nat = 0;
+    gtk_widget_get_preferred_width(g_c.wozt_sections[0],
+                                   &overview_min, &overview_nat);
+    t_ok("Overview reflow uses its measured natural GTK width",
+         overview_nat > 0 &&
+         wozt_section_layout_width(0) == MAX(overview_min, overview_nat));
     t_ok("Other dashboard rows preserve their independent width budgets",
-         wozt_section_layout_width(0) == wozt_section_target_width[0] &&
          wozt_section_layout_width(1) == wozt_section_target_width[1] &&
          wozt_section_layout_width(4) == wozt_section_target_width[4] &&
          wozt_section_layout_width(7) == wozt_section_target_width[7]);
@@ -1009,8 +1014,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Controller frames share a parent at the width budget",
          gtk_widget_get_parent(g_c.wozt_sections[2]) ==
              gtk_widget_get_parent(g_c.wozt_sections[3]));
-    wozt_dashboard_reflow(820);
-    t_ok("Overview and Clients share the first row at 820px",
+    wozt_dashboard_reflow(MAX(820, overview_join_width));
+    t_ok("Overview and Clients share their row at the measured breakpoint",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(720);
@@ -1093,6 +1098,61 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] &&
          gtk_label_get_max_width_chars(GTK_LABEL(
              g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER])) == 34);
+
+    GtkWidget *overview_grid = g_c.overview_status
+        ? gtk_widget_get_parent(g_c.overview_status) : NULL;
+    gint server_x = -1, server_span = -1;
+    gint backend_x = -1, backend_span = -1;
+    if (GTK_IS_GRID(overview_grid) && g_c.backend_status) {
+        gtk_container_child_get(GTK_CONTAINER(overview_grid), g_c.overview_status,
+            "left-attach", &server_x, "width", &server_span, NULL);
+        gtk_container_child_get(GTK_CONTAINER(overview_grid), g_c.backend_status,
+            "left-attach", &backend_x, "width", &backend_span, NULL);
+    }
+    t_ok("Overview Server statuses start left without label columns",
+         GTK_IS_GRID(overview_grid) &&
+         gtk_widget_get_parent(g_c.backend_status) == overview_grid &&
+         server_x == 0 && server_span == 2 &&
+         backend_x == 0 && backend_span == 2);
+
+    gboolean compact_icons = GTK_IS_GRID(overview_grid);
+    for (int client = 0; client < GTK_SHELL_CLIENT_COUNT && compact_icons; ++client) {
+        GtkWidget *status = g_c.overview_client_status[client];
+        gint x = -1, y = -1;
+        if (!status || gtk_widget_get_parent(status) != overview_grid) {
+            compact_icons = FALSE;
+            break;
+        }
+        gtk_container_child_get(GTK_CONTAINER(overview_grid), status,
+            "left-attach", &x, "top-attach", &y, NULL);
+        GtkWidget *icon = gtk_grid_get_child_at(GTK_GRID(overview_grid), 0, y);
+        compact_icons = x == 1 && GTK_IS_BOX(icon);
+    }
+    t_ok("Overview SVG icons precede statuses with only 3px spacing",
+         compact_icons && gtk_grid_get_column_spacing(GTK_GRID(overview_grid)) == 3);
+
+    /* Grid row 10 is the Quick actions row (Server: 0-2,
+     * Connected clients: 3-8, Quick actions: 9-10). */
+    GtkWidget *overview_actions = GTK_IS_GRID(overview_grid)
+        ? gtk_grid_get_child_at(GTK_GRID(overview_grid), 0, 10) : NULL;
+    GList *action_buttons = GTK_IS_BOX(overview_actions)
+        ? gtk_container_get_children(GTK_CONTAINER(overview_actions)) : NULL;
+    GtkWidget *capture_button = action_buttons ? GTK_WIDGET(action_buttons->data) : NULL;
+    GtkWidget *wake_button = action_buttons && action_buttons->next
+        ? GTK_WIDGET(action_buttons->next->data) : NULL;
+    GtkWidget *capture_text = GTK_IS_BIN(capture_button)
+        ? gtk_bin_get_child(GTK_BIN(capture_button)) : NULL;
+    t_ok("Overview Quick actions are full-width-grid children aligned left",
+         GTK_IS_BOX(overview_actions) && g_list_length(action_buttons) == 2 &&
+         gtk_widget_get_halign(overview_actions) == GTK_ALIGN_START &&
+         gtk_box_get_spacing(GTK_BOX(overview_actions)) == 4 &&
+         gtk_grid_get_child_at(GTK_GRID(overview_grid), 1, 10) == overview_actions &&
+         GTK_IS_BUTTON(capture_button) && GTK_IS_BUTTON(wake_button));
+    t_ok("Show capture window cannot be ellipsized",
+         GTK_IS_LABEL(capture_text) &&
+         gtk_label_get_ellipsize(GTK_LABEL(capture_text)) == PANGO_ELLIPSIZE_NONE &&
+         gtk_label_get_max_width_chars(GTK_LABEL(capture_text)) == -1);
+    g_list_free(action_buttons);
     GtkWidget *clients_line = gtk_widget_get_parent(g_c.wozt_sections[1]);
     gboolean clients_expand = FALSE, clients_fill = FALSE;
     if (GTK_IS_BOX(clients_line)) {
