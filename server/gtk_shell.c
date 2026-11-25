@@ -4277,12 +4277,11 @@ static void build_settings_window(GtkShell *shell) {
         gtk_window_set_title(GTK_WINDOW(win), title);
     }
 
-    /*
-     * This is a server control panel now, not a tiny preferences dialog.
-     * 1000x700 still fits comfortably on a 1280x720 display while
-     * leaving enough room for meaningful labels and status lines.
+    /* WOZT_0869_COMPACT_SETTINGS_DEFAULT
+     * User-validated compact Settings screenshot: 918 x 844 pixels.
+     * Initial size only; GTK minimums and reflow rules stay unchanged.
      */
-    gtk_window_set_default_size(GTK_WINDOW(win), 1144, 840);
+    gtk_window_set_default_size(GTK_WINDOW(win), 918, 844);
     GdkGeometry geometry = {0};
     /* Actual minimum, not the natural width of the nested controller grids.
      * Main scroll view handles any temporary overflow while resizing. */

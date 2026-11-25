@@ -643,8 +643,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     gint default_width = 0, default_height = 0;
     gtk_window_get_default_size(GTK_WINDOW(sh->settings_window),
                                 &default_width, &default_height);
-    t_ok("Default window is 1144x840 (+10% width, +20% height)",
-         default_width == 1144 && default_height == 840);
+    t_ok("Default Settings window matches the compact 918x844 screenshot",
+         default_width == 918 && default_height == 844);
     /* gtk_window_get_geometry_hints() does not exist in GTK3. The setter
      * records the configured minimum as window data for this regression
      * probe; also verify no explicit width request prevents shrinking. */
