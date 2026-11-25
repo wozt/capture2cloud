@@ -374,26 +374,58 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_input)) : NULL;
     GtkWidget *reconnect_text = g_c.pcble_reconnect && GTK_IS_BIN(g_c.pcble_reconnect)
         ? gtk_bin_get_child(GTK_BIN(g_c.pcble_reconnect)) : NULL;
-    t_ok("Long PCBLE actions keep a single line and the original font size",
+    t_ok("PCBLE buttons show the complete text without ellipses or wrapping",
          reconnect_text && GTK_IS_LABEL(reconnect_text) &&
-         gtk_label_get_single_line_mode(GTK_LABEL(reconnect_text)) &&
-         gtk_label_get_ellipsize(GTK_LABEL(reconnect_text)) == PANGO_ELLIPSIZE_END);
-    t_ok("Controller output has three genuine internal columns",
+         !gtk_label_get_line_wrap(GTK_LABEL(reconnect_text)) &&
+         gtk_label_get_ellipsize(GTK_LABEL(reconnect_text)) == PANGO_ELLIPSIZE_NONE);
+    t_ok("Controller output has two genuine internal columns",
          g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output) &&
-         g_list_length(output_children) == 3);
+         g_list_length(output_children) == 2);
     t_ok("Local input has three genuine internal columns",
          g_c.wozt_inner_input && GTK_IS_BOX(g_c.wozt_inner_input) &&
          g_list_length(input_children) == 3);
     g_list_free(output_children);
     g_list_free(input_children);
-    t_ok("Output left and right stick controls occupy different inner grids",
+    t_ok("Output left and right stick controls share one compact grid",
          g_c.output_deadzone[0] && g_c.output_deadzone[1] &&
-         gtk_widget_get_parent(g_c.output_deadzone[0]) !=
+         gtk_widget_get_parent(g_c.output_deadzone[0]) ==
              gtk_widget_get_parent(g_c.output_deadzone[1]));
     t_ok("Input left and right stick controls occupy different inner grids",
          g_c.deadzone[0] && g_c.deadzone[1] &&
          gtk_widget_get_parent(g_c.deadzone[0]) !=
              gtk_widget_get_parent(g_c.deadzone[1]));
+    GtkWidget *session_grid = g_c.pcble_reconnect
+        ? gtk_widget_get_parent(g_c.pcble_reconnect) : NULL;
+    gint pair_column = -1, stop_row = -1, refresh_row = -1;
+    if (GTK_IS_GRID(session_grid)) {
+        gtk_container_child_get(GTK_CONTAINER(session_grid), g_c.pcble_pair,
+                                "left-attach", &pair_column, NULL);
+        gtk_container_child_get(GTK_CONTAINER(session_grid), g_c.pcble_stop,
+                                "top-attach", &stop_row, NULL);
+        gtk_container_child_get(GTK_CONTAINER(session_grid), g_c.pcble_refresh,
+                                "top-attach", &refresh_row, NULL);
+    }
+    t_ok("PCBLE session controls form two buttons per row",
+         GTK_IS_GRID(session_grid) && pair_column == 1 &&
+         stop_row == 1 && refresh_row == 1);
+    gint output_preview_w[2] = {-1, -1};
+    gint output_slider_width = -1;
+    for (int side = 0; side < 2; ++side)
+        if (g_c.output_stick_preview[side])
+            gtk_widget_get_size_request(g_c.output_stick_preview[side],
+                                        &output_preview_w[side], NULL);
+    if (g_c.output_deadzone[0])
+        gtk_widget_get_size_request(g_c.output_deadzone[0],
+                                    &output_slider_width, NULL);
+    t_ok("Output stick previews use 76px drawing surfaces",
+         output_preview_w[0] == 76 && output_preview_w[1] == 76);
+    t_ok("Output sliders request a compact 122px width",
+         output_slider_width == 122);
+    GtkWidget *color_grid = g_c.pcble_body_color
+        ? gtk_widget_get_parent(g_c.pcble_body_color) : NULL;
+    t_ok("PCBLE appearance swatches are in a compact nested grid",
+         GTK_IS_GRID(color_grid) && color_grid != g_c.pcble_settings &&
+         gtk_widget_get_parent(g_c.pcble_button_color) == color_grid);
     /* The titlebar already owns the translated explanatory tooltip.
      * It must not appear as a second, space-consuming label. */
     if (g_c.wozt_sections[0]) {
@@ -481,8 +513,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (output_right_grid && GTK_IS_GRID(output_right_grid))
         gtk_container_child_get(GTK_CONTAINER(output_right_grid),
                                 g_c.output_deadzone[1], "left-attach", &right_axis_col, NULL);
-    t_eq_int("Right output calibration uses its own grid control column",
-             right_axis_col, 1);
+    t_eq_int("Right output calibration is paired in the second control column",
+             right_axis_col, 3);
     t_ok("Output calibration and backend are in independent inner grids",
          output_right_grid && GTK_IS_GRID(output_right_grid) &&
          output_left_grid && GTK_IS_GRID(output_left_grid) &&

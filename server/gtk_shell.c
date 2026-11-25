@@ -200,7 +200,7 @@ static const int wozt_group_first[3] = {0, 2, 4};
 static const int wozt_group_size[3] = {2, 2, 4};
 static const int wozt_section_target_width[8] = {
     370, 565,   /* Overview natural width, Clients notebook */
-    760, 760,   /* Controller output, Local input */
+    960, 760,   /* Controller output, Local input */
     225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
 };
 
@@ -267,12 +267,13 @@ static void wozt_dashboard_reflow(int width)
                  * 50/50, creating a huge unused area in Overview. Only
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
-                const gboolean overview = first + offset + j == 0;
+                const int section_index = first + offset + j;
+                const gboolean natural = section_index == 0 || section_index == 2;
                 gtk_widget_set_halign(frame,
-                    overview ? GTK_ALIGN_START : GTK_ALIGN_FILL);
-                gtk_widget_set_hexpand(frame, !overview);
+                    natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
+                gtk_widget_set_hexpand(frame, !natural);
                 gtk_box_pack_start(GTK_BOX(line), frame,
-                                   !overview, !overview, 0);
+                                   !natural, !natural, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);
@@ -2388,10 +2389,13 @@ static gboolean stick_preview_draw(
     const int h =
         gtk_widget_get_allocated_height(area);
 
+    const gboolean tiny_output_preview =
+        GPOINTER_TO_INT(g_object_get_data(
+            G_OBJECT(area), "c2c-preview-output")) && w < 96;
     const double cx = w * 0.5;
-    const double cy = h * 0.48;
+    const double cy = h * (tiny_output_preview ? 0.41 : 0.48);
     const double radius =
-        MIN(w, h) * 0.33;
+        MIN(w, h) * (tiny_output_preview ? 0.26 : 0.33);
 
     gdk_cairo_set_source_rgba(cr, &preview_bg);
     cairo_paint(cr);
@@ -2500,12 +2504,10 @@ static gboolean stick_preview_draw(
     snprintf(
         line,
         sizeof(line),
-        "dz %d%%  ax %d%%  dg %d%%",
-        dz,
-        range,
-        diagonal);
+        tiny_output_preview ? "D%d A%d G%d" : "dz %d%%  ax %d%%  dg %d%%",
+        dz, range, diagonal);
 
-    cairo_move_to(cr, 8.0, h - 10.0);
+    cairo_move_to(cr, tiny_output_preview ? 4.0 : 8.0, h - 10.0);
     cairo_show_text(cr, line);
 
     return FALSE;
@@ -2988,8 +2990,196 @@ static gboolean wozt_move_calibration_row(GtkWidget *source, GtkWidget *dest,
     return TRUE;
 }
 
+/* WOZT_0836_CONTROLLER_OUTPUT_COMPACT */
+static void wozt_unellipsize_tree(GtkWidget *widget)
+{
+    if (!widget) return;
+    if (GTK_IS_LABEL(widget)) {
+        gtk_label_set_line_wrap(GTK_LABEL(widget), FALSE);
+        gtk_label_set_ellipsize(GTK_LABEL(widget), PANGO_ELLIPSIZE_NONE);
+        gtk_label_set_max_width_chars(GTK_LABEL(widget), -1);
+        gtk_widget_set_halign(widget, GTK_ALIGN_START);
+    }
+    if (GTK_IS_CONTAINER(widget)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
+        for (GList *it = children; it; it = it->next)
+            wozt_unellipsize_tree(GTK_WIDGET(it->data));
+        g_list_free(children);
+    }
+}
+
+static void wozt_limit_scale_tree(GtkWidget *widget, int width)
+{
+    if (!widget) return;
+    if (GTK_IS_SCALE(widget)) {
+        gtk_widget_set_size_request(widget, width, -1);
+        gtk_widget_set_hexpand(widget, FALSE);
+        gtk_widget_set_halign(widget, GTK_ALIGN_START);
+        return;
+    }
+    if (GTK_IS_CONTAINER(widget)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
+        for (GList *it = children; it; it = it->next)
+            wozt_limit_scale_tree(GTK_WIDGET(it->data), width);
+        g_list_free(children);
+    }
+}
+
+static void wozt_compact_button_widget(GtkWidget *button)
+{
+    if (!button) return;
+    gtk_widget_set_hexpand(button, FALSE);
+    gtk_widget_set_halign(button, GTK_ALIGN_START);
+    if (GTK_IS_BIN(button)) {
+        GtkWidget *child = gtk_bin_get_child(GTK_BIN(button));
+        if (GTK_IS_LABEL(child)) {
+            gtk_label_set_line_wrap(GTK_LABEL(child), FALSE);
+            gtk_label_set_ellipsize(GTK_LABEL(child), PANGO_ELLIPSIZE_NONE);
+        }
+    }
+}
+
+static void wozt_compact_session_buttons(GtkWidget *grid, const char *row_name)
+{
+    GtkWidget *label = NULL, *control = NULL;
+    int row = -1;
+    if (!wozt_find_grid_row(grid, row_name, &label, &control, &row) ||
+        !GTK_IS_BOX(control))
+        return;
+    GtkWidget *buttons[] = {
+        g_c.pcble_reconnect, g_c.pcble_pair,
+        g_c.pcble_stop, g_c.pcble_refresh
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(buttons); ++i)
+        if (!buttons[i] || gtk_widget_get_parent(buttons[i]) != control)
+            return;
+    GtkWidget *tight = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(tight), 2);
+    gtk_grid_set_column_spacing(GTK_GRID(tight), 4);
+    gtk_widget_set_halign(tight, GTK_ALIGN_START);
+    for (guint i = 0; i < G_N_ELEMENTS(buttons); ++i) {
+        g_object_ref(buttons[i]);
+        gtk_container_remove(GTK_CONTAINER(control), buttons[i]);
+        wozt_compact_button_widget(buttons[i]);
+        gtk_grid_attach(GTK_GRID(tight), buttons[i], i % 2, i / 2, 1, 1);
+        g_object_unref(buttons[i]);
+    }
+    gtk_container_remove(GTK_CONTAINER(grid), control);
+    gtk_grid_attach(GTK_GRID(grid), tight, 1, row, 1, 1);
+    gtk_widget_show_all(tight);
+}
+
+static void wozt_compact_color_button(GtkWidget *widget)
+{
+    if (!widget) return;
+    gtk_widget_set_hexpand(widget, FALSE);
+    gtk_widget_set_halign(widget, GTK_ALIGN_START);
+    gtk_widget_set_size_request(widget, 42, -1);
+}
+
+static void wozt_compact_palette_rows(GtkWidget *grid)
+{
+    GtkWidget *body_l = NULL, *body_c = NULL;
+    GtkWidget *left_l = NULL, *left_c = NULL;
+    int row0 = -1, row1 = -1;
+    if (!wozt_find_grid_row(grid, "body", &body_l, &body_c, &row0) ||
+        !wozt_find_grid_row(grid, "left grip", &left_l, &left_c, &row1))
+        return;
+    /* Earlier WOZT pairing already moved "buttons" and "right grip" to
+     * columns 2 and 3 of those same rows. Looking for them in column 0
+     * returned nothing and left the large empty gap untouched. */
+    GtkWidget *buttons_l = gtk_grid_get_child_at(GTK_GRID(grid), 2, row0);
+    GtkWidget *buttons_c = gtk_grid_get_child_at(GTK_GRID(grid), 3, row0);
+    GtkWidget *right_l = gtk_grid_get_child_at(GTK_GRID(grid), 2, row1);
+    GtkWidget *right_c = gtk_grid_get_child_at(GTK_GRID(grid), 3, row1);
+    if (!GTK_IS_LABEL(buttons_l) || !GTK_IS_COLOR_BUTTON(buttons_c) ||
+        !GTK_IS_LABEL(right_l) || !GTK_IS_COLOR_BUTTON(right_c))
+        return;
+    GtkWidget *tight = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(tight), 2);
+    gtk_grid_set_column_spacing(GTK_GRID(tight), 4);
+    gtk_widget_set_halign(tight, GTK_ALIGN_START);
+
+    GtkWidget *widgets[] = {body_l, body_c, buttons_l, buttons_c,
+                            left_l, left_c, right_l, right_c};
+    for (guint i = 0; i < G_N_ELEMENTS(widgets); ++i) {
+        g_object_ref(widgets[i]);
+        gtk_container_remove(GTK_CONTAINER(grid), widgets[i]);
+    }
+    wozt_compact_color_button(body_c);
+    wozt_compact_color_button(buttons_c);
+    wozt_compact_color_button(left_c);
+    wozt_compact_color_button(right_c);
+    gtk_grid_attach(GTK_GRID(tight), body_l,    0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), body_c,    1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), buttons_l, 2, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), buttons_c, 3, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), left_l,    0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), left_c,    1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), right_l,   2, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(tight), right_c,   3, 1, 1, 1);
+    for (guint i = 0; i < G_N_ELEMENTS(widgets); ++i)
+        g_object_unref(widgets[i]);
+    /* A two-column cell in the original grid replaces all four wide cells. */
+    gtk_grid_attach(GTK_GRID(grid), tight, 0, row0, 2, 1);
+    gtk_widget_show_all(tight);
+}
+
+static void wozt_unellipsize_pcble_combo(GtkWidget *combo, int width)
+{
+    if (!GTK_IS_COMBO_BOX(combo)) return;
+    gtk_widget_set_size_request(combo, width, -1);
+    GList *cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(combo));
+    for (GList *it = cells; it; it = it->next) {
+        if (GTK_IS_CELL_RENDERER_TEXT(it->data)) {
+            gtk_cell_renderer_set_fixed_size(GTK_CELL_RENDERER(it->data), -1, -1);
+            g_object_set(it->data, "ellipsize", PANGO_ELLIPSIZE_NONE, NULL);
+        }
+    }
+    g_list_free(cells);
+}
+
+static void wozt_compact_controller_output(void)
+{
+    if (GTK_IS_GRID(g_c.pcble_settings)) {
+        gtk_grid_set_row_spacing(GTK_GRID(g_c.pcble_settings), 2);
+        gtk_grid_set_column_spacing(GTK_GRID(g_c.pcble_settings), 4);
+        wozt_unellipsize_tree(g_c.pcble_settings);
+        wozt_unellipsize_pcble_combo(g_c.pcble_controller, 290);
+        wozt_unellipsize_pcble_combo(g_c.pcble_primary, 210);
+        wozt_unellipsize_pcble_combo(g_c.pcble_secondary, 210);
+        wozt_unellipsize_pcble_combo(g_c.pcble_mouse_side, 210);
+        wozt_compact_palette_rows(g_c.pcble_settings);
+        wozt_compact_session_buttons(g_c.pcble_settings, "Bluetooth session");
+    }
+    if (g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output))
+        gtk_box_set_spacing(GTK_BOX(g_c.wozt_inner_output), 4);
+
+    if (g_c.output_stick_preview[0])
+        gtk_widget_set_size_request(g_c.output_stick_preview[0], 76, 76);
+    if (g_c.output_stick_preview[1])
+        gtk_widget_set_size_request(g_c.output_stick_preview[1], 76, 76);
+
+    GtkWidget *shaping = NULL;
+    if (g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output));
+        shaping = children && children->next ? GTK_WIDGET(children->next->data) : NULL;
+        g_list_free(children);
+    }
+    if (GTK_IS_GRID(shaping)) {
+        gtk_grid_set_row_spacing(GTK_GRID(shaping), 1);
+        gtk_grid_set_column_spacing(GTK_GRID(shaping), 3);
+        wozt_pair_named_rows(shaping, "LT threshold (%)", "RT threshold (%)");
+        wozt_pair_named_rows(shaping, "left stick deadzone (%)", "right stick deadzone (%)");
+        wozt_pair_named_rows(shaping, "left axis saturation (%)", "right axis saturation (%)");
+        wozt_pair_named_rows(shaping, "left diagonal saturation (%)", "right diagonal saturation (%)");
+        wozt_unellipsize_tree(shaping);
+        wozt_limit_scale_tree(shaping, 122);
+    }
+}
 static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output)
 {
+    if (output) return;
     GtkWidget *columns = output ? g_c.wozt_inner_output : g_c.wozt_inner_input;
     if (!GTK_IS_BOX(columns) || !GTK_IS_GRID(calibration)) return;
     GtkWidget *right = gtk_grid_new();
@@ -3012,6 +3202,7 @@ static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output
  * If a button had no tooltip, preserve its full original label there. */
 static void wozt_compact_action_labels(GtkWidget *widget)
 {
+    if (widget == g_c.wozt_sections[2]) return;
     if (GTK_IS_BUTTON(widget) && GTK_IS_BIN(widget)) {
         GtkWidget *child = gtk_bin_get_child(GTK_BIN(widget));
         if (GTK_IS_LABEL(child)) {
@@ -4557,8 +4748,9 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* Backend / left calibration / right calibration: three inner columns. */
+    /* Backend left, shaping right: two compact inner columns. */
     wozt_split_stick_calibration(grid, TRUE);
+    wozt_compact_controller_output();
 
     /* ===============================================================
      * LOCAL CONTROLLER INPUT
