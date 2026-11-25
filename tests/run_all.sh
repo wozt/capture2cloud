@@ -30,6 +30,11 @@ fi
 
 failed=0
 
+# Explanatory controls must stay translated in all nine WOZT JSON languages.
+if ! python3 "$PROJECT_DIR/tools/check-wozt-tooltips.py"; then
+    failed=1
+fi
+
 # How long each suite took, printed at the end. Worth having: "the tests
 # take too long" is not actionable until you know which one is taking the
 # time, and the answer is not what it looks like from the outside.

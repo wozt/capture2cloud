@@ -2782,7 +2782,7 @@ static GtkWidget *wozt_split_inner_section(GtkWidget *left, int output)
     GtkWidget *parent = gtk_widget_get_parent(left);
     if (!GTK_IS_BOX(parent)) return left;
 
-    GtkWidget *columns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget *columns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *right = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(right), 3);
     gtk_grid_set_column_spacing(GTK_GRID(right), 6);
@@ -2910,6 +2910,48 @@ static void wozt_pair_named_rows(GtkWidget *grid, const char *left, const char *
     g_object_unref(c1);
 }
 
+/* WOZT_0829_THREE_INNER_COLUMNS */
+/* Preserve the original widgets, signals and g_c pointers: only their parent
+ * grid changes. At narrow widths wozt_window_configured() turns the common
+ * GtkBox vertical, so the third column is still accessible without clipping. */
+static gboolean wozt_move_calibration_row(GtkWidget *source, GtkWidget *dest,
+                                          const char *name, int row)
+{
+    GtkWidget *label = NULL, *control = NULL;
+    int source_row = -1;
+    if (!wozt_find_grid_row(source, name, &label, &control, &source_row)) {
+        g_warning("wozt-ui: calibration field not found: %s", name);
+        return FALSE;
+    }
+    g_object_ref(label);
+    g_object_ref(control);
+    gtk_container_remove(GTK_CONTAINER(source), label);
+    gtk_container_remove(GTK_CONTAINER(source), control);
+    gtk_grid_attach(GTK_GRID(dest), label, 0, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(dest), control, 1, row, 1, 1);
+    g_object_unref(label);
+    g_object_unref(control);
+    return TRUE;
+}
+
+static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output)
+{
+    GtkWidget *columns = output ? g_c.wozt_inner_output : g_c.wozt_inner_input;
+    if (!GTK_IS_BOX(columns) || !GTK_IS_GRID(calibration)) return;
+    GtkWidget *right = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(right), 2);
+    gtk_grid_set_column_spacing(GTK_GRID(right), 5);
+    gtk_widget_set_hexpand(right, TRUE);
+    gtk_box_pack_start(GTK_BOX(columns), right, TRUE, TRUE, 0);
+    /* Same row names in both controllers, independent control bindings. */
+    const char *fields[] = {
+        "right stick", "RT threshold (%)", "right stick deadzone (%)",
+        "right axis saturation (%)", "right diagonal saturation (%)"
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(fields); ++i)
+        wozt_move_calibration_row(calibration, right, fields[i], (int)i);
+}
+
 static GtkWidget *make_scale(GtkShell *shell, int lo, int hi, int step, const char *suffix) {
     GtkWidget *s = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, lo, hi, step);
     gtk_scale_set_value_pos(GTK_SCALE(s), GTK_POS_RIGHT);
@@ -2970,8 +3012,8 @@ static void add_section_header(GtkWidget *grid, int row, const char *title) {
     gtk_style_context_add_class(gtk_widget_get_style_context(label),
                                 "wozt-subsection");
     gtk_widget_set_halign(label, GTK_ALIGN_START);
-    gtk_widget_set_margin_top(label, row == 0 ? 0 : 6);
-    gtk_widget_set_margin_bottom(label, 2);
+    gtk_widget_set_margin_top(label, row == 0 ? 0 : 4);
+    gtk_widget_set_margin_bottom(label, 1);
     gtk_grid_attach(GTK_GRID(grid), label, 0, row, 2, 1);
 }
 
@@ -3015,21 +3057,14 @@ static GtkWidget *make_stack_page(
     GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
     gtk_widget_set_margin_start(outer, 5);
     gtk_widget_set_margin_end(outer, 5);
-    gtk_widget_set_margin_top(outer, 4);
-    gtk_widget_set_margin_bottom(outer, 5);
+    gtk_widget_set_margin_top(outer, 2);
+    gtk_widget_set_margin_bottom(outer, 3);
     gtk_container_add(GTK_CONTAINER(frame), outer);
-    if (subtitle && *subtitle) {
-        GtkWidget *sub = gtk_label_new(subtitle);
-        gtk_widget_set_halign(sub, GTK_ALIGN_START);
-        gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
-        gtk_label_set_max_width_chars(GTK_LABEL(sub), 78);
-        gtk_style_context_add_class(gtk_widget_get_style_context(sub), "wozt-muted");
-        gtk_box_pack_start(GTK_BOX(outer), sub, FALSE, FALSE, 0);
-    }
+    /* Description is on the section heading/info tooltip only. */
     GtkWidget *grid = gtk_grid_new();
     gtk_widget_set_hexpand(grid, TRUE);
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 3);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 2);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 5);
     gtk_box_pack_start(GTK_BOX(outer), grid, FALSE, FALSE, 0);
     if (index < 8) g_c.wozt_sections[index] = frame;
     gtk_grid_attach(GTK_GRID(dashboard), frame, 0, index, 1, 1);
@@ -3824,7 +3859,7 @@ static void build_settings_window(GtkShell *shell) {
      * the controls. */
 
     g_c.titan_settings = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(g_c.titan_settings), 4);
+    gtk_grid_set_row_spacing(GTK_GRID(g_c.titan_settings), 2);
     gtk_grid_set_column_spacing(GTK_GRID(g_c.titan_settings), 14);
     gtk_widget_set_no_show_all(g_c.titan_settings, TRUE);
     gtk_grid_attach(
@@ -3883,10 +3918,10 @@ static void build_settings_window(GtkShell *shell) {
     g_c.pcble_settings = gtk_grid_new();
     gtk_grid_set_row_spacing(
         GTK_GRID(g_c.pcble_settings),
-        8);
+        2);
     gtk_grid_set_column_spacing(
         GTK_GRID(g_c.pcble_settings),
-        14);
+        6);
     gtk_widget_set_no_show_all(
         g_c.pcble_settings,
         TRUE);
@@ -4415,7 +4450,8 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* Calibration is already in its own responsive inner column. */
+    /* Backend / left calibration / right calibration: three inner columns. */
+    wozt_split_stick_calibration(grid, TRUE);
 
     /* ===============================================================
      * LOCAL CONTROLLER INPUT
@@ -4573,7 +4609,8 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* Calibration is already in its own responsive inner column. */
+    /* Source / left calibration / right calibration: three inner columns. */
+    wozt_split_stick_calibration(grid, FALSE);
 
     /* ===============================================================
      * CAPTURE
@@ -4658,6 +4695,12 @@ static void build_settings_window(GtkShell *shell) {
         "drawing",
         make_check(shell, "wait for display (vsync)"));
 
+    /* These are short, independent local controls. Pair each row without
+     * altering GTK font sizes or the per-control signal connections. */
+    wozt_pair_named_rows(grid, "speakers", "audio output");
+    wozt_pair_named_rows(grid, "volume (%)", "brightness (%)");
+    wozt_pair_named_rows(grid, "contrast (%)", "drawing");
+
 
     /* ===============================================================
      * RESET METHOD
@@ -4708,7 +4751,7 @@ static void build_settings_window(GtkShell *shell) {
 
     gtk_grid_set_row_spacing(
         GTK_GRID(g_c.reset_script_panel),
-        8);
+        3);
 
     gtk_grid_set_column_spacing(
         GTK_GRID(g_c.reset_script_panel),
@@ -4790,7 +4833,7 @@ static void build_settings_window(GtkShell *shell) {
 
     gtk_grid_set_row_spacing(
         GTK_GRID(g_c.reset_bt_panel),
-        8);
+        3);
 
     gtk_grid_set_column_spacing(
         GTK_GRID(g_c.reset_bt_panel),

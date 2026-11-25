@@ -353,13 +353,39 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     char *slider_rules = sh->wozt ? gtk_css_provider_to_string(sh->wozt->css) : NULL;
     t_ok("Slider track, highlight and thumb have palette-driven CSS",
          slider_rules && strstr(slider_rules, "scale trough") &&
-         strstr(slider_rules, "scale highlight") &&
-         strstr(slider_rules, "scale slider"));
+         strstr(slider_rules, "scale trough highlight") &&
+         strstr(slider_rules, "scale slider") &&
+         strstr(slider_rules, "background-image:none"));
     g_free(slider_rules);
-    t_ok("Controller output has two genuine internal columns",
-         g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output));
-    t_ok("Local input has two genuine internal columns",
-         g_c.wozt_inner_input && GTK_IS_BOX(g_c.wozt_inner_input));
+    GList *output_children = g_c.wozt_inner_output
+        ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output)) : NULL;
+    GList *input_children = g_c.wozt_inner_input
+        ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_input)) : NULL;
+    t_ok("Controller output has three genuine internal columns",
+         g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output) &&
+         g_list_length(output_children) == 3);
+    t_ok("Local input has three genuine internal columns",
+         g_c.wozt_inner_input && GTK_IS_BOX(g_c.wozt_inner_input) &&
+         g_list_length(input_children) == 3);
+    g_list_free(output_children);
+    g_list_free(input_children);
+    t_ok("Output left and right stick controls occupy different inner grids",
+         g_c.output_deadzone[0] && g_c.output_deadzone[1] &&
+         gtk_widget_get_parent(g_c.output_deadzone[0]) !=
+             gtk_widget_get_parent(g_c.output_deadzone[1]));
+    t_ok("Input left and right stick controls occupy different inner grids",
+         g_c.deadzone[0] && g_c.deadzone[1] &&
+         gtk_widget_get_parent(g_c.deadzone[0]) !=
+             gtk_widget_get_parent(g_c.deadzone[1]));
+    /* The titlebar already owns the translated explanatory tooltip.
+     * It must not appear as a second, space-consuming label. */
+    if (g_c.wozt_sections[0]) {
+        GtkWidget *outer = gtk_bin_get_child(GTK_BIN(g_c.wozt_sections[0]));
+        GList *children = GTK_IS_CONTAINER(outer)
+            ? gtk_container_get_children(GTK_CONTAINER(outer)) : NULL;
+        t_eq_int("Section description is tooltip-only", g_list_length(children), 1);
+        g_list_free(children);
+    }
     t_ok("Controller section tooltips are available",
          g_c.wozt_sections[2] &&
          gtk_widget_get_tooltip_text(gtk_frame_get_label_widget(
@@ -452,6 +478,22 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         sh->loading = 1;
         wozt_ui_standard_apply_language(sh->wozt, "fr", sh->settings_window);
         t_eq_str("French localization applies live", wozt_ui_standard_language_id(sh->wozt), "fr");
+        GtkWidget *frame_heading = g_c.wozt_sections[0]
+            ? gtk_frame_get_label_widget(GTK_FRAME(g_c.wozt_sections[0])) : NULL;
+        GList *heading_labels = GTK_IS_CONTAINER(frame_heading)
+            ? gtk_container_get_children(GTK_CONTAINER(frame_heading)) : NULL;
+        gboolean title_is_french = FALSE;
+        for (GList *it = heading_labels; it; it = it->next) {
+            if (GTK_IS_LABEL(it->data) &&
+                !g_strcmp0(gtk_label_get_text(GTK_LABEL(it->data)), "Vue d'ensemble"))
+                title_is_french = TRUE;
+        }
+        t_ok("Overview frame heading is translated", title_is_french);
+        g_list_free(heading_labels);
+        gchar *help_fr = frame_heading ? gtk_widget_get_tooltip_text(frame_heading) : NULL;
+        t_ok("Overview frame tooltip is translated", help_fr &&
+             strstr(help_fr, "Les informations à voir") != NULL);
+        g_free(help_fr);
         wozt_ui_standard_apply_language(sh->wozt, initial, sh->settings_window);
         sh->loading = 0;
         t_eq_str("Original language restored", wozt_ui_standard_language_id(sh->wozt), initial);

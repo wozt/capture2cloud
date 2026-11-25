@@ -291,6 +291,10 @@ static void wozt_translate_tree(WoztUiStandard *ui, GtkWidget *widget)
     if (tooltip) gtk_widget_set_tooltip_text(widget, wozt_tr(ui, tooltip));
     if (GTK_IS_CONTAINER(widget))
         gtk_container_foreach(GTK_CONTAINER(widget), wozt_translate_child, ui);
+    if (GTK_IS_FRAME(widget)) {
+        GtkWidget *heading = gtk_frame_get_label_widget(GTK_FRAME(widget));
+        if (heading) wozt_translate_tree(ui, heading);
+    }
 }
 
 static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
@@ -354,12 +358,18 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
     /* Recomputed for EVERY theme, just like the rest of the CSS.
      * Keep the native scale value and callback behavior intact. */
     char *slider_css = g_strdup_printf(
-        "window.wozt-window scale trough {background-color:%s;"
-        "border:1px solid %s;border-radius:0;min-height:5px;}"
-        "window.wozt-window scale highlight {background-color:%s;"
-        "border-radius:0;}"
-        "window.wozt-window scale slider {background-color:%s;"
-        "border:1px solid %s;border-radius:0;}",
+        "window.wozt-window scale trough {background-image:none;"
+        "background-color:%s;border:1px solid %s;"
+        "border-radius:0;min-height:5px;box-shadow:none;}"
+        "window.wozt-window scale trough highlight,"
+        "window.wozt-window scale.horizontal trough highlight,"
+        "window.wozt-window scale.vertical trough highlight {"
+        "background-image:none;background-color:%s;"
+        "border:0;border-radius:0;box-shadow:none;}"
+        "window.wozt-window scale trough slider,"
+        "window.wozt-window scale slider {"
+        "background-image:none;background-color:%s;"
+        "border:1px solid %s;border-radius:0;box-shadow:none;}",
         v[2], v[3], v[6], v[6], v[3]);
     char *complete_css = g_strconcat(css, slider_css, NULL);
     g_free(slider_css);
