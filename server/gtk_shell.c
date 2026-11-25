@@ -298,6 +298,12 @@ static void wozt_dashboard_reflow(int width)
             const int n = MIN(capacity, count - offset);
             GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
             gtk_widget_set_hexpand(line, TRUE);
+            /* WOZT_0863_VERTICAL_REFLOW: GtkWidget::vexpand is inherited
+             * from descendants (notably the Clients notebook). GtkBox's
+             * FALSE/FALSE child packing does NOT override that inherited
+             * request. Explicitly refuse extra vertical space on each row. */
+            gtk_widget_set_vexpand(line, FALSE);
+            gtk_widget_set_valign(line, GTK_ALIGN_START);
             gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
             for (int j = 0; j < n; ++j) {
                 const int slot = offset + j;
@@ -309,6 +315,10 @@ static void wozt_dashboard_reflow(int width)
                     gtk_widget_set_halign(column,
                                          last ? GTK_ALIGN_FILL : GTK_ALIGN_START);
                     gtk_widget_set_hexpand(column, last);
+                    /* Fill the tool row's actual height without requesting
+                     * any extra height for the dashboard as a whole. */
+                    gtk_widget_set_valign(column, GTK_ALIGN_FILL);
+                    gtk_widget_set_vexpand(column, FALSE);
                     gtk_box_pack_start(GTK_BOX(line), column, last, last, 0);
                     GtkWidget *monitor = g_c.wozt_sections[5];
                     GtkWidget *capture = g_c.wozt_sections[4];
@@ -316,7 +326,14 @@ static void wozt_dashboard_reflow(int width)
                     gtk_widget_set_halign(capture, GTK_ALIGN_FILL);
                     gtk_widget_set_hexpand(monitor, TRUE);
                     gtk_widget_set_hexpand(capture, TRUE);
-                    gtk_box_pack_start(GTK_BOX(column), monitor, FALSE, TRUE, 0);
+                    /* Only Local monitor fills any small height difference
+                     * versus Reset/Maintenance; Capture stays one short row.
+                     * The enclosing dashboard row NEVER grows vertically. */
+                    gtk_widget_set_valign(monitor, GTK_ALIGN_FILL);
+                    gtk_widget_set_valign(capture, GTK_ALIGN_FILL);
+                    gtk_widget_set_vexpand(monitor, TRUE);
+                    gtk_widget_set_vexpand(capture, FALSE);
+                    gtk_box_pack_start(GTK_BOX(column), monitor, TRUE, TRUE, 0);
                     gtk_box_pack_start(GTK_BOX(column), capture, FALSE, TRUE, 0);
                     gtk_widget_show_all(column);
                     continue;

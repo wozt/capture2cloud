@@ -325,6 +325,25 @@ static void gtk_layout_probe_finish(GtkLayoutProbe *probe)
     g_mutex_unlock(&probe->lock);
 }
 
+/* Layout regressions are about GTK's *computed* expansion, not only
+ * GtkBox packing flags. Clients has vexpand=TRUE internally, so each
+ * dashboard line must explicitly refuse inheriting it. */
+static gboolean wozt_dashboard_rows_have_natural_heights(void)
+{
+    if (!GTK_IS_BOX(g_c.wozt_dashboard)) return FALSE;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(g_c.wozt_dashboard));
+    gboolean valid = rows != NULL;
+    for (GList *it = rows; it; it = it->next) {
+        GtkWidget *line = GTK_WIDGET(it->data);
+        valid = valid && GTK_IS_BOX(line) &&
+            gtk_widget_get_valign(line) == GTK_ALIGN_START &&
+            !gtk_widget_get_vexpand(line) &&
+            !gtk_widget_compute_expand(line, GTK_ORIENTATION_VERTICAL);
+    }
+    g_list_free(rows);
+    return valid;
+}
+
 static gboolean gtk_layout_probe_initial(gpointer user_data)
 {
     GtkLayoutProbe *probe = user_data;
@@ -1010,6 +1029,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
          gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
+    t_ok("Wide dashboard rows never inherit Clients vertical expansion",
+         wozt_dashboard_rows_have_natural_heights());
     /* The final frame expands, but the preceding one stays compact.
      * Both frames remain adjacent in their shared horizontal row. */
     t_ok("Rightmost Local input absorbs surplus in the shared controller row",
@@ -1040,6 +1061,21 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          monitor_stack_children->data == g_c.wozt_sections[5] &&
          monitor_stack_children->next->data == g_c.wozt_sections[4]);
     g_list_free(monitor_stack_children);
+    gboolean monitor_expand = FALSE, monitor_fill = FALSE;
+    gboolean capture_expand = FALSE, capture_fill = FALSE;
+    if (GTK_IS_BOX(monitor_stack)) {
+        gtk_box_query_child_packing(GTK_BOX(monitor_stack), g_c.wozt_sections[5],
+                                    &monitor_expand, &monitor_fill, NULL, NULL);
+        gtk_box_query_child_packing(GTK_BOX(monitor_stack), g_c.wozt_sections[4],
+                                    &capture_expand, &capture_fill, NULL, NULL);
+    }
+    t_ok("Monitor fills lower-left tool gutter while Capture stays compact",
+         GTK_IS_BOX(monitor_stack) &&
+         gtk_widget_get_valign(monitor_stack) == GTK_ALIGN_FILL &&
+         !gtk_widget_get_vexpand(monitor_stack) &&
+         gtk_widget_get_vexpand(g_c.wozt_sections[5]) &&
+         !gtk_widget_get_vexpand(g_c.wozt_sections[4]) &&
+         monitor_expand && monitor_fill && !capture_expand && capture_fill);
     t_ok("Monitor/Capture column, Reset and Maintenance share the wide tool row",
          GTK_IS_BOX(tool_line) &&
          gtk_orientable_get_orientation(GTK_ORIENTABLE(tool_line)) ==
@@ -1079,6 +1115,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(720);
+    t_ok("Narrow stacked dashboard rows never expand vertically",
+         wozt_dashboard_rows_have_natural_heights());
     t_ok("A wrapped Output frame fills its own line",
          g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
          gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_FILL);
@@ -1089,6 +1127,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     wozt_dashboard_reflow(1144);
+    t_ok("Default dashboard rows have natural, top-aligned heights",
+         wozt_dashboard_rows_have_natural_heights());
     t_ok("Default width keeps Overview and Clients together",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
