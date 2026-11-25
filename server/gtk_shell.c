@@ -262,6 +262,23 @@ static gboolean wozt_reset_fits_top(void)
     return wozt_reset_fits_heights(h[0], h[1], h[2], h[3], h[4]);
 }
 
+/* WOZT_0867_RESET_MAINT_GRID: a homogeneous three-track utility grid
+ * allocates two tracks to Reset and one to Maintenance. Only put the panels
+ * beside one another when their actual minimum widths fit that ratio. */
+static int wozt_utility_pair_min_width(void)
+{
+    GtkWidget *reset = g_c.wozt_sections[6];
+    GtkWidget *maintenance = g_c.wozt_sections[7];
+    const int fallback = wozt_section_layout_width(6) +
+                         wozt_section_layout_width(7) + 6;
+    if (!GTK_IS_WIDGET(reset) || !GTK_IS_WIDGET(maintenance)) return fallback;
+    gint reset_min = 0, reset_nat = 0, maint_min = 0, maint_nat = 0;
+    gtk_widget_get_preferred_width(reset, &reset_min, &reset_nat);
+    gtk_widget_get_preferred_width(maintenance, &maint_min, &maint_nat);
+    const int track = MAX((MAX(1, reset_min) + 1) / 2, MAX(1, maint_min));
+    return MAX(fallback, 3 * track + 12); /* two 6px grid gaps */
+}
+
 static int wozt_dashboard_group_columns(int width, int group)
 {
     if (group < 0 || group >= 3) return 1;
@@ -279,6 +296,8 @@ static int wozt_dashboard_group_columns(int width, int group)
             : wozt_section_layout_width(group == 2
                   ? (reset_top ? 7 : 6 + i) : first + i);
         const int need = need_width + (i ? 6 : 0);
+        if (group == 2 && !reset_top && i == 1 &&
+            space < wozt_utility_pair_min_width()) break;
         if (packed && total + need > space) break;
         total += need;
         ++packed;
@@ -334,6 +353,31 @@ static void wozt_dashboard_reflow(int width)
             gtk_widget_set_vexpand(line, FALSE);
             gtk_widget_set_valign(line, GTK_ALIGN_START);
             gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
+            if (group == 2 && !reset_top && n == 2) {
+                /* 2/3 Reset, 1/3 Maintenance. Never use a fixed pixel split:
+                 * the three homogeneous columns share the current row width. */
+                GtkWidget *thirds = gtk_grid_new();
+                gtk_grid_set_column_homogeneous(GTK_GRID(thirds), TRUE);
+                gtk_grid_set_column_spacing(GTK_GRID(thirds), 6);
+                gtk_widget_set_hexpand(thirds, TRUE);
+                gtk_widget_set_vexpand(thirds, FALSE);
+                gtk_box_pack_start(GTK_BOX(line), thirds, TRUE, TRUE, 0);
+                GtkWidget *reset = g_c.wozt_sections[6];
+                GtkWidget *maintenance = g_c.wozt_sections[7];
+                gtk_widget_set_halign(reset, GTK_ALIGN_FILL);
+                gtk_widget_set_halign(maintenance, GTK_ALIGN_FILL);
+                gtk_widget_set_hexpand(reset, TRUE);
+                gtk_widget_set_hexpand(maintenance, TRUE);
+                gtk_widget_set_vexpand(reset, FALSE);
+                gtk_widget_set_vexpand(maintenance, FALSE);
+                gtk_grid_attach(GTK_GRID(thirds), reset, 0, 0, 2, 1);
+                gtk_grid_attach(GTK_GRID(thirds), maintenance, 2, 0, 1, 1);
+                gtk_widget_show(thirds);
+                gtk_widget_show(reset);
+                gtk_widget_show(maintenance);
+                gtk_widget_show(line);
+                continue;
+            }
             for (int j = 0; j < n; ++j) {
                 const int slot = offset + j;
                 const gboolean last = j == n - 1;
@@ -4046,6 +4090,139 @@ static void set_window_icon(GtkWidget *win) {
         gtk_window_set_icon_name(GTK_WINDOW(win), "camera-video");
 }
 
+/* Move a *single instance* of every live reset control, never recreating
+ * its signals/settings. Validate the old grid completely before detaching. */
+static void wozt_compact_reset_method(GtkWidget *root)
+{
+    if (!GTK_IS_GRID(root) || !GTK_IS_GRID(g_c.reset_bt_panel)) return;
+    GtkWidget *panel = g_c.reset_bt_panel;
+    GtkWidget *wake_heading = gtk_grid_get_child_at(GTK_GRID(root), 0, 0);
+    GtkWidget *old_method_label = gtk_grid_get_child_at(GTK_GRID(root), 0, 1);
+    if (!GTK_IS_LABEL(wake_heading) || !GTK_IS_LABEL(old_method_label) ||
+        g_strcmp0(gtk_label_get_text(GTK_LABEL(wake_heading)), "Wake method") ||
+        g_strcmp0(gtk_label_get_text(GTK_LABEL(old_method_label)), "method") ||
+        gtk_widget_get_parent(g_c.reset_method) != root) {
+        g_warning("wozt-ui: Reset method title/selector structure changed");
+        return;
+    }
+
+    GtkWidget *bt_heading = gtk_grid_get_child_at(GTK_GRID(panel), 0, 0);
+    GtkWidget *target_l = NULL, *target_c = NULL;
+    GtkWidget *adapter_l = NULL, *adapter_c = NULL;
+    GtkWidget *tools_l = NULL, *tools_c = NULL;
+    GtkWidget *beacon_l = NULL, *beacon_c = NULL;
+    int target_row = -1, adapter_row = -1, tools_row = -1, beacon_row = -1;
+    if (!GTK_IS_LABEL(bt_heading) ||
+        !wozt_find_grid_row(panel, "target console", &target_l, &target_c, &target_row) ||
+        !wozt_find_grid_row(panel, "Bluetooth adapter", &adapter_l, &adapter_c, &adapter_row) ||
+        !wozt_find_grid_row(panel, "adapter tools", &tools_l, &tools_c, &tools_row) ||
+        !wozt_find_grid_row(panel, "beacon", &beacon_l, &beacon_c, &beacon_row) ||
+        !GTK_IS_LABEL(g_c.reset_bt_status) ||
+        gtk_widget_get_parent(g_c.reset_bt_status) != panel) {
+        g_warning("wozt-ui: Bluetooth reset grid changed, keeping existing layout");
+        return;
+    }
+    GtkWidget *parts[] = {bt_heading, target_l, target_c, adapter_l, adapter_c,
+                          tools_l, tools_c, beacon_l, beacon_c, g_c.reset_bt_status};
+    GList *existing = gtk_container_get_children(GTK_CONTAINER(panel));
+    const gboolean complete = g_list_length(existing) == G_N_ELEMENTS(parts);
+    g_list_free(existing);
+    if (!complete) {
+        g_warning("wozt-ui: unexpected Bluetooth reset children, not reparenting");
+        return;
+    }
+
+    /* Heading and selector form ONE row. Destroy only the redundant
+     * 'method' GtkLabel; the original combo and its callbacks survive. */
+    GtkWidget *combo = g_c.reset_method;
+    g_object_ref(wake_heading);
+    g_object_ref(combo);
+    gtk_container_remove(GTK_CONTAINER(root), wake_heading);
+    gtk_container_remove(GTK_CONTAINER(root), combo);
+    gtk_widget_destroy(old_method_label);
+    GtkWidget *method_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_halign(method_bar, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(method_bar), wake_heading, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(method_bar), combo, FALSE, FALSE, 0);
+    g_object_unref(wake_heading);
+    g_object_unref(combo);
+    gtk_grid_attach(GTK_GRID(root), method_bar, 0, 0, 2, 1);
+    gtk_widget_show_all(method_bar);
+    gtk_grid_set_row_spacing(GTK_GRID(root), 1);
+    gtk_grid_set_column_spacing(GTK_GRID(root), 4);
+
+    for (guint i = 0; i < G_N_ELEMENTS(parts); ++i) {
+        g_object_ref(parts[i]);
+        gtk_container_remove(GTK_CONTAINER(panel), parts[i]);
+    }
+    GtkWidget *left = gtk_grid_new();
+    GtkWidget *right = gtk_grid_new();
+    for (int side = 0; side < 2; ++side) {
+        GtkWidget *g = side ? right : left;
+        gtk_grid_set_row_spacing(GTK_GRID(g), 1);
+        gtk_grid_set_column_spacing(GTK_GRID(g), 4);
+        gtk_widget_set_halign(g, GTK_ALIGN_START);
+        gtk_widget_set_valign(g, GTK_ALIGN_START);
+    }
+    /* LEFT: Bluetooth wake beacon heading, then target console.
+     * RIGHT: starts with Bluetooth adapter, then tools, beacon, status. */
+    gtk_grid_attach(GTK_GRID(left), bt_heading, 0, 0, 2, 1);
+    gtk_grid_attach(GTK_GRID(left), target_l, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(left), target_c, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(right), adapter_l, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(right), adapter_c, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(right), tools_l, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(right), tools_c, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(right), beacon_l, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(right), beacon_c, 1, 2, 1, 1);
+    gtk_widget_set_halign(g_c.reset_bt_status, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(right), g_c.reset_bt_status, 0, 3, 2, 1);
+    for (guint i = 0; i < G_N_ELEMENTS(parts); ++i)
+        g_object_unref(parts[i]);
+
+    /* GtkFlowBox gives two side-by-side groups when they fit, and one
+     * below the other at narrow widths, with no hard-coded breakpoint. */
+    GtkWidget *flow = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(flow), GTK_SELECTION_NONE);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(flow), 1);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(flow), 2);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(flow), 8);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(flow), 2);
+    gtk_widget_set_halign(flow, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(flow, TRUE);
+    gtk_container_add(GTK_CONTAINER(flow), left);
+    gtk_container_add(GTK_CONTAINER(flow), right);
+    gtk_grid_set_row_spacing(GTK_GRID(panel), 0);
+    gtk_grid_set_column_spacing(GTK_GRID(panel), 0);
+    gtk_grid_attach(GTK_GRID(panel), flow, 0, 0, 2, 1);
+    gtk_widget_show_all(flow);
+    g_object_set_data(G_OBJECT(panel), "wozt-reset-two-columns", GINT_TO_POINTER(1));
+}
+
+static void wozt_compact_maintenance(GtkWidget *grid)
+{
+    if (!GTK_IS_GRID(grid)) return;
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 1);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 4);
+    gtk_widget_set_halign(grid, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(grid, FALSE);
+    GList *children = gtk_container_get_children(GTK_CONTAINER(grid));
+    for (GList *it = children; it; it = it->next) {
+        GtkWidget *w = GTK_WIDGET(it->data);
+        if (GTK_IS_LABEL(w)) {
+            gtk_label_set_xalign(GTK_LABEL(w), 0.0f);
+            if (gtk_style_context_has_class(gtk_widget_get_style_context(w),
+                                            "wozt-subsection")) {
+                gtk_widget_set_margin_top(w, 2);
+                gtk_widget_set_margin_bottom(w, 0);
+            }
+        } else if (GTK_IS_BUTTON(w)) {
+            wozt_compact_button_widget(w);
+        }
+    }
+    g_list_free(children);
+}
+
 static void build_settings_window(GtkShell *shell) {
     g_c.replug_pending = -1;
 
@@ -5919,6 +6096,7 @@ static void build_settings_window(GtkShell *shell) {
                         g_c.reset_bt_status, 0, rr++, 2, 1);
     }
 
+    wozt_compact_reset_method(grid);
     reset_load_config(shell);
 
 
@@ -6022,6 +6200,7 @@ static void build_settings_window(GtkShell *shell) {
             "Performs the normal ordered shutdown and re-execs "
             "Capture2Cloud."));
 
+    wozt_compact_maintenance(grid);
 
     /* ---------------------------------------------------------------
      * Footer

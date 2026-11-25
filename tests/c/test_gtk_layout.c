@@ -702,8 +702,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(top_three_width, 0), 3);
     t_eq_int("1650px: the compact stack is on the top row",
              wozt_dashboard_group_columns(1650, 0), 3);
-    const int tools_two_width = wozt_section_layout_width(6) +
-                                wozt_section_layout_width(7) + 36;
+    /* WOZT_0867_RESET_MAINT_TESTS: GTK's homogeneous 3-track minimum,
+     * not just the sum of the two old fixed packing budgets. */
+    const int tools_two_width = wozt_utility_pair_min_width() + 30;
     if (!reset_top) {
         t_eq_int("Reset and Maintenance wrap before colliding",
                  wozt_dashboard_group_columns(tools_two_width - 1, 2), 1);
@@ -1102,29 +1103,79 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[1]) == tool_line &&
          gtk_widget_get_hexpand(g_c.wozt_sections[1]) &&
          !gtk_widget_get_hexpand(monitor_stack));
-    GtkWidget *reset_row = gtk_widget_get_parent(g_c.wozt_sections[6]);
-    GtkWidget *maintenance_row = gtk_widget_get_parent(g_c.wozt_sections[7]);
-    t_ok("Reset stays below controllers unless it fits below Capture",
-         (reset_top
-          ? (reset_row == monitor_stack && maintenance_row != tool_line)
-          : (GTK_IS_BOX(reset_row) && reset_row != tool_line &&
-             maintenance_row == reset_row &&
-             !gtk_widget_get_hexpand(g_c.wozt_sections[6]))) &&
-         gtk_widget_get_hexpand(g_c.wozt_sections[7]));
+    GtkWidget *reset_parent = gtk_widget_get_parent(g_c.wozt_sections[6]);
+    GtkWidget *maintenance_parent = gtk_widget_get_parent(g_c.wozt_sections[7]);
+    GtkWidget *bottom_row = GTK_IS_GRID(reset_parent)
+        ? gtk_widget_get_parent(reset_parent) : maintenance_parent;
+    gint reset_x = -1, reset_span = -1, maint_x = -1, maint_span = -1;
+    if (GTK_IS_GRID(reset_parent) && reset_parent == maintenance_parent) {
+        gtk_container_child_get(GTK_CONTAINER(reset_parent), g_c.wozt_sections[6],
+                                "left-attach", &reset_x, "width", &reset_span, NULL);
+        gtk_container_child_get(GTK_CONTAINER(reset_parent), g_c.wozt_sections[7],
+                                "left-attach", &maint_x, "width", &maint_span, NULL);
+    }
+    t_ok("Reset spans two thirds and Maintenance one third when sharing a row",
+         reset_top
+         ? (reset_parent == monitor_stack && maintenance_parent != tool_line)
+         : (GTK_IS_GRID(reset_parent) && reset_parent == maintenance_parent &&
+            GTK_IS_BOX(bottom_row) && bottom_row != tool_line &&
+            gtk_grid_get_column_homogeneous(GTK_GRID(reset_parent)) &&
+            gtk_grid_get_column_spacing(GTK_GRID(reset_parent)) == 6 &&
+            reset_x == 0 && reset_span == 2 && maint_x == 2 && maint_span == 1));
     gint status_left = -1, status_width = -1;
-    if (GTK_IS_GRID(g_c.reset_bt_panel) && g_c.reset_bt_status) {
-        gtk_container_child_get(GTK_CONTAINER(g_c.reset_bt_panel),
+    GtkWidget *status_grid = g_c.reset_bt_status
+        ? gtk_widget_get_parent(g_c.reset_bt_status) : NULL;
+    if (GTK_IS_GRID(status_grid)) {
+        gtk_container_child_get(GTK_CONTAINER(status_grid),
                                 g_c.reset_bt_status,
                                 "left-attach", &status_left,
                                 "width", &status_width, NULL);
     }
     t_ok("Bluetooth wake status is a single full-width, tooltip-backed line",
-         GTK_IS_LABEL(g_c.reset_bt_status) && status_left == 0 &&
+         GTK_IS_GRID(status_grid) && GTK_IS_LABEL(g_c.reset_bt_status) &&
+         status_left == 0 &&
          status_width == 2 &&
          !gtk_label_get_line_wrap(GTK_LABEL(g_c.reset_bt_status)) &&
          gtk_label_get_single_line_mode(GTK_LABEL(g_c.reset_bt_status)) &&
          gtk_label_get_ellipsize(GTK_LABEL(g_c.reset_bt_status)) == PANGO_ELLIPSIZE_END &&
          gtk_widget_get_tooltip_text(g_c.reset_bt_status) != NULL);
+    GtkWidget *method_bar = g_c.reset_method
+        ? gtk_widget_get_parent(g_c.reset_method) : NULL;
+    GList *method_children = GTK_IS_BOX(method_bar)
+        ? gtk_container_get_children(GTK_CONTAINER(method_bar)) : NULL;
+    t_ok("Wake method title and selector share a single compact line",
+         GTK_IS_BOX(method_bar) && g_list_length(method_children) == 2 &&
+         GTK_IS_LABEL(method_children->data) &&
+         method_children->next->data == g_c.reset_method &&
+         GTK_IS_GRID(gtk_widget_get_parent(method_bar)));
+    g_list_free(method_children);
+    GtkWidget *reset_flow = GTK_IS_GRID(g_c.reset_bt_panel)
+        ? gtk_grid_get_child_at(GTK_GRID(g_c.reset_bt_panel), 0, 0) : NULL;
+    GList *flow_children = GTK_IS_FLOW_BOX(reset_flow)
+        ? gtk_container_get_children(GTK_CONTAINER(reset_flow)) : NULL;
+    t_ok("Bluetooth reset layout has two independently flowing columns",
+         GTK_IS_FLOW_BOX(reset_flow) && g_list_length(flow_children) == 2 &&
+         gtk_flow_box_get_min_children_per_line(GTK_FLOW_BOX(reset_flow)) == 1 &&
+         gtk_flow_box_get_max_children_per_line(GTK_FLOW_BOX(reset_flow)) == 2 &&
+         GPOINTER_TO_INT(g_object_get_data(G_OBJECT(g_c.reset_bt_panel),
+                                          "wozt-reset-two-columns")) == 1);
+    GtkWidget *left_flow_grid = flow_children && GTK_IS_BIN(flow_children->data)
+        ? gtk_bin_get_child(GTK_BIN(flow_children->data)) : NULL;
+    GtkWidget *right_flow_grid = flow_children && flow_children->next &&
+                                 GTK_IS_BIN(flow_children->next->data)
+        ? gtk_bin_get_child(GTK_BIN(flow_children->next->data)) : NULL;
+    t_ok("Target console stays left; Bluetooth adapter starts the right column",
+         GTK_IS_GRID(left_flow_grid) && GTK_IS_GRID(right_flow_grid) &&
+         gtk_widget_get_parent(g_c.reset_bt_target) == left_flow_grid &&
+         gtk_widget_get_parent(g_c.reset_bt_adapter) == right_flow_grid &&
+         gtk_widget_get_parent(g_c.reset_bt_status) == right_flow_grid);
+    g_list_free(flow_children);
+    GtkWidget *maintenance_grid = g_c.backend_recovery
+        ? gtk_widget_get_parent(g_c.backend_recovery) : NULL;
+    t_ok("Maintenance rows have compact consistent spacing",
+         GTK_IS_GRID(maintenance_grid) &&
+         gtk_grid_get_row_spacing(GTK_GRID(maintenance_grid)) == 1 &&
+         gtk_grid_get_column_spacing(GTK_GRID(maintenance_grid)) == 4);
     gint monitor_scale_width = -1, monitor_scale_height = -1;
     gtk_widget_get_size_request(g_c.volume, &monitor_scale_width, &monitor_scale_height);
     t_ok("Monitor sliders use the thin compact 116x15 calibration style",
