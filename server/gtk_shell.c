@@ -2973,10 +2973,34 @@ static gboolean on_settings_delete(GtkWidget *w, GdkEvent *e, gpointer user_data
 
 /* The same icon on the settings window, so the thing in the tray and the
  * thing in the window list are recognisably one program. */
+/* Test-only resource override: test_gtk_layout is in tests/.build.
+ * The persistent scripts/.env remains binary-relative and is never redirected. */
+static void wozt_asset_path(char *out, size_t out_size, const char *relative)
+{
+    if (!out_size) return;
+    const char *root = getenv("C2C_RESOURCE_ROOT");
+    if (!root || !*root) {
+        app_path(out, out_size, relative);
+        return;
+    }
+    const size_t a = strlen(root), b = strlen(relative);
+    if (a + 1 + b + 1 > out_size) {
+        out[0] = '\0';
+        return;
+    }
+    memcpy(out, root, a);
+    out[a] = '/';
+    memcpy(out + a + 1, relative, b);
+    out[a + b + 1] = '\0';
+}
+
 static void set_window_icon(GtkWidget *win) {
     char path[512];
-    app_path(path, sizeof(path), "assets/icon-64.png");
-    gtk_window_set_icon_from_file(GTK_WINDOW(win), path, NULL);
+    wozt_asset_path(path, sizeof(path), "assets/icon-64.png");
+    if (g_file_test(path, G_FILE_TEST_IS_REGULAR))
+        gtk_window_set_icon_from_file(GTK_WINDOW(win), path, NULL);
+    else
+        gtk_window_set_icon_name(GTK_WINDOW(win), "camera-video");
 }
 
 static void build_settings_window(GtkShell *shell) {
@@ -3022,7 +3046,7 @@ static void build_settings_window(GtkShell *shell) {
     g_signal_connect(win, "configure-event", G_CALLBACK(wozt_window_configured), shell);
 
     char ui_path[512], theme_id[48], language_id[48];
-    app_path(ui_path, sizeof(ui_path), "data");
+    wozt_asset_path(ui_path, sizeof(ui_path), "data");
     shell->wozt = wozt_ui_standard_new(
         ui_path,
         config_get_str("WOZT_UI_THEME", theme_id, sizeof(theme_id), "graphite"),
@@ -3047,7 +3071,7 @@ static void build_settings_window(GtkShell *shell) {
     g_signal_connect(drag, "button-press-event", G_CALLBACK(wozt_title_drag), shell);
     GtkWidget *brand = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     char icon_path[512];
-    app_path(icon_path, sizeof(icon_path), "assets/icon-64.png");
+    wozt_asset_path(icon_path, sizeof(icon_path), "assets/icon-64.png");
     GtkWidget *brand_icon = gtk_image_new_from_file(icon_path);
     gtk_image_set_pixel_size(GTK_IMAGE(brand_icon), 20);
     gtk_box_pack_start(GTK_BOX(brand), brand_icon, FALSE, FALSE, 0);
@@ -5327,7 +5351,7 @@ static int gtk_thread_main(void *arg) {
      * page and the console client show. */
     {
         char path[512];
-        app_path(path, sizeof(path), "assets/icon-64.png");
+        wozt_asset_path(path, sizeof(path), "assets/icon-64.png");
         shell->icon = gtk_status_icon_new_from_file(path);
     }
     gtk_status_icon_set_title(shell->icon, "Capture2Cloud");

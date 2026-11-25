@@ -170,11 +170,8 @@ static void count_warnings(const gchar *domain, GLogLevelFlags level, const gcha
                            gpointer user_data) {
     (void)user_data;
     if (level & (G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR)) {
-        /* The icon is looked up beside the binary, and the test binary
-         * is not beside the assets. Not a layout problem. */
-        if (message && strstr(message, "Error loading icon from file")) {
-            return;
-        }
+        /* No icon warning is ignored: paths are now provided by
+         * C2C_RESOURCE_ROOT exclusively for this test executable. */
         if (g_warnings++ == 0) {
             snprintf(g_first, sizeof(g_first), "%s: %s", domain ? domain : "?",
                      message ? message : "?");
@@ -320,6 +317,11 @@ int main(void) {
     gtk_shell_debug_show_settings(sh);
     sleep(2);
 
+    t_ok("WOZT standard was created", sh->wozt != NULL);
+    if (sh->wozt) {
+        t_eq_int("seven WOZT JSON themes loaded", sh->wozt->themes->len, 7);
+        t_eq_int("nine WOZT JSON languages loaded", sh->wozt->languages->len, 9);
+    }
     t_eq_int("eight WOZT functional sections", g_c.wozt_section_count, 8);
     t_ok("sidebar replaced by dashboard", g_c.wozt_dashboard != NULL);
     /* GtkWindow must contain the WOZT overlay, not an extra root box.

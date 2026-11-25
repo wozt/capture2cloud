@@ -82,8 +82,13 @@ run_c_test_x11() {
             return
         fi
     fi
-    if ! $LOW env NO_AT_BRIDGE=1 xvfb-run -a "$BUILD_DIR/$name"; then
+    if ! $LOW env C2C_RESOURCE_ROOT="$PROJECT_DIR" NO_AT_BRIDGE=1 xvfb-run -a "$BUILD_DIR/$name"; then
         failed=1
+        # Optional backtrace for persistent GTK crashes.
+        if command -v gdb >/dev/null 2>&1; then
+            echo "  GTK test failed; collecting optional GDB backtrace"
+            $LOW env C2C_RESOURCE_ROOT="$PROJECT_DIR" NO_AT_BRIDGE=1 xvfb-run -a gdb -q -batch -ex run -ex "thread apply all bt 12" --args "$BUILD_DIR/$name" || true
+        fi
     fi
 }
 
