@@ -6,6 +6,16 @@ int main(int argc, char **argv)
 {
     gtk_init(&argc, &argv);
     GtkIconTheme *theme = gtk_icon_theme_get_default();
+    const char *root = g_getenv("APPDIR");
+    const char *cache = g_getenv("GDK_PIXBUF_MODULE_FILE");
+    if (!root || !cache || !g_file_test(cache, G_FILE_TEST_IS_REGULAR)) {
+        fprintf(stderr, "Expected AppImage runtime and generated pixbuf cache\n");
+        return 1;
+    }
+    gchar *icons = g_build_filename(root, "usr", "share", "icons", NULL);
+    const gchar *paths[] = {icons};
+    gtk_icon_theme_set_search_path(theme, paths, 1);
+    g_free(icons);
     const char *names[] = {
         "window-close-symbolic", "window-minimize-symbolic",
         "preferences-system-symbolic", "document-open-symbolic"

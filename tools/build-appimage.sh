@@ -49,6 +49,20 @@ cat > "$APPDIR/usr/bin/capture2cloud-appimage-launcher" <<'LAUNCHER'
 #!/bin/sh
 set -eu
 APPROOT="${APPDIR:-$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)}"
+# Override the upstream GTK hook's non-relocatable pixbuf cache.
+export LD_LIBRARY_PATH="$APPROOT/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$APPROOT/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GTK_DATA_PREFIX="$APPROOT/usr"
+export GDK_PIXBUF_MODULEDIR="$APPROOT/usr/lib"
+cache="$(mktemp "${TMPDIR:-/tmp}/c2c-pixbuf.XXXXXXXX")"
+trap 'rm -f "$cache"' EXIT
+escaped="$(printf '%s' "$APPROOT" | sed 's/[\\&|]/\\&/g')"
+sed "s|@APPDIR@|$escaped|g" "$APPROOT/usr/share/capture2cloud/pixbuf-loaders.cache.in" > "$cache"
+export GDK_PIXBUF_MODULE_FILE="$cache"
+if [ "${1:-}" = --self-test-icons ]; then
+    "$APPROOT/usr/bin/check-gtk-icons"
+    exit $?
+fi
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/capture2cloud"
 mkdir -p "$CONF_DIR"
 if [ ! -f "$CONF_DIR/.env" ]; then
@@ -56,7 +70,11 @@ if [ ! -f "$CONF_DIR/.env" ]; then
     chmod 600 "$CONF_DIR/.env"
 fi
 export C2C_CONFIG_PATH="$CONF_DIR/.env"
-exec "$APPROOT/usr/bin/capture2cloud" "$@"
+"$APPROOT/usr/bin/capture2cloud" "$@" &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null || true' TERM
+trap 'kill -INT "$child" 2>/dev/null || true' INT
+wait "$child"
 LAUNCHER
 chmod 755 "$APPDIR/usr/bin/capture2cloud-appimage-launcher"
 
@@ -76,8 +94,26 @@ if [[ -d /usr/share/glib-2.0/schemas ]]; then
         glib-compile-schemas "$APPDIR/usr/share/glib-2.0/schemas"
     fi
 fi
-# linuxdeploy's GTK plugin collects GTK and pixbuf loaders, but keep these
-# search paths in the AppDir so GtkIconTheme can find the shipped icons.
+# Explicitly deploy the full pixbuf loader set and generate a relocatable
+# cache, following the working pcble2gamepad AppImage implementation.
+find "$APPDIR/usr/share/icons" -name icon-theme.cache -delete
+PIXBUF_LOADER_DIR="$(pkg-config --variable=gdk_pixbuf_moduledir gdk-pixbuf-2.0)"
+PIXBUF_QUERY="$(pkg-config --variable=gdk_pixbuf_query_loaders gdk-pixbuf-2.0)"
+[[ -x "$PIXBUF_QUERY" ]] || PIXBUF_QUERY="$(dirname "$PIXBUF_LOADER_DIR")/gdk-pixbuf-query-loaders"
+[[ -x "$PIXBUF_QUERY" && -r "$PIXBUF_LOADER_DIR/libpixbufloader-svg.so" ]] || { echo 'Missing SVG loader runtime' >&2; exit 1; }
+shopt -s nullglob
+loaders=("$PIXBUF_LOADER_DIR"/*.so)
+(( ${#loaders[@]} > 0 ))
+loader_args=()
+for loader in "${loaders[@]}"; do loader_args+=(--library "$loader"); done
+"$PIXBUF_QUERY" "${loaders[@]}" | sed "s|$PIXBUF_LOADER_DIR/|@APPDIR@/usr/lib/|g" > "$APPDIR/usr/share/capture2cloud/pixbuf-loaders.cache.in"
+grep -Fq '@APPDIR@/usr/lib/libpixbufloader-svg.so' "$APPDIR/usr/share/capture2cloud/pixbuf-loaders.cache.in"
+# GdkPixbuf/GTK may use MIME metadata when selecting a decoder.
+[[ -r /usr/share/mime/mime.cache ]] || { echo 'Missing shared MIME database' >&2; exit 1; }
+mkdir -p "$APPDIR/usr/share/mime"
+cp -a /usr/share/mime/. "$APPDIR/usr/share/mime/"
+gcc -O2 -Wall -Wextra -o "$APPDIR/usr/bin/check-gtk-icons" \
+    tools/check-gtk-icons.c $(pkg-config --cflags --libs gtk+-3.0)
 chmod -R a+rX "$APPDIR"
 
 LINUXDEPLOY="${LINUXDEPLOY:-$ROOT/tools/linuxdeploy-x86_64.AppImage}"
@@ -102,6 +138,8 @@ export DEPLOY_GTK_VERSION=3
     cd "$DIST"
     "$LINUXDEPLOY" --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/capture2cloud" \
+        --executable "$APPDIR/usr/bin/check-gtk-icons" \
+        "${loader_args[@]}" \
         --desktop-file "$APPDIR/usr/share/applications/capture2cloud.desktop" \
         --icon-file "$APPDIR/usr/share/icons/hicolor/64x64/apps/capture2cloud.png" \
         --plugin gtk --output appimage
@@ -121,6 +159,10 @@ EXTRACT="$DIST/squashfs-root"
 rm -rf "$EXTRACT"
 (cd "$DIST" && "$OUT" --appimage-extract >/dev/null)
 [[ -x "$EXTRACT/AppRun" ]] || { echo 'Missing AppRun' >&2; exit 1; }
+[[ -x "$EXTRACT/usr/bin/check-gtk-icons" ]] || exit 1
+for loader in "${loaders[@]}"; do
+    [[ -r "$EXTRACT/usr/lib/${loader##*/}" ]] || { echo "Missing bundled loader: $loader" >&2; exit 1; }
+done
 [[ -r "$EXTRACT/usr/bin/data/themes/07-steam-legacy.json" ]] || exit 1
 [[ -r "$EXTRACT/usr/bin/data/languages/01-fr.json" ]] || exit 1
 [[ -r "$EXTRACT/usr/share/icons/hicolor/64x64/apps/capture2cloud.png" ]] || exit 1

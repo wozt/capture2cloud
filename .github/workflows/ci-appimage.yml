@@ -30,7 +30,7 @@ jobs:
             gstreamer1.0-libav gstreamer1.0-nice \
             libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev \
             libglib2.0-dev libjson-glib-dev libbluetooth-dev libssl-dev \
-            adwaita-icon-theme librsvg2-common libgdk-pixbuf2.0-bin
+            adwaita-icon-theme hicolor-icon-theme librsvg2-common libgdk-pixbuf2.0-bin libgdk-pixbuf-2.0-dev shared-mime-info
       - name: Verify required runtime plugins and localization
         run: |
           gst-inspect-1.0 x264enc >/dev/null
@@ -56,11 +56,9 @@ jobs:
       - name: Confirm packaged GTK symbolic icons render
         shell: bash
         run: |
-          gcc -O2 -Wall -Wextra -o dist/check-gtk-icons \
-            tools/check-gtk-icons.c $(pkg-config --cflags --libs gtk+-3.0)
-          xvfb-run -a env XDG_DATA_DIRS="$PWD/dist/squashfs-root/usr/share" \
-            GTK_DATA_PREFIX="$PWD/dist/squashfs-root/usr" \
-            dist/check-gtk-icons
+          env -u APPDIR -u LD_LIBRARY_PATH -u GDK_PIXBUF_MODULE_FILE -u GDK_PIXBUF_MODULEDIR \
+            NO_AT_BRIDGE=1 G_DEBUG=fatal-warnings \
+            xvfb-run -a "$PWD/dist/squashfs-root/AppRun" --self-test-icons
       - name: Upload Linux ZIP, AppImage and checksum
         uses: actions/upload-artifact@v7
         with:
