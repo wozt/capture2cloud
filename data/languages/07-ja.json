@@ -207,6 +207,17 @@
     "backend recovery": "バックエンド復旧",
     "Server process": "サーバープロセス",
     "server": "サーバー",
-    "restart server": "サーバーを再起動"
+    "restart server": "サーバーを再起動",
+    "Switch and Android clients negotiate their own profile and share the native stream. These settings are unrelated to the browser encoder.": "Switch と Android のクライアントは個別にプロファイルを交渉し、同じネイティブ配信を利用します。ブラウザ用エンコーダーには影響しません。",
+    "WUP Stream carries HDMI video/audio and GamePad controls. Touch is available only with a Joy-Con 2 PCBLE profile. Switch touch mode live (Off / Relative / Absolute) without reconnecting. GamePad sticks always remain controller axes, not mouse motion. Absolute mode estimates position from relative Joy-Con 2 movements.": "WUP Stream は HDMI 映像・音声と GamePad 操作を転送します。タッチ操作には Joy-Con 2 の PCBLE プロファイルが必要です。オフ・相対・絶対は再接続せずに切り替えられます。スティックはマウスではなくコントローラーの軸です。絶対モードは相対移動から位置を推定します。",
+    "The web/login port is the Browser port. Configure that port, this TCP port and the same host address in the 3DS client.": "Web/ログイン用ポートはブラウザ用ポートです。このポート、TCP ポート、同じホストアドレスを 3DS クライアントにも設定してください。",
+    "Changing backend is persistent and restarts the server cleanly. Grey entries are part of the planned architecture but have no implementation in this build yet.": "バックエンドの変更は保存され、サーバーが安全に再起動します。灰色の項目は計画段階であり、このビルドでは未実装です。",
+    "For first pairing, press Pair / Sync and open Controllers → Change Grip/Order on the Switch. Reconnect uses the same Bluetooth adapter that performed the original pairing.": "初回ペアリングではペアリング/同期を押し、Switch でコントローラー → 持ちかた/順番を変えるを開きます。再接続には最初に使用した Bluetooth アダプターを使います。",
+    "Applied after browser, native and local-controller inputs are merged, immediately before the selected backend. Changes take effect live; no restart is required.": "ブラウザ・ネイティブ・ローカルの入力を統合した後、選択したバックエンドに送る直前に適用します。変更は再起動なしで即時反映されます。",
+    "These controls affect only the local SDL controller. For calibration shared by every source, use Output shaping on the Controller output page.": "これらはローカル SDL コントローラーだけに作用します。すべての入力に共通の補正は、コントローラー出力の出力補正を使ってください。",
+    "The bundled wake_console.sh keeps the existing Home Assistant power-cycle method. Relative paths are resolved from the Capture2Cloud directory.": "同梱の wake_console.sh は Home Assistant の電源再投入方法を維持します。相対パスは Capture2Cloud フォルダーを基準に解決されます。",
+    "Capture listens for the wake advertisement of an already-paired Switch 2 controller. The captured beacon will be stored locally and can then be replayed without the physical controller.": "すでにペアリング済みの Switch 2 コントローラーの起動通知を受信します。保存したビーコンは実機なしでも後で再送できます。",
+    "Requests backend-owned paired-Switch recovery. The same operation is used by startup, Maintenance and remote C2C reset requests and does not require GTK.": "バックエンドにペアリング済み Switch の再接続を依頼します。起動時、メンテナンス、遠隔 C2C リセットでも同じ処理を使用し、GTK は必要ありません。",
+    "Drops and reopens the Titan USB connection so it handshakes with the console again. This is the software equivalent of the unplug/replug recovery used by this backend.": "Titan の USB 接続を閉じて開き直し、本体とのハンドシェイクをやり直します。ソフトウェアによる抜き差しと同等です。"
   }
 }

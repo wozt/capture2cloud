@@ -342,6 +342,20 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 5);
     t_ok("Theme and language selectors exist",
          g_c.wozt_theme_combo && g_c.wozt_language_combo);
+    t_ok("Controller output has two genuine internal columns",
+         g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output));
+    t_ok("Local input has two genuine internal columns",
+         g_c.wozt_inner_input && GTK_IS_BOX(g_c.wozt_inner_input));
+    t_ok("Controller section tooltips are available",
+         g_c.wozt_sections[2] &&
+         gtk_widget_get_tooltip_text(gtk_frame_get_label_widget(
+             GTK_FRAME(g_c.wozt_sections[2]))) != NULL);
+    gint default_width = 0, default_height = 0;
+    gtk_window_get_default_size(GTK_WINDOW(sh->settings_window),
+                                &default_width, &default_height);
+    t_ok("Default window is 1144x840 (+10% width, +20% height)",
+         default_width == 1144 && default_height == 840);
+
     t_eq_int("1040px window uses multiple dashboard columns",
              wozt_dashboard_layout_for_width(1040), 1);
     t_eq_int("1650px window uses side-by-side controller sections",

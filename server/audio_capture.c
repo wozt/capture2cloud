@@ -222,7 +222,11 @@ static int playback_thread_main(void *arg) {
         chunks++;
         Uint32 now = SDL_GetTicks();
         if (now - stats_since >= 10000) {
-            if (app_verbose()) {
+            /* The 10-second ring occupancy report is diagnostic telemetry,
+             * not a warning. VERBOSE may be enabled for unrelated subsystems;
+             * require explicit opt-in to avoid terminal spam. Actual PulseAudio
+             * failures and reconnects still log unconditionally. */
+            if (config_get_int("AUDIO_PLAYBACK_STATS", 0, 0, 1)) {
                 fprintf(stderr, "audio_capture: playback ring %d/%d, %lu clock corrections in %lu chunks\n",
                         fill, PLAYBACK_RING_CHUNKS, corrections, chunks);
             }

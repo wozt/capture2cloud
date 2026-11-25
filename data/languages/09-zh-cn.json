@@ -207,6 +207,17 @@
     "backend recovery": "后端恢复",
     "Server process": "服务器进程",
     "server": "服务器",
-    "restart server": "重启服务器"
+    "restart server": "重启服务器",
+    "Switch and Android clients negotiate their own profile and share the native stream. These settings are unrelated to the browser encoder.": "Switch 和 Android 客户端各自协商配置并共享原生视频流。这些设置与浏览器编码器无关。",
+    "WUP Stream carries HDMI video/audio and GamePad controls. Touch is available only with a Joy-Con 2 PCBLE profile. Switch touch mode live (Off / Relative / Absolute) without reconnecting. GamePad sticks always remain controller axes, not mouse motion. Absolute mode estimates position from relative Joy-Con 2 movements.": "WUP Stream 传输 HDMI 音视频和 GamePad 控制。触控需要 Joy-Con 2 PCBLE 配置，可在不重新连接的情况下切换关闭、相对和绝对模式。摇杆仍是手柄轴而不是鼠标移动。绝对模式根据相对移动估计位置。",
+    "The web/login port is the Browser port. Configure that port, this TCP port and the same host address in the 3DS client.": "网页/登录端口就是浏览器端口。请在 3DS 客户端中配置该端口、TCP 端口和相同的主机地址。",
+    "Changing backend is persistent and restarts the server cleanly. Grey entries are part of the planned architecture but have no implementation in this build yet.": "切换后端会保存设置并正常重启服务器。灰色选项已规划，但此版本尚未实现。",
+    "For first pairing, press Pair / Sync and open Controllers → Change Grip/Order on the Switch. Reconnect uses the same Bluetooth adapter that performed the original pairing.": "首次配对请按配对/同步，并在 Switch 上打开控制器 → 更改握持方式/顺序。重连使用初次配对时的 Bluetooth 适配器。",
+    "Applied after browser, native and local-controller inputs are merged, immediately before the selected backend. Changes take effect live; no restart is required.": "在合并浏览器、原生客户端和本地手柄输入后，发送到所选后端之前应用。更改立即生效，无须重启。",
+    "These controls affect only the local SDL controller. For calibration shared by every source, use Output shaping on the Controller output page.": "这些设置仅影响本地 SDL 手柄。若要为所有输入源统一校准，请使用手柄输出中的输出调整。",
+    "The bundled wake_console.sh keeps the existing Home Assistant power-cycle method. Relative paths are resolved from the Capture2Cloud directory.": "随附的 wake_console.sh 保留 Home Assistant 的断电重启方式。相对路径以 Capture2Cloud 文件夹为基准解析。",
+    "Capture listens for the wake advertisement of an already-paired Switch 2 controller. The captured beacon will be stored locally and can then be replayed without the physical controller.": "程序监听已配对 Switch 2 手柄的唤醒广播。信标保存在本地后，可在没有实体手柄的情况下重放。",
+    "Requests backend-owned paired-Switch recovery. The same operation is used by startup, Maintenance and remote C2C reset requests and does not require GTK.": "请求后端重新连接已配对的 Switch。启动、维护和远程 C2C 重置均使用同一操作，不需要 GTK。",
+    "Drops and reopens the Titan USB connection so it handshakes with the console again. This is the software equivalent of the unplug/replug recovery used by this backend.": "关闭并重新打开 Titan USB 连接，与主机重新握手，相当于通过软件拔插设备。"
   }
 }

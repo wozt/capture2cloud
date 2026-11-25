@@ -152,6 +152,7 @@ typedef struct {
     GtkWidget *wozt_theme_combo, *wozt_language_combo;
     GtkWidget *wozt_clients_notebook;
     int wozt_section_count, wozt_layout_mode;
+    GtkWidget *wozt_inner_output, *wozt_inner_input;
 
     /* The replug dialog. Changing what the adapter emulates is not done
      * when the write returns: the adapter has to be pulled out of the
@@ -241,6 +242,13 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
     (void)widget;
     (void)userdata;
     wozt_dashboard_reflow(wozt_dashboard_layout_for_width(event->width));
+    /* Keep the inner columns readable on narrow/tiled windows. */
+    GtkOrientation direction = event->width >= 1050
+        ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
+    if (g_c.wozt_inner_output)
+        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), direction);
+    if (g_c.wozt_inner_input)
+        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_input), direction);
     return FALSE;
 }
 
@@ -2728,7 +2736,66 @@ static void on_pair_clicked(GtkWidget *w, gpointer user_data);
 /* Keep controls at usable widths. gtk_widget_set_size_request() alone
  * only sets a minimum: the previous hexpand=TRUE stretched sliders,
  * combo boxes and color selectors across whole dashboard columns. */
+/* A real two-column layout INSIDE the controller sections. Keep the
+ * original GTK widget objects, callbacks, and setting pointers unchanged.
+ * The wrapper's orientation is changed by configure-event at narrow widths. */
+static GtkWidget *wozt_split_inner_section(GtkWidget *left, int output)
+{
+    GtkWidget *parent = gtk_widget_get_parent(left);
+    if (!GTK_IS_BOX(parent)) return left;
+
+    GtkWidget *columns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget *right = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(right), 3);
+    gtk_grid_set_column_spacing(GTK_GRID(right), 6);
+    gtk_widget_set_hexpand(right, TRUE);
+
+    g_object_ref(left);
+    gtk_container_remove(GTK_CONTAINER(parent), left);
+    gtk_box_pack_start(GTK_BOX(parent), columns, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(columns), left, TRUE, TRUE, 0);
+    g_object_unref(left);
+    gtk_box_pack_start(GTK_BOX(columns), right, TRUE, TRUE, 0);
+    if (output) g_c.wozt_inner_output = columns;
+    else g_c.wozt_inner_input = columns;
+    return right;
+}
+
+/* An empty-label row carrying only instructional prose is not a control.
+ * Keep its full English source as a tooltip on the preceding field.
+ * The JSON translator already localizes tooltips during initial display and
+ * after live language changes, using the original text as a stable key. */
+static GtkWidget *wozt_attach_row_help(GtkWidget *grid, int row,
+                                       const char *explanation)
+{
+    GtkWidget *label = NULL;
+    GtkWidget *value = NULL;
+    for (int y = row - 1; y >= 0; --y) {
+        GtkWidget *candidate = gtk_grid_get_child_at(GTK_GRID(grid), 0, y);
+        if (GTK_IS_LABEL(candidate)) {
+            label = candidate;
+            value = gtk_grid_get_child_at(GTK_GRID(grid), 1, y);
+            break;
+        }
+        if (!value) value = gtk_grid_get_child_at(GTK_GRID(grid), 1, y);
+    }
+    if (label) gtk_widget_set_tooltip_text(label, explanation);
+    if (value) {
+        gchar *existing = gtk_widget_get_tooltip_text(value);
+        if (!existing) gtk_widget_set_tooltip_text(value, explanation);
+        g_free(existing);
+    }
+    return value ? value : label;
+}
+
 static GtkWidget *add_row(GtkWidget *grid, int row, const char *label, GtkWidget *control) {
+    if (GTK_IS_LABEL(control) && !gtk_label_get_selectable(GTK_LABEL(control)) &&
+        (!label || !*label || g_strcmp0(label, "profile") == 0)) {
+        const char *explanation = gtk_label_get_text(GTK_LABEL(control));
+        GtkWidget *context = wozt_attach_row_help(grid, row, explanation);
+        gtk_widget_destroy(control);
+        return context;
+    }
     GtkWidget *l = gtk_label_new(label);
     gtk_widget_set_halign(l, GTK_ALIGN_START);
     gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
@@ -2906,6 +2973,14 @@ static GtkWidget *make_stack_page(
     gtk_style_context_add_class(gtk_widget_get_style_context(text), "wozt-section-title");
     gtk_box_pack_start(GTK_BOX(heading), text, FALSE, FALSE, 0);
     gtk_frame_set_label_widget(GTK_FRAME(frame), heading);
+    if (subtitle && *subtitle) {
+        gtk_widget_set_tooltip_text(heading, subtitle);
+        gtk_widget_set_tooltip_text(text, subtitle);
+        GtkWidget *info = gtk_label_new("ⓘ");
+        gtk_style_context_add_class(gtk_widget_get_style_context(info), "wozt-muted");
+        gtk_widget_set_tooltip_text(info, subtitle);
+        gtk_box_pack_start(GTK_BOX(heading), info, FALSE, FALSE, 2);
+    }
 
     GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
     gtk_widget_set_margin_start(outer, 5);
@@ -3135,7 +3210,7 @@ static void build_settings_window(GtkShell *shell) {
      * 1000x700 still fits comfortably on a 1280x720 display while
      * leaving enough room for meaningful labels and status lines.
      */
-    gtk_window_set_default_size(GTK_WINDOW(win), 1040, 700);
+    gtk_window_set_default_size(GTK_WINDOW(win), 1144, 840);
     GdkGeometry geometry = {0};
     geometry.min_width = 820;
     geometry.min_height = 540;
@@ -4129,6 +4204,8 @@ static void build_settings_window(GtkShell *shell) {
 
 
     /* --- final merged output calibration ----------------------- */
+    grid = wozt_split_inner_section(grid, 1);
+    row = 0;
 
     add_section_header(
         grid,
@@ -4308,8 +4385,7 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* LT/RT and left/right calibration appear in two inner columns. */
-    wozt_compact_calibration(grid);
+    /* Calibration is already in its own responsive inner column. */
 
     /* ===============================================================
      * LOCAL CONTROLLER INPUT
@@ -4380,6 +4456,10 @@ static void build_settings_window(GtkShell *shell) {
             "",
             note);
     }
+
+    grid = wozt_split_inner_section(grid, 0);
+    row = 0;
+    add_section_header(grid, row++, "Input calibration");
 
     g_c.invert_ry = add_row(
         grid,
@@ -4463,7 +4543,7 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    wozt_compact_calibration(grid);
+    /* Calibration is already in its own responsive inner column. */
 
     /* ===============================================================
      * CAPTURE
