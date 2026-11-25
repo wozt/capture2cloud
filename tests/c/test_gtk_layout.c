@@ -412,12 +412,17 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                 &default_width, &default_height);
     t_ok("Default window is 1144x840 (+10% width, +20% height)",
          default_width == 1144 && default_height == 840);
-    GdkGeometry window_hints = {0};
-    GdkWindowHints hint_mask = 0;
-    gtk_window_get_geometry_hints(GTK_WINDOW(sh->settings_window),
-                                  &window_hints, &hint_mask);
-    t_ok("The window can shrink back to 600px wide",
-         (hint_mask & GDK_HINT_MIN_SIZE) && window_hints.min_width <= 600);
+    /* gtk_window_get_geometry_hints() does not exist in GTK3. The setter
+     * records the configured minimum as window data for this regression
+     * probe; also verify no explicit width request prevents shrinking. */
+    gint requested_width = -1;
+    gtk_widget_get_size_request(sh->settings_window, &requested_width, NULL);
+    const gint configured_minimum = GPOINTER_TO_INT(g_object_get_data(
+        G_OBJECT(sh->settings_window), "wozt-minimum-width"));
+    t_ok("The window config permits shrinking to 600px",
+         gtk_window_get_resizable(GTK_WINDOW(sh->settings_window)) &&
+         configured_minimum == 600 &&
+         (requested_width < 0 || requested_width <= configured_minimum));
     GtkWidget *dashboard_scroller = gtk_widget_get_parent(g_c.wozt_dashboard);
     if (GTK_IS_VIEWPORT(dashboard_scroller))
         dashboard_scroller = gtk_widget_get_parent(dashboard_scroller);

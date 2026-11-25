@@ -3360,6 +3360,10 @@ static void build_settings_window(GtkShell *shell) {
     geometry.min_width = 600;
     geometry.min_height = 420;
     gtk_window_set_geometry_hints(GTK_WINDOW(win), win, &geometry, GDK_HINT_MIN_SIZE);
+    /* GTK3 exposes a setter, not a public geometry-hints getter. Keep the
+     * exact width passed above available to the in-thread layout probe. */
+    g_object_set_data(G_OBJECT(win), "wozt-minimum-width",
+                      GINT_TO_POINTER(geometry.min_width));
     g_signal_connect(
         win,
         "delete-event",
