@@ -698,6 +698,23 @@ static void reset_update_controls(GtkShell *shell)
             ? RESET_METHOD_BLUETOOTH
             : RESET_METHOD_SCRIPT;
 
+    /* Keep Wake method visible in both modes. In Bluetooth mode it shares
+     * the first row with the adapter; in script mode it returns to root. */
+    if (g_c.reset_bt_panel) {
+        GtkWidget *bar = g_object_get_data(G_OBJECT(g_c.reset_bt_panel), "wozt-method-bar");
+        GtkWidget *root = g_object_get_data(G_OBJECT(g_c.reset_bt_panel), "wozt-method-root");
+        GtkWidget *left = g_object_get_data(G_OBJECT(g_c.reset_bt_panel), "wozt-method-left");
+        GtkWidget *dest = method == RESET_METHOD_BLUETOOTH ? left : root;
+        if (bar && GTK_IS_GRID(dest) && gtk_widget_get_parent(bar) != dest) {
+            g_object_ref(bar);
+            GtkWidget *parent = gtk_widget_get_parent(bar);
+            if (parent) gtk_container_remove(GTK_CONTAINER(parent), bar);
+            gtk_grid_attach(GTK_GRID(dest), bar, 0, 0, 2, 1);
+            gtk_widget_show_all(bar);
+            g_object_unref(bar);
+        }
+    }
+
     if (g_c.reset_script_panel) {
         if (method == RESET_METHOD_SCRIPT) {
             gtk_widget_set_no_show_all(
@@ -4202,11 +4219,11 @@ static void wozt_compact_reset_method(GtkWidget *root)
         gtk_widget_set_halign(g, GTK_ALIGN_START);
         gtk_widget_set_valign(g, GTK_ALIGN_START);
     }
-    /* LEFT: Bluetooth wake beacon heading, then target console.
-     * RIGHT: starts with Bluetooth adapter, then tools, beacon, status. */
-    gtk_grid_attach(GTK_GRID(left), bt_heading, 0, 0, 2, 1);
-    gtk_grid_attach(GTK_GRID(left), target_l, 0, 1, 1, 1);
-    gtk_grid_attach(GTK_GRID(left), target_c, 1, 1, 1, 1);
+    /* LEFT: Wake method (row 0 in Bluetooth mode), heading, target.
+     * RIGHT: starts at the very same height as Wake method. */
+    gtk_grid_attach(GTK_GRID(left), bt_heading, 0, 1, 2, 1);
+    gtk_grid_attach(GTK_GRID(left), target_l, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(left), target_c, 1, 2, 1, 1);
     wozt_half_width_reset_selector(target_c);
     gtk_grid_attach(GTK_GRID(right), adapter_l, 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(right), adapter_c, 1, 0, 1, 1);
@@ -4236,6 +4253,9 @@ static void wozt_compact_reset_method(GtkWidget *root)
     gtk_grid_attach(GTK_GRID(panel), flow, 0, 0, 2, 1);
     gtk_widget_show_all(flow);
     g_object_set_data(G_OBJECT(panel), "wozt-reset-two-columns", GINT_TO_POINTER(1));
+    g_object_set_data(G_OBJECT(panel), "wozt-method-bar", method_bar);
+    g_object_set_data(G_OBJECT(panel), "wozt-method-root", root);
+    g_object_set_data(G_OBJECT(panel), "wozt-method-left", left);
 }
 
 static void wozt_compact_maintenance(GtkWidget *grid)
@@ -4671,6 +4691,12 @@ static void build_settings_window(GtkShell *shell) {
         row++,
         "bitrate (Mbps)",
         make_scale(shell, 2, 20, 1, ""));
+    gtk_widget_set_margin_top(g_c.wiiu_pad_bitrate, 0);
+    gtk_widget_set_margin_bottom(g_c.wiiu_pad_bitrate, 0);
+    gtk_widget_set_valign(g_c.wiiu_pad_bitrate, GTK_ALIGN_FILL);
+    gtk_widget_set_size_request(g_c.wiiu_pad_bitrate, 116, 15);
+    gtk_style_context_add_class(gtk_widget_get_style_context(g_c.wiiu_pad_bitrate),
+                                "wozt-calibration-scale");
 
     g_c.wiiu_status = gtk_label_new("");
     gtk_widget_set_halign(g_c.wiiu_status, GTK_ALIGN_START);
