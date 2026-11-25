@@ -2453,7 +2453,7 @@ static void on_combo(GtkWidget *w, gpointer user_data) {
         static const int HEIGHTS[] = {1080, 720, 480};
         if (i >= 0 && i < 3) shell->settings.browser_height = HEIGHTS[i];
     } else if (w == g_c.wup_touch_mode) {
-        shell->settings.wup_touch_mode = (i == 1);
+        if (i >= 0 && i <= 2) shell->settings.wup_touch_mode = i;
     } else if (w == g_c.wiiu_console_resolution) {
         static const int HEIGHTS[] = {1080, 720, 480};
         if (i >= 0 && i < 3) shell->settings.wiiu_console_height = HEIGHTS[i];
@@ -2689,7 +2689,9 @@ static void load_controls(GtkShell *shell) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), s.wiiu_pad_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wup_stream_enabled), s.wup_stream_enabled);
-    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.wup_touch_mode), s.wup_touch_mode ? 1 : 0);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.wup_touch_mode),
+                             s.wup_touch_mode >= 0 && s.wup_touch_mode <= 2
+                                 ? s.wup_touch_mode : 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.wiiu_pad_port), s.wiiu_pad_port);
     gtk_range_set_value(GTK_RANGE(g_c.wiiu_pad_bitrate), s.wiiu_pad_bitrate_mbps);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_console_enabled),
@@ -3165,6 +3167,8 @@ static void build_settings_window(GtkShell *shell) {
         "Exclusive with the direct radio bridge. Build: scripts/build_wupstream.sh");
     g_c.wup_touch_mode = gtk_combo_box_text_new();
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wup_touch_mode),
+        "Disabled (no WUP mouse input)");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wup_touch_mode),
         "Relative touchpad (tap / drag / long press)");
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wup_touch_mode),
         "Absolute (virtual Joy-Con 2 cursor position)");
@@ -3173,6 +3177,8 @@ static void build_settings_window(GtkShell *shell) {
     GtkWidget *wup_note = gtk_label_new(
         "WUP Stream carries HDMI video/audio and GamePad controls. "
         "Touch is available only with a Joy-Con 2 PCBLE profile. "
+        "Switch touch mode live (Off / Relative / Absolute) without reconnecting. "
+        "GamePad sticks always remain controller axes, not mouse motion. "
         "Absolute mode estimates position from relative Joy-Con 2 movements.");
     gtk_label_set_line_wrap(GTK_LABEL(wup_note), TRUE);
     gtk_widget_set_halign(wup_note, GTK_ALIGN_START);

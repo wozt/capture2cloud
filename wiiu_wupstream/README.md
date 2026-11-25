@@ -38,6 +38,8 @@ buttons and sticks; controls go to the same Titan/PCBLE backend as every other
 client. When PCBLE selects a Joy-Con 2 profile, touchscreen gestures also go
 through `output_pcble_mouse()`:
 
+* **Disabled**: no touchscreen-to-PCBLE mouse reports. Sticks and
+  buttons still operate normally.
 * **Relative**: touchpad movement, tap for left click, move/drag with left
   button, long press for right button.
 * **Absolute (virtual)**: finger X/Y (0..853/0..479) is converted into the
@@ -45,6 +47,13 @@ through `output_pcble_mouse()`:
   estimate**. The Joy-Con 2 HID mouse has no absolute-position API, so the
   Switch's real cursor may drift away from this virtual position. A true
   absolute cursor requires feedback or a calibrated target-side API.
+
+All three modes can be changed without restarting the GamePad stream. A
+mode change releases any held optical-mouse buttons immediately, and
+ignores a finger already held down until it is lifted. The left stick
+always drives the character only; it never feeds optical-mouse movement.
+Capture2Cloud also suspends its SDL-window mouse capture while WUP Stream
+is active to avoid a second competing mouse sender.
 
 Touch is ignored for PCBLE profiles without a Joy-Con 2. Inputs release on
 pad disconnect. `/dev/uinput` and host-X11 mouse injection are not used.

@@ -40,6 +40,7 @@ struct WupStream {
     int connected_before;
     unsigned last_input_seq;
     WupTouch touch;
+    int last_touch_contact; /* physical touchscreen only, never stick axes */
 };
 
 static int axis(int v) {
@@ -140,11 +141,20 @@ void wup_stream_poll(WupStream *w, int touch_mode) {
             gamepad_bridge_forget(GAMEPAD_SOURCE_WUPSTREAM);
             if (output_pcble_mouse_enabled()) output_pcble_mouse(0, 0, 0, 0, 0);
             wup_touch_reset(&w->touch);
+            w->last_touch_contact = 0;
             w->connected_before = 0;
         }
         return;
     }
     w->connected_before = 1;
+    /* Apply touch mode immediately, even if the next input report
+     * has not arrived. Stop any held optical-mouse buttons.
+     * Controller stick mapping is completely independent. */
+    const int touch_mode_changed = !w->touch.mode_initialized ||
+                                   w->touch.mode != touch_mode;
+    (void)wup_touch_set_mode(&w->touch, touch_mode, w->last_touch_contact);
+    if (touch_mode_changed && output_pcble_mouse_enabled())
+        output_pcble_mouse(0, 0, 0, 0, 0);
     unsigned seq1 = atomic_load_explicit(&w->shared->input_seq, memory_order_acquire);
     if (seq1 == w->last_input_seq || (seq1 & 1u)) return;
     C2cWupInput report = w->shared->input;
@@ -152,15 +162,17 @@ void wup_stream_poll(WupStream *w, int touch_mode) {
     unsigned seq2 = atomic_load_explicit(&w->shared->input_seq, memory_order_acquire);
     if (seq1 != seq2 || (seq2 & 1u)) return;
     w->last_input_seq = seq2;
+    w->last_touch_contact = report.touched != 0;
     int8_t buttons[CONTROLLER_STATE_COUNT];
     input_state(&report, buttons);
     gamepad_bridge_update(GAMEPAD_SOURCE_WUPSTREAM, buttons);
-    if (output_pcble_mouse_enabled()) {
+    if (touch_mode != WUP_TOUCH_DISABLED && output_pcble_mouse_enabled()) {
         WupTouchEvent ev;
         if (wup_touch_step(&w->touch, report.touched, report.tx, report.ty,
                            touch_mode, SDL_GetTicks(), &ev))
             output_pcble_mouse(ev.dx, ev.dy, ev.wheel, ev.buttons, ev.active);
-    } else if (w->touch.touching || w->touch.pulse_button) {
+    } else if (!output_pcble_mouse_enabled() &&
+               (w->touch.touching || w->touch.pulse_button)) {
         wup_touch_reset(&w->touch);
     }
 }

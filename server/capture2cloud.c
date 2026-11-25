@@ -580,8 +580,12 @@ static void on_settings(void *userdata, const AppSettings *want) {
     }
 
     if (want->wup_touch_mode != have->wup_touch_mode) {
-        have->wup_touch_mode = want->wup_touch_mode ? 1 : 0;
-        config_set_str("WUP_TOUCH_MODE", have->wup_touch_mode ? "absolute" : "relative");
+        const int mode = want->wup_touch_mode;
+        have->wup_touch_mode = mode >= 0 && mode <= 2 ? mode : 0;
+        static const char *names[] = {"disabled", "relative", "absolute"};
+        config_set_str("WUP_TOUCH_MODE", names[have->wup_touch_mode]);
+        /* wup_stream_poll sees the new mode on the next tick, releases
+         * any held touch and never interrupts video or audio. */
     }
     if (want->wup_stream_enabled != have->wup_stream_enabled) {
         if (want->wup_stream_enabled) {
@@ -1144,6 +1148,10 @@ static void mouse_capture_set(int on)
 /* Returns 1 when the event belongs to the mouse capture. */
 static int mouse_capture_event(const SDL_Event *event)
 {
+    /* While WUP Stream is selected, only its actual touch events
+     * may feed Joy-Con 2 optical mouse reports. The SDL window
+     * must not also forward cursor motion from gamepad/OS mapping. */
+    if (g_settings.wup_stream_enabled) return 0;
     if (!g_mouse_captured) {
         if (event->type == SDL_MOUSEBUTTONDOWN &&
             event->button.button == SDL_BUTTON_LEFT &&
@@ -1403,7 +1411,8 @@ int main(int argc, char **argv) {
     g_settings.wup_stream_enabled = (int)config_get_int("WUP_STREAM_AUTOSTART", 0, 0, 1);
     { char mode_buf[24];
       const char *mode = config_get_str("WUP_TOUCH_MODE", mode_buf, sizeof(mode_buf), "relative");
-      g_settings.wup_touch_mode = strcmp(mode, "absolute") == 0; }
+      g_settings.wup_touch_mode = !strcmp(mode, "disabled") || !strcmp(mode, "off") ? 0 :
+                                  !strcmp(mode, "absolute") ? 2 : 1; }
     if (g_settings.wup_stream_enabled && g_settings.wiiu_pad_enabled) {
         fprintf(stderr, "wup_stream: disabling direct radio mode; WUP selected\n");
         g_settings.wiiu_pad_enabled = 0;
@@ -1723,7 +1732,8 @@ int main(int argc, char **argv) {
 
         if (g_window) {
             SDL_Event event;
-            if (g_mouse_captured && !output_pcble_mouse_enabled()) {
+            if (g_mouse_captured &&
+                (g_settings.wup_stream_enabled || !output_pcble_mouse_enabled())) {
                 mouse_capture_set(0);
             }
             while (SDL_PollEvent(&event)) {

@@ -2331,10 +2331,16 @@ void output_pcble_mouse(
     SDL_LockMutex(g_lock);
 
     if (g_mixed) {
-        g_mouse_dx = CLAMP(g_mouse_dx + dx, -32768, 32767);
-        g_mouse_dy = CLAMP(g_mouse_dy + dy, -32768, 32767);
-        g_mouse_wheel = CLAMP(g_mouse_wheel + wheel, -100, 100);
-        g_mouse_buttons = buttons & 7u;
+        if (!active) {
+            /* Do not let stale motion queued before release reach
+             * the next touch. Stick axes are never mouse deltas. */
+            g_mouse_dx = g_mouse_dy = g_mouse_wheel = 0;
+        } else {
+            g_mouse_dx = CLAMP(g_mouse_dx + dx, -32768, 32767);
+            g_mouse_dy = CLAMP(g_mouse_dy + dy, -32768, 32767);
+            g_mouse_wheel = CLAMP(g_mouse_wheel + wheel, -100, 100);
+        }
+        g_mouse_buttons = active ? (buttons & 7u) : 0u;
         g_mouse_active = active ? 1 : 0;
         g_dirty = 1;
     }

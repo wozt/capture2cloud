@@ -214,6 +214,13 @@ static void test_mouse(void)
     output_pcble_mouse(40000, 0, 0, 0, 1);
     t_eq_int("dx saturates", g_mouse_dx, 32767);
 
+    output_pcble_mouse(0, 0, 0, 0, 0);
+    t_eq_int("release clears pending dx", g_mouse_dx, 0);
+    t_eq_int("release clears pending dy", g_mouse_dy, 0);
+    t_eq_int("release clears pending wheel", g_mouse_wheel, 0);
+    t_eq_int("release clears buttons", (int)g_mouse_buttons, 0);
+    t_eq_int("release disables optical sensor", g_mouse_active, 0);
+    output_pcble_mouse(15, 2, 0, 0, 1);
     output_pcble_set_controller("joycon-pair");
     t_eq_int("profile change clears motion", g_mouse_dx, 0);
     t_eq_int("disabled for Joy-Con 1 pair", output_pcble_mouse_enabled(), 0);

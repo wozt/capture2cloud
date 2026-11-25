@@ -13,11 +13,40 @@ static int clamp(int x, int lo, int hi) {
     return x < lo ? lo : x > hi ? hi : x;
 }
 
-void wup_touch_reset(WupTouch *t) { memset(t, 0, sizeof(*t)); }
+void wup_touch_reset(WupTouch *t) {
+    if (t) memset(t, 0, sizeof(*t));
+}
+
+int wup_touch_set_mode(WupTouch *t, int mode, int physical_contact) {
+    if (!t) return 0;
+    if (mode < WUP_TOUCH_DISABLED || mode > WUP_TOUCH_ABSOLUTE)
+        mode = WUP_TOUCH_DISABLED;
+    if (t->mode_initialized && t->mode == mode) return 0;
+    const int was_initialized = t->mode_initialized;
+    const int release_mouse = was_initialized &&
+                              (t->touching || t->pulse_button);
+    /* Reset gesture, virtual pointer and pending click atomically with
+     * the mode switch. A held finger must be lifted before starting a
+     * fresh gesture in the new mode. No stream reconnect is required. */
+    wup_touch_reset(t);
+    t->mode_initialized = 1;
+    t->mode = mode;
+    t->wait_for_release = was_initialized && physical_contact;
+    return release_mouse;
+}
 
 int wup_touch_step(WupTouch *t, int touched, int x, int y,
                    int mode, uint32_t now, WupTouchEvent *out) {
+    if (!t || !out) return 0;
     memset(out, 0, sizeof(*out));
+    /* A caller that doesn't explicitly call set_mode can still switch
+     * modes, and gets a neutral report to release a held mouse button. */
+    if (wup_touch_set_mode(t, mode, touched)) return 1;
+    if (t->mode == WUP_TOUCH_DISABLED) return 0;
+    if (t->wait_for_release) {
+        if (!touched) t->wait_for_release = 0;
+        return 0;
+    }
     x = clamp(x, 0, WUP_TOUCH_MAX_X);
     y = clamp(y, 0, WUP_TOUCH_MAX_Y);
     if (!t->initialized) {
@@ -34,14 +63,14 @@ int wup_touch_step(WupTouch *t, int touched, int x, int y,
             t->gesture = 0;
             t->pulse_until = 0;
             t->pulse_button = 0;
-            if (mode == 1) {
+            if (t->mode == WUP_TOUCH_ABSOLUTE) {
                 out->dx = x - t->virtual_x;
                 out->dy = y - t->virtual_y;
                 t->virtual_x = x;
                 t->virtual_y = y;
             }
         } else {
-            if (mode == 1) {
+            if (t->mode == WUP_TOUCH_ABSOLUTE) {
                 out->dx = x - t->virtual_x;
                 out->dy = y - t->virtual_y;
                 t->virtual_x = x;
@@ -64,7 +93,7 @@ int wup_touch_step(WupTouch *t, int touched, int x, int y,
         out->active = 1;
         return 1;
     }
-    /* Do not overwrite the local PC mouse when the GamePad finger is idle. */
+    /* Do not overwrite other sources when no finger or click pulse exists. */
     if (!t->touching && !t->pulse_button) return 0;
     if (t->touching) {
         t->touching = 0;

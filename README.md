@@ -204,7 +204,9 @@ Set `WUP_STREAM_AUTOSTART=1` (or enable it in GTK).
 Optionally set `WUP_STREAM_PAD_IP`; empty means auto-discover.
 The touchscreen supports **relative touchpad** gestures (tap=left click,
 drag=left hold, long press=right click) and **virtual absolute**
-position, switchable in GTK / `WUP_TOUCH_MODE=relative|absolute`.
+position, switchable live in GTK /
+`WUP_TOUCH_MODE=disabled|relative|absolute` (GTK changes take effect
+without a stream restart). The GamePad sticks remain controller-only.
 Touch is routed through PCBLE only when a Joy-Con 2 profile is active.
 Because Joy-Con 2 HID has no absolute pointer protocol, the absolute
 mode uses a software cursor estimate and may drift. No GamePad
