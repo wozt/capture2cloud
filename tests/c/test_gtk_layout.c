@@ -350,9 +350,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("GTK title bar is borderless",
          sh->settings_window &&
          !gtk_window_get_decorated(GTK_WINDOW(sh->settings_window)));
-    t_ok("Clients retains its own notebook",
+    t_ok("Clients retains its own seven-page notebook",
          g_c.wozt_clients_notebook &&
-         gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 5);
+         gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 7);
     t_ok("Theme and language selectors exist",
          g_c.wozt_theme_combo && g_c.wozt_language_combo);
     /* The native Cairo stick preview reads the same palette as the CSS
@@ -1135,12 +1135,40 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Overview SVG icons precede statuses with only 3px spacing",
          compact_icons && gtk_grid_get_column_spacing(GTK_GRID(overview_grid)) == 3);
 
-    /* Grid row 10 is the Quick actions row (Server: 0-2,
-     * Connected clients: 3-8, Quick actions: 9-10). */
-    GtkWidget *overview_actions = GTK_IS_GRID(overview_grid)
-        ? gtk_grid_get_child_at(GTK_GRID(overview_grid), 0, 10) : NULL;
-    GList *action_buttons = GTK_IS_BOX(overview_actions)
-        ? gtk_container_get_children(GTK_CONTAINER(overview_actions)) : NULL;
+    /* WOZT_0857_OVERVIEW_DYNAMIC_ACTIONS: Client rows increased from 5 to 7.
+     * Resolve the actual Quick actions row by its two real button widgets,
+     * rather than assuming the row number stays 10 after client changes. */
+    GtkWidget *overview_actions = NULL;
+    GList *action_buttons = NULL;
+    gint actions_left = -1, actions_top = -1, actions_span = -1;
+    if (GTK_IS_GRID(overview_grid)) {
+        GList *overview_children = gtk_container_get_children(GTK_CONTAINER(overview_grid));
+        for (GList *it = overview_children; it; it = it->next) {
+            GtkWidget *candidate = GTK_WIDGET(it->data);
+            if (!GTK_IS_BOX(candidate)) continue;
+            GList *buttons = gtk_container_get_children(GTK_CONTAINER(candidate));
+            GtkWidget *first = buttons ? GTK_WIDGET(buttons->data) : NULL;
+            GtkWidget *second = buttons && buttons->next
+                ? GTK_WIDGET(buttons->next->data) : NULL;
+            const gboolean quick_actions = g_list_length(buttons) == 2 &&
+                GTK_IS_BUTTON(first) && GTK_IS_BUTTON(second) &&
+                gtk_style_context_has_class(gtk_widget_get_style_context(first),
+                                            "wozt-overview-action-fulltext") &&
+                gtk_style_context_has_class(gtk_widget_get_style_context(second),
+                                            "wozt-overview-action-fulltext");
+            if (quick_actions) {
+                overview_actions = candidate;
+                action_buttons = buttons;
+                gtk_container_child_get(GTK_CONTAINER(overview_grid), candidate,
+                                        "left-attach", &actions_left,
+                                        "top-attach", &actions_top,
+                                        "width", &actions_span, NULL);
+                break;
+            }
+            g_list_free(buttons);
+        }
+        g_list_free(overview_children);
+    }
     GtkWidget *capture_button = action_buttons ? GTK_WIDGET(action_buttons->data) : NULL;
     GtkWidget *wake_button = action_buttons && action_buttons->next
         ? GTK_WIDGET(action_buttons->next->data) : NULL;
@@ -1150,7 +1178,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          GTK_IS_BOX(overview_actions) && g_list_length(action_buttons) == 2 &&
          gtk_widget_get_halign(overview_actions) == GTK_ALIGN_START &&
          gtk_box_get_spacing(GTK_BOX(overview_actions)) == 4 &&
-         gtk_grid_get_child_at(GTK_GRID(overview_grid), 1, 10) == overview_actions &&
+         actions_left == 0 && actions_span == 2 && actions_top >= 0 &&
+         gtk_grid_get_child_at(GTK_GRID(overview_grid), 1, actions_top) == overview_actions &&
          GTK_IS_BUTTON(capture_button) && GTK_IS_BUTTON(wake_button));
     t_ok("Show capture window cannot be ellipsized",
          GTK_IS_LABEL(capture_text) &&
