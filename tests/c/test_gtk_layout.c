@@ -344,6 +344,30 @@ static gboolean wozt_dashboard_rows_have_natural_heights(void)
     return valid;
 }
 
+/* WOZT_0868: size request AND cell requisition must be reduced; otherwise
+ * GTK still demands the original 200px, and breaks the compact two-column
+ * layout. Do not silently alter the Bluetooth adapter selector. */
+static gboolean wozt_reset_selector_is_half_width(GtkWidget *widget)
+{
+    if (!GTK_IS_COMBO_BOX_TEXT(widget)) return FALSE;
+    gint requested_width = -1;
+    gtk_widget_get_size_request(widget, &requested_width, NULL);
+    GList *cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(widget));
+    gboolean text_cell_compact = FALSE;
+    for (GList *it = cells; it; it = it->next) {
+        if (!GTK_IS_CELL_RENDERER_TEXT(it->data)) continue;
+        gint cw = -1;
+        gtk_cell_renderer_get_fixed_size(GTK_CELL_RENDERER(it->data), &cw, NULL);
+        PangoEllipsizeMode ellipsize = PANGO_ELLIPSIZE_NONE;
+        g_object_get(it->data, "ellipsize", &ellipsize, NULL);
+        text_cell_compact = cw == 76 && ellipsize == PANGO_ELLIPSIZE_END;
+    }
+    g_list_free(cells);
+    return requested_width == 100 && text_cell_compact &&
+           !gtk_widget_get_hexpand(widget) &&
+           gtk_widget_get_halign(widget) == GTK_ALIGN_START;
+}
+
 static gboolean gtk_layout_probe_initial(gpointer user_data)
 {
     GtkLayoutProbe *probe = user_data;
@@ -1149,6 +1173,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          method_children->next->data == g_c.reset_method &&
          GTK_IS_GRID(gtk_widget_get_parent(method_bar)));
     g_list_free(method_children);
+    t_ok("Wake method combo is half the previous 200px without GTK cell overflow",
+         wozt_reset_selector_is_half_width(g_c.reset_method));
+    t_ok("Bluetooth target combo is half width without affecting adapter",
+         wozt_reset_selector_is_half_width(g_c.reset_bt_target));
     GtkWidget *reset_flow = GTK_IS_GRID(g_c.reset_bt_panel)
         ? gtk_grid_get_child_at(GTK_GRID(g_c.reset_bt_panel), 0, 0) : NULL;
     GList *flow_children = GTK_IS_FLOW_BOX(reset_flow)

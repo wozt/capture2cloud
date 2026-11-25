@@ -4090,6 +4090,43 @@ static void set_window_icon(GtkWidget *win) {
         gtk_window_set_icon_name(GTK_WINDOW(win), "camera-video");
 }
 
+/* WOZT_0868_HALF_RESET_SELECTORS:
+ * add_row() deliberately requests a 200px combo for the general dashboard.
+ * These TWO Reset-method combos need half that width. Restrict the cell's
+ * natural requisition as well: size_request alone is only a minimum in GTK3.
+ * The selected option stays fully readable through a live tooltip. */
+static void wozt_reset_selector_tooltip_changed(GtkComboBox *widget,
+                                                 gpointer unused)
+{
+    (void)unused;
+    gchar *selected = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(widget));
+    gtk_widget_set_tooltip_text(GTK_WIDGET(widget), selected ? selected : "");
+    g_free(selected);
+}
+
+static void wozt_half_width_reset_selector(GtkWidget *widget)
+{
+    if (!GTK_IS_COMBO_BOX_TEXT(widget)) return;
+    enum { NORMAL_RESET_SELECTOR_WIDTH = 200,
+           COMPACT_RESET_SELECTOR_WIDTH = NORMAL_RESET_SELECTOR_WIDTH / 2,
+           COMPACT_RESET_CELL_WIDTH = COMPACT_RESET_SELECTOR_WIDTH - 24 };
+    gtk_widget_set_size_request(widget, COMPACT_RESET_SELECTOR_WIDTH, -1);
+    gtk_widget_set_hexpand(widget, FALSE);
+    gtk_widget_set_halign(widget, GTK_ALIGN_START);
+    GList *cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(widget));
+    for (GList *it = cells; it; it = it->next) {
+        if (!GTK_IS_CELL_RENDERER_TEXT(it->data)) continue;
+        gtk_cell_renderer_set_fixed_size(GTK_CELL_RENDERER(it->data),
+                                         COMPACT_RESET_CELL_WIDTH, -1);
+        g_object_set(it->data, "ellipsize", PANGO_ELLIPSIZE_END,
+                     "single-paragraph-mode", TRUE, NULL);
+    }
+    g_list_free(cells);
+    g_signal_connect(widget, "changed",
+                     G_CALLBACK(wozt_reset_selector_tooltip_changed), NULL);
+    wozt_reset_selector_tooltip_changed(GTK_COMBO_BOX(widget), NULL);
+}
+
 /* Move a *single instance* of every live reset control, never recreating
  * its signals/settings. Validate the old grid completely before detaching. */
 static void wozt_compact_reset_method(GtkWidget *root)
@@ -4144,6 +4181,7 @@ static void wozt_compact_reset_method(GtkWidget *root)
     gtk_widget_set_halign(method_bar, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(method_bar), wake_heading, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(method_bar), combo, FALSE, FALSE, 0);
+    wozt_half_width_reset_selector(combo);
     g_object_unref(wake_heading);
     g_object_unref(combo);
     gtk_grid_attach(GTK_GRID(root), method_bar, 0, 0, 2, 1);
@@ -4169,6 +4207,7 @@ static void wozt_compact_reset_method(GtkWidget *root)
     gtk_grid_attach(GTK_GRID(left), bt_heading, 0, 0, 2, 1);
     gtk_grid_attach(GTK_GRID(left), target_l, 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(left), target_c, 1, 1, 1, 1);
+    wozt_half_width_reset_selector(target_c);
     gtk_grid_attach(GTK_GRID(right), adapter_l, 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(right), adapter_c, 1, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(right), tools_l, 0, 1, 1, 1);
