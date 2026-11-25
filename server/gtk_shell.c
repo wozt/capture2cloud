@@ -4301,7 +4301,7 @@ static void build_settings_window(GtkShell *shell) {
      * User-validated compact Settings screenshot: 918 x 844 pixels.
      * Initial size only; GTK minimums and reflow rules stay unchanged.
      */
-    gtk_window_set_default_size(GTK_WINDOW(win), 918, 844);
+    gtk_window_set_default_size(GTK_WINDOW(win), 880, 806);
     GdkGeometry geometry = {0};
     /* Actual minimum, not the natural width of the nested controller grids.
      * Main scroll view handles any temporary overflow while resizing. */
