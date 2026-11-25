@@ -336,7 +336,7 @@ static gboolean wozt_dashboard_rows_have_natural_heights(void)
     for (GList *it = rows; it; it = it->next) {
         GtkWidget *line = GTK_WIDGET(it->data);
         valid = valid && GTK_IS_BOX(line) &&
-            gtk_widget_get_valign(line) == GTK_ALIGN_START &&
+            gtk_widget_get_valign(line) == GTK_ALIGN_FILL &&
             !gtk_widget_get_vexpand(line) &&
             !gtk_widget_compute_expand(line, GTK_ORIENTATION_VERTICAL);
     }
@@ -1072,8 +1072,15 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
          gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
-    t_ok("Wide dashboard rows never inherit Clients vertical expansion",
-         wozt_dashboard_rows_have_natural_heights());
+    t_ok("Wide dashboard rows use controlled proportional expansion",
+         wozt_dashboard_rows_have_natural_heights() &&
+         gtk_widget_get_vexpand(g_c.wozt_dashboard));
+    t_ok("Vertical surplus is proportional and uses every pixel",
+         wozt_dashboard_row_extra(101, 0, 200, 600) == 33 &&
+         wozt_dashboard_row_extra(101, 200, 500, 600) == 51 &&
+         wozt_dashboard_row_extra(101, 500, 600, 600) == 17 &&
+         wozt_dashboard_row_extra(0, 0, 200, 600) == 0 &&
+         wozt_dashboard_row_extra(-20, 0, 200, 600) == 0);
     /* The final frame expands, but the preceding one stays compact.
      * Both frames remain adjacent in their shared horizontal row. */
     t_ok("Rightmost Local input absorbs surplus in the shared controller row",
@@ -1234,7 +1241,7 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(720);
-    t_ok("Narrow stacked dashboard rows never expand vertically",
+    t_ok("Narrow stacked rows retain controlled proportional expansion",
          wozt_dashboard_rows_have_natural_heights());
     t_ok("A wrapped Output frame fills its own line",
          g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
@@ -1246,7 +1253,7 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     wozt_dashboard_reflow(1144);
-    t_ok("Default dashboard rows have natural, top-aligned heights",
+    t_ok("Default dashboard rows preserve natural height requests and fill allocation",
          wozt_dashboard_rows_have_natural_heights());
     t_ok("Default width keeps Overview and Clients together",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==

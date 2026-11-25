@@ -315,6 +315,65 @@ static int wozt_dashboard_signature(int width)
          + 1000 * (wozt_reset_fits_top() ? 1 : 0);
 }
 
+/* WOZT_0872: distribute only surplus height, weighted by each visible
+ * responsive row's natural height. Keep size requests independent of the
+ * previous allocation so shrinking and horizontal reflow remain reversible. */
+static int wozt_dashboard_row_extra(int surplus, gint64 before,
+                                    gint64 after, gint64 total)
+{
+    if (surplus <= 0 || total <= 0) return 0;
+    return (int)((gint64)surplus * after / total -
+                 (gint64)surplus * before / total);
+}
+
+static void wozt_dashboard_allocate_height(GtkWidget *dashboard,
+                                            GtkAllocation *allocation,
+                                            gpointer userdata)
+{
+    (void)userdata;
+    if (g_c.wozt_layout_mode < 0) return;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(dashboard));
+    GtkWidget *lines[8];
+    GtkAllocation cells[8];
+    int heights[8];
+    guint count = 0;
+    gint64 total = 0;
+    for (GList *it = rows; it; it = it->next) {
+        GtkWidget *line = GTK_WIDGET(it->data);
+        if (!gtk_widget_get_visible(line)) continue;
+        if (!GTK_IS_BOX(line) || count == G_N_ELEMENTS(lines)) {
+            g_list_free(rows);
+            return;
+        }
+        lines[count] = line;
+        gtk_widget_get_allocation(line, &cells[count]);
+        gint minimum = 0, natural = 0;
+        gtk_widget_get_preferred_height_for_width(line,
+            MAX(1, cells[count].width), &minimum, &natural);
+        heights[count] = MAX(1, MAX(minimum, natural));
+        total += heights[count++];
+    }
+    g_list_free(rows);
+    if (!count) return;
+    const int spacing = gtk_box_get_spacing(GTK_BOX(dashboard));
+    const gint64 available = (gint64)allocation->height -
+                            (gint64)spacing * (count - 1);
+    if (available <= total) return; /* GTK handles tight/scrolled layouts. */
+    const int surplus = (int)(available - total);
+    gint64 before = 0;
+    int y = cells[0].y;
+    for (guint i = 0; i < count; ++i) {
+        GtkAllocation cell = cells[i];
+        const gint64 after = before + heights[i];
+        cell.y = y;
+        cell.height = heights[i] +
+            wozt_dashboard_row_extra(surplus, before, after, total);
+        gtk_widget_size_allocate(lines[i], &cell);
+        y += cell.height + spacing;
+        before = after;
+    }
+}
+
 static void wozt_dashboard_reflow(int width)
 {
     if (!GTK_IS_BOX(g_c.wozt_dashboard) || g_c.wozt_section_count != 8) return;
@@ -351,7 +410,9 @@ static void wozt_dashboard_reflow(int width)
              * FALSE/FALSE child packing does NOT override that inherited
              * request. Explicitly refuse extra vertical space on each row. */
             gtk_widget_set_vexpand(line, FALSE);
-            gtk_widget_set_valign(line, GTK_ALIGN_START);
+            /* The allocation callback fills rows proportionally; do not
+             * let GtkBox distribute surplus equally or inherit expansion. */
+            gtk_widget_set_valign(line, GTK_ALIGN_FILL);
             gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
             if (group == 2 && !reset_top && n == 2) {
                 /* 2/3 Reset, 1/3 Maintenance. Never use a fixed pixel split:
@@ -4418,6 +4479,10 @@ static void build_settings_window(GtkShell *shell) {
     gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
     GtkWidget *dashboard = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
     gtk_widget_set_hexpand(dashboard, TRUE);
+    gtk_widget_set_vexpand(dashboard, TRUE);
+    gtk_widget_set_valign(dashboard, GTK_ALIGN_FILL);
+    g_signal_connect_after(dashboard, "size-allocate",
+                           G_CALLBACK(wozt_dashboard_allocate_height), NULL);
     gtk_widget_set_margin_start(dashboard, 6);
     gtk_widget_set_margin_end(dashboard, 6);
     gtk_widget_set_margin_top(dashboard, 5);
