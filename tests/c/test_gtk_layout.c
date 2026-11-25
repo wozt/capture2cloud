@@ -686,8 +686,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Reset and Maintenance retain their width budgets",
          wozt_section_layout_width(6) == wozt_section_target_width[6] &&
          wozt_section_layout_width(7) == wozt_section_target_width[7]);
-    const int monitor_capture_width = MAX(wozt_section_layout_width(4),
-                                          wozt_section_layout_width(5));
+    t_ok("Reset joins the stack only if all three panels fit top-row height",
+         !wozt_reset_fits_heights(235, 220, 145, 53, 180) &&
+         wozt_reset_fits_heights(420, 400, 145, 53, 180) &&
+         !wozt_reset_fits_heights(0, 400, 145, 53, 180));
+    const gboolean reset_top = wozt_reset_fits_top();
+    const int monitor_capture_width = MAX(
+        MAX(wozt_section_layout_width(4), wozt_section_layout_width(5)),
+        reset_top ? wozt_section_layout_width(6) : 0);
     const int top_three_width = wozt_section_layout_width(0) +
         wozt_section_layout_width(1) + monitor_capture_width + 42;
     t_eq_int("Monitor/Capture wraps just before the first row fits three items",
@@ -698,10 +704,15 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(1650, 0), 3);
     const int tools_two_width = wozt_section_layout_width(6) +
                                 wozt_section_layout_width(7) + 36;
-    t_eq_int("Reset and Maintenance wrap before colliding",
-             wozt_dashboard_group_columns(tools_two_width - 1, 2), 1);
-    t_eq_int("Reset and Maintenance join when both fit",
-             wozt_dashboard_group_columns(tools_two_width, 2), 2);
+    if (!reset_top) {
+        t_eq_int("Reset and Maintenance wrap before colliding",
+                 wozt_dashboard_group_columns(tools_two_width - 1, 2), 1);
+        t_eq_int("Reset and Maintenance join when both fit",
+                 wozt_dashboard_group_columns(tools_two_width, 2), 2);
+    } else {
+        t_eq_int("Only Maintenance stays in bottom group when Reset fits above",
+                 wozt_dashboard_group_columns(tools_two_width, 2), 1);
+    }
     /* Controller budgets now match their compact two-column contents.
      * Derive the joining boundary from their targets and the 36px gutter
      * allowance, rather than relying on a stale fixed-width test. */
@@ -1076,13 +1087,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         gtk_box_query_child_packing(GTK_BOX(monitor_stack), g_c.wozt_sections[4],
                                     &capture_expand, &capture_fill, NULL, NULL);
     }
-    t_ok("Compact Monitor/Capture stack never claims excess vertical height",
+    t_ok("Monitor fills only available first-row height; Capture remains compact",
          GTK_IS_BOX(monitor_stack) &&
-         gtk_widget_get_valign(monitor_stack) == GTK_ALIGN_START &&
+         gtk_widget_get_valign(monitor_stack) == GTK_ALIGN_FILL &&
          !gtk_widget_get_vexpand(monitor_stack) &&
-         !gtk_widget_get_vexpand(g_c.wozt_sections[5]) &&
+         gtk_widget_get_vexpand(g_c.wozt_sections[5]) &&
          !gtk_widget_get_vexpand(g_c.wozt_sections[4]) &&
-         !monitor_expand && monitor_fill && !capture_expand && capture_fill);
+         monitor_expand && monitor_fill && !capture_expand && capture_fill);
     t_ok("Compact stack sits beside Clients on first row at wide widths",
          GTK_IS_BOX(tool_line) &&
          gtk_orientable_get_orientation(GTK_ORIENTABLE(tool_line)) ==
@@ -1092,12 +1103,28 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_hexpand(g_c.wozt_sections[1]) &&
          !gtk_widget_get_hexpand(monitor_stack));
     GtkWidget *reset_row = gtk_widget_get_parent(g_c.wozt_sections[6]);
-    t_ok("Reset and Maintenance occupy the separate bottom utility row",
-         GTK_IS_BOX(reset_row) &&
-         reset_row != tool_line &&
-         gtk_widget_get_parent(g_c.wozt_sections[7]) == reset_row &&
-         !gtk_widget_get_hexpand(g_c.wozt_sections[6]) &&
+    GtkWidget *maintenance_row = gtk_widget_get_parent(g_c.wozt_sections[7]);
+    t_ok("Reset stays below controllers unless it fits below Capture",
+         (reset_top
+          ? (reset_row == monitor_stack && maintenance_row != tool_line)
+          : (GTK_IS_BOX(reset_row) && reset_row != tool_line &&
+             maintenance_row == reset_row &&
+             !gtk_widget_get_hexpand(g_c.wozt_sections[6]))) &&
          gtk_widget_get_hexpand(g_c.wozt_sections[7]));
+    gint status_left = -1, status_width = -1;
+    if (GTK_IS_GRID(g_c.reset_bt_panel) && g_c.reset_bt_status) {
+        gtk_container_child_get(GTK_CONTAINER(g_c.reset_bt_panel),
+                                g_c.reset_bt_status,
+                                "left-attach", &status_left,
+                                "width", &status_width, NULL);
+    }
+    t_ok("Bluetooth wake status is a single full-width, tooltip-backed line",
+         GTK_IS_LABEL(g_c.reset_bt_status) && status_left == 0 &&
+         status_width == 2 &&
+         !gtk_label_get_line_wrap(GTK_LABEL(g_c.reset_bt_status)) &&
+         gtk_label_get_single_line_mode(GTK_LABEL(g_c.reset_bt_status)) &&
+         gtk_label_get_ellipsize(GTK_LABEL(g_c.reset_bt_status)) == PANGO_ELLIPSIZE_END &&
+         gtk_widget_get_tooltip_text(g_c.reset_bt_status) != NULL);
     gint monitor_scale_width = -1, monitor_scale_height = -1;
     gtk_widget_get_size_request(g_c.volume, &monitor_scale_width, &monitor_scale_height);
     t_ok("Monitor sliders use the thin compact 116x15 calibration style",
@@ -1156,7 +1183,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              GTK_ORIENTATION_VERTICAL &&
          gtk_widget_get_parent(g_c.wozt_sections[4]) == monitor_stack_default &&
          default_top_line == gtk_widget_get_parent(g_c.wozt_sections[0]) &&
-         default_top_line == gtk_widget_get_parent(g_c.wozt_sections[1]));
+         default_top_line == gtk_widget_get_parent(g_c.wozt_sections[1]) &&
+         (wozt_reset_fits_top()
+          ? gtk_widget_get_parent(g_c.wozt_sections[6]) == monitor_stack_default
+          : gtk_widget_get_parent(g_c.wozt_sections[6]) != monitor_stack_default));
     wozt_dashboard_reflow(top_three_width - 1);
     GtkWidget *narrow_stack = gtk_widget_get_parent(g_c.wozt_sections[5]);
     t_ok("Monitor/Capture remains one vertical block when top row wraps",
@@ -1164,7 +1194,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[4]) == narrow_stack &&
          gtk_widget_get_parent(narrow_stack) !=
              gtk_widget_get_parent(g_c.wozt_sections[1]) &&
-         gtk_box_get_spacing(GTK_BOX(narrow_stack)) == 5);
+         gtk_box_get_spacing(GTK_BOX(narrow_stack)) == 5 &&
+         (wozt_reset_fits_top()
+          ? gtk_widget_get_parent(g_c.wozt_sections[6]) == narrow_stack
+          : gtk_widget_get_parent(g_c.wozt_sections[6]) != narrow_stack));
     wozt_dashboard_reflow(1144);
     /* Unlike the previous TRUE/TRUE GtkBox packing, Overview must not
      * take half of the available width. Clients absorbs all spare width. */

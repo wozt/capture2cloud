@@ -234,19 +234,50 @@ static int wozt_section_layout_width(int index)
     return natural > 0 ? MAX(minimum, natural) : fallback;
 }
 
+/* WOZT_0866_RESET_FITS_TOP:
+ * Reuse the small top-right vertical gutter ONLY if the complete Reset
+ * frame fits without increasing the natural height of Overview/Clients.
+ * A taller Reset would otherwise create a much larger unused region under
+ * those two panels. GTK measures the actual current content (also localized).
+ */
+static gboolean wozt_reset_fits_heights(int overview, int clients,
+                                        int monitor, int capture, int reset)
+{
+    if (overview <= 0 || clients <= 0 || monitor <= 0 ||
+        capture <= 0 || reset <= 0) return FALSE;
+    return MAX(overview, clients) >= monitor + capture + reset + 10;
+}
+
+static gboolean wozt_reset_fits_top(void)
+{
+    const int indices[] = {0, 1, 5, 4, 6};
+    int h[G_N_ELEMENTS(indices)] = {0};
+    for (guint i = 0; i < G_N_ELEMENTS(indices); ++i) {
+        GtkWidget *w = g_c.wozt_sections[indices[i]];
+        if (!GTK_IS_WIDGET(w)) return FALSE;
+        gint minimum = 0, natural = 0;
+        gtk_widget_get_preferred_height(w, &minimum, &natural);
+        h[i] = MAX(minimum, natural);
+    }
+    return wozt_reset_fits_heights(h[0], h[1], h[2], h[3], h[4]);
+}
+
 static int wozt_dashboard_group_columns(int width, int group)
 {
     if (group < 0 || group >= 3) return 1;
     const int space = MAX(180, width - 30);
     const int first = wozt_group_first[group];
-    const int count = wozt_group_size[group];
+    const gboolean reset_top = wozt_reset_fits_top();
+    const int count = group == 2 && reset_top ? 1 : wozt_group_size[group];
     int total = 0, packed = 0;
     for (int i = 0; i < count; ++i) {
-        /* The pair travels together as one responsive slot. The real GTK
-         * widths (not a guessed 310px budget) decide when it wraps. */
+        /* One responsive slot for the entire top-right stack. The optional
+         * Reset is considered in its width only when it fits by HEIGHT. */
         const int need_width = (group == 0 && i == 2)
-            ? MAX(wozt_section_layout_width(5), wozt_section_layout_width(4))
-            : wozt_section_layout_width(group == 2 ? 6 + i : first + i);
+            ? MAX(MAX(wozt_section_layout_width(5), wozt_section_layout_width(4)),
+                  reset_top ? wozt_section_layout_width(6) : 0)
+            : wozt_section_layout_width(group == 2
+                  ? (reset_top ? 7 : 6 + i) : first + i);
         const int need = need_width + (i ? 6 : 0);
         if (packed && total + need > space) break;
         total += need;
@@ -261,7 +292,8 @@ static int wozt_dashboard_signature(int width)
      * Continuous resize between those points stays smooth and cheap. */
     return wozt_dashboard_group_columns(width, 0)
          + 10 * wozt_dashboard_group_columns(width, 1)
-         + 100 * wozt_dashboard_group_columns(width, 2);
+         + 100 * wozt_dashboard_group_columns(width, 2)
+         + 1000 * (wozt_reset_fits_top() ? 1 : 0);
 }
 
 static void wozt_dashboard_reflow(int width)
@@ -270,6 +302,7 @@ static void wozt_dashboard_reflow(int width)
     const int signature = wozt_dashboard_signature(width);
     if (signature == g_c.wozt_layout_mode) return;
     GtkWidget *dashboard = g_c.wozt_dashboard;
+    const gboolean reset_top = wozt_reset_fits_top();
 
     /* Take one reference per section before detaching. No callbacks, controls,
      * settings or views are recreated during a responsive transition. */
@@ -288,7 +321,7 @@ static void wozt_dashboard_reflow(int width)
 
     for (int group = 0; group < 3; ++group) {
         const int first = wozt_group_first[group];
-        const int count = wozt_group_size[group];
+        const int count = group == 2 && reset_top ? 1 : wozt_group_size[group];
         const int capacity = wozt_dashboard_group_columns(width, group);
         for (int offset = 0; offset < count; offset += capacity) {
             const int n = MIN(capacity, count - offset);
@@ -314,7 +347,9 @@ static void wozt_dashboard_reflow(int width)
                     gtk_widget_set_halign(column,
                                          alone ? GTK_ALIGN_FILL : GTK_ALIGN_START);
                     gtk_widget_set_hexpand(column, alone);
-                    gtk_widget_set_valign(column, GTK_ALIGN_START);
+                    /* Fill only the height ALREADY requested by Overview or
+                     * Clients. No extra height is requested on the outer row. */
+                    gtk_widget_set_valign(column, GTK_ALIGN_FILL);
                     gtk_widget_set_vexpand(column, FALSE);
                     gtk_box_pack_start(GTK_BOX(line), column, alone, alone, 0);
                     GtkWidget *monitor = g_c.wozt_sections[5];
@@ -323,17 +358,27 @@ static void wozt_dashboard_reflow(int width)
                     gtk_widget_set_halign(capture, GTK_ALIGN_FILL);
                     gtk_widget_set_hexpand(monitor, TRUE);
                     gtk_widget_set_hexpand(capture, TRUE);
-                    gtk_widget_set_valign(monitor, GTK_ALIGN_START);
+                    gtk_widget_set_valign(monitor, GTK_ALIGN_FILL);
                     gtk_widget_set_valign(capture, GTK_ALIGN_START);
-                    gtk_widget_set_vexpand(monitor, FALSE);
+                    gtk_widget_set_vexpand(monitor, TRUE);
                     gtk_widget_set_vexpand(capture, FALSE);
-                    gtk_box_pack_start(GTK_BOX(column), monitor, FALSE, TRUE, 0);
+                    gtk_box_pack_start(GTK_BOX(column), monitor, TRUE, TRUE, 0);
                     gtk_box_pack_start(GTK_BOX(column), capture, FALSE, TRUE, 0);
+                    if (reset_top) {
+                        /* Only possible when no other top-row panel must
+                         * become taller to accommodate this entire frame. */
+                        GtkWidget *reset = g_c.wozt_sections[6];
+                        gtk_widget_set_valign(reset, GTK_ALIGN_START);
+                        gtk_widget_set_vexpand(reset, FALSE);
+                        gtk_widget_set_halign(reset, GTK_ALIGN_FILL);
+                        gtk_widget_set_hexpand(reset, TRUE);
+                        gtk_box_pack_start(GTK_BOX(column), reset, FALSE, TRUE, 0);
+                    }
                     gtk_widget_show_all(column);
                     continue;
                 }
                 GtkWidget *frame = g_c.wozt_sections[
-                    group == 2 ? 6 + slot : first + slot];
+                    group == 2 ? (reset_top ? 7 : 6 + slot) : first + slot];
                 /* In the three-item top row, Clients expands while the last
                  * stack stays compact. Else the last item of each row fills
                  * surplus width. There are no artificial middle spacers. */
@@ -580,6 +625,19 @@ static int reset_selected_adapter(void)
            index < g_c.reset_bt_adapter_count
         ? index
         : -1;
+}
+
+/* Keep every asynchronous wake-status message available in full even
+ * when the compact panel can display only a single line. */
+static void wozt_reset_status_tooltip_changed(GObject *object,
+                                               GParamSpec *property,
+                                               gpointer userdata)
+{
+    (void)property;
+    (void)userdata;
+    if (GTK_IS_LABEL(object))
+        gtk_widget_set_tooltip_text(GTK_WIDGET(object),
+                                     gtk_label_get_text(GTK_LABEL(object)));
 }
 
 static void reset_update_controls(GtkShell *shell)
@@ -5765,11 +5823,8 @@ static void build_settings_window(GtkShell *shell) {
                 buttons);
         }
 
-        add_section_header(
-            g_c.reset_bt_panel,
-            rr++,
-            "Wake beacon");
-
+        /* The buttons already say Capture/Test beacon. A second Wake beacon
+         * heading wastes a full line inside this compact method panel. */
         {
             GtkWidget *buttons =
                 gtk_box_new(
@@ -5845,26 +5900,23 @@ static void build_settings_window(GtkShell *shell) {
         }
 
         g_c.reset_bt_status =
-            gtk_label_new(
-                "Bluetooth wake not configured.");
-
-        gtk_widget_set_halign(
-            g_c.reset_bt_status,
-            GTK_ALIGN_START);
-
-        gtk_label_set_selectable(
-            GTK_LABEL(g_c.reset_bt_status),
-            TRUE);
-
-        gtk_label_set_line_wrap(
-            GTK_LABEL(g_c.reset_bt_status),
-            TRUE);
-
-        add_row(
-            g_c.reset_bt_panel,
-            rr++,
-            "status",
-            g_c.reset_bt_status);
+            gtk_label_new("Bluetooth wake not configured.");
+        gtk_widget_set_halign(g_c.reset_bt_status, GTK_ALIGN_FILL);
+        gtk_widget_set_hexpand(g_c.reset_bt_status, TRUE);
+        gtk_label_set_xalign(GTK_LABEL(g_c.reset_bt_status), 0.0f);
+        gtk_label_set_selectable(GTK_LABEL(g_c.reset_bt_status), TRUE);
+        gtk_label_set_line_wrap(GTK_LABEL(g_c.reset_bt_status), FALSE);
+        gtk_label_set_single_line_mode(GTK_LABEL(g_c.reset_bt_status), TRUE);
+        gtk_label_set_ellipsize(GTK_LABEL(g_c.reset_bt_status),
+                                PANGO_ELLIPSIZE_END);
+        gtk_label_set_max_width_chars(GTK_LABEL(g_c.reset_bt_status), 42);
+        g_signal_connect(g_c.reset_bt_status, "notify::label",
+                         G_CALLBACK(wozt_reset_status_tooltip_changed), NULL);
+        gtk_widget_set_tooltip_text(g_c.reset_bt_status,
+                                    gtk_label_get_text(GTK_LABEL(g_c.reset_bt_status)));
+        /* Two columns, no "status" label; never add another blank grid cell. */
+        gtk_grid_attach(GTK_GRID(g_c.reset_bt_panel),
+                        g_c.reset_bt_status, 0, rr++, 2, 1);
     }
 
     reset_load_config(shell);
