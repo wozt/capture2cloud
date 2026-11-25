@@ -308,7 +308,7 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
     char *css = g_strdup_printf(
         "window.wozt-window, window.wozt-window box.wozt-dashboard, "
         "window.wozt-window scrolledwindow.wozt-dashboard {background-color:%s;color:%s;}"
-        "window.wozt-window * {font-size:11px;border-radius:0; }"
+        "window.wozt-window {font-size:11px;border-radius:0; }"
         "window.wozt-window frame.wozt-section {background-color:%s; border:1px solid %s; margin:1px; padding:2px;}"
         "window.wozt-window frame.wozt-section > border {border:1px solid %s;border-radius:0;}"
         "window.wozt-window .wozt-section-title {font-size:12px;font-weight:bold;color:%s;}"
@@ -357,10 +357,13 @@ WoztUiStandard *wozt_ui_standard_new(const char *data_dir,
     wozt_scan_resources(ui, "languages", ui->languages);
     g_ptr_array_sort(ui->themes, wozt_resource_sort);
     g_ptr_array_sort(ui->languages, wozt_resource_sort);
+    /* Parse the first complete palette BEFORE registering this provider.
+     * Attaching an empty provider and then loading it caused needless GTK3
+     * style invalidation while the window hierarchy was being created. */
+    wozt_apply_palette(ui, saved_theme && *saved_theme ? saved_theme : "graphite");
     GdkScreen *screen = gdk_screen_get_default();
     if (screen) gtk_style_context_add_provider_for_screen(
         screen, GTK_STYLE_PROVIDER(ui->css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    wozt_apply_palette(ui, saved_theme && *saved_theme ? saved_theme : "graphite");
     wozt_load_language(ui, saved_language && *saved_language ? saved_language : "en");
     return ui;
 }

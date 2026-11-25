@@ -283,40 +283,41 @@ void output_pcble_peer(char *out, size_t out_size)
     if (out && out_size) out[0] = '\0';
 }
 
-int main(void) {
-    if (!getenv("DISPLAY")) {
-        printf("no display; skipped\n");
-        return 0;
-    }
-    g_log_set_default_handler(count_warnings, NULL);
+/* All GTK widget calls must execute in the gtk-shell thread. The normal
+ * application deliberately owns its GTK main loop on that thread. In the
+ * old test, main() performed GTK operations while the GTK thread was doing
+ * CSS/layout work, resulting in gtk_css_value_inherit_free / SIGABRT.
+ *
+ * g_timeout_add() attaches to the default GLib main context, dispatched by
+ * gtk_main() in gtk_thread_main(). The test main thread only uses SDL
+ * mutex-protected application APIs and waits on the completion condition. */
+typedef struct {
+    GtkShell *shell;
+    AppSettings settings;
+    GMutex lock;
+    GCond cond;
+    gboolean done;
+} GtkLayoutProbe;
 
-    AppSettings s = APP_SETTINGS_DEFAULTS;
-    GtkShellCallbacks cb = { on_settings, on_action, on_pair, NULL };
+static gboolean gtk_layout_probe_initial(gpointer user_data);
+static gboolean gtk_layout_probe_pcble(gpointer user_data);
+static gboolean gtk_layout_probe_titan(gpointer user_data);
+static gboolean gtk_layout_probe_complete(gpointer user_data);
 
-    t_begin("the settings window builds and opens");
-    GtkShell *sh = gtk_shell_start(&s, &cb);
-    t_ok("the shell starts", sh != NULL);
-    if (!sh) {
-        return t_report();
-    }
+static void gtk_layout_probe_finish(GtkLayoutProbe *probe)
+{
+    g_mutex_lock(&probe->lock);
+    probe->done = TRUE;
+    g_cond_signal(&probe->cond);
+    g_mutex_unlock(&probe->lock);
+}
 
-    /* Every per-client line, set before the window is shown -- which is
-     * also the order the program does it in, since the host starts
-     * publishing status before anybody opens the window. */
-    for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; i++) {
-        gtk_shell_set_client_status(sh, i, "2 connected — 1280x720@60, 8000 kbps");
-    }
-    gtk_shell_set_wiiu_status(sh, "waiting for a pad");
-    gtk_shell_set_status(
-        sh,
-        "running — capture online — browser server listening — native server listening");
-
-    /* And every control, from settings, which is what load_controls
-     * walks: a control that was never created shows up here. */
-    gtk_shell_update(sh, &s);
-    gtk_shell_debug_show_settings(sh);
-    sleep(2);
-
+static gboolean gtk_layout_probe_initial(gpointer user_data)
+{
+    GtkLayoutProbe *probe = user_data;
+    GtkShell *sh = probe->shell;
+    t_ok("GTK layout probe runs on the GTK main context",
+         g_main_context_is_owner(g_main_context_default()));
     t_ok("WOZT standard was created", sh->wozt != NULL);
     if (sh->wozt) {
         t_eq_int("seven WOZT JSON themes loaded", sh->wozt->themes->len, 7);
@@ -324,201 +325,185 @@ int main(void) {
     }
     t_eq_int("eight WOZT functional sections", g_c.wozt_section_count, 8);
     t_ok("sidebar replaced by dashboard", g_c.wozt_dashboard != NULL);
-    /* GtkWindow must contain the WOZT overlay, not an extra root box.
-     * Catch a structurally invalid migration before the UI is released. */
-    GtkWidget *window_child =
-        gtk_bin_get_child(GTK_BIN(sh->settings_window));
+
+    /* GtkWindow must contain one and only one content overlay. */
+    GtkWidget *child = sh->settings_window
+        ? gtk_bin_get_child(GTK_BIN(sh->settings_window)) : NULL;
     t_ok("WOZT overlay is the only direct window child",
-         window_child && GTK_IS_OVERLAY(window_child));
+         child && GTK_IS_OVERLAY(child));
     t_ok("WOZT overlay owns its root box",
-         window_child && GTK_IS_OVERLAY(window_child) &&
-         GTK_IS_BOX(gtk_bin_get_child(GTK_BIN(window_child))));
+         child && GTK_IS_OVERLAY(child) &&
+         GTK_IS_BOX(gtk_bin_get_child(GTK_BIN(child))));
     t_ok("GTK title bar is borderless",
+         sh->settings_window &&
          !gtk_window_get_decorated(GTK_WINDOW(sh->settings_window)));
     t_ok("Clients retains its own notebook",
-         g_c.wozt_clients_notebook != NULL &&
+         g_c.wozt_clients_notebook &&
          gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 5);
     t_ok("Theme and language selectors exist",
-         g_c.wozt_theme_combo != NULL && g_c.wozt_language_combo != NULL);
-    t_ok(
-        "Reset method selector exists",
-        g_c.reset_method != NULL);
+         g_c.wozt_theme_combo && g_c.wozt_language_combo);
 
-    t_ok(
-        "Reset method page has script controls",
-        g_c.reset_script != NULL &&
-        g_c.reset_script_panel != NULL);
-
-    t_eq_int(
-        "Reset method defaults to script in the layout test",
-        gtk_combo_box_get_active(
-            GTK_COMBO_BOX(g_c.reset_method)),
-        0);
-
-    gtk_combo_box_set_active(
-        GTK_COMBO_BOX(g_c.reset_method),
-        1);
-
-    sleep(1);
-
-    t_eq_int(
-        "Selecting Bluetooth persists through reset_method_set",
-        g_test_reset_method,
-        RESET_METHOD_BLUETOOTH);
-
-    t_ok(
-        "Bluetooth reset panel becomes visible",
-        g_c.reset_bt_panel &&
-        gtk_widget_get_visible(g_c.reset_bt_panel));
-
-    t_ok(
-        "Bluetooth target selector exists",
-        g_c.reset_bt_target != NULL);
-
-    t_ok(
-        "Bluetooth adapter selector exists",
-        g_c.reset_bt_adapter != NULL);
-
-    t_ok(
-        "Test dongle button exists",
-        g_c.reset_bt_test_adapter != NULL);
-
-    t_ok(
-        "Capture wake beacon button exists",
-        g_c.reset_bt_capture != NULL);
-
-    t_ok(
-        "Test beacon button exists",
-        g_c.reset_bt_test_beacon != NULL);
-
-    t_ok(
-        "overview receives the live server status",
-        g_c.overview_status &&
-        strcmp(
-            gtk_label_get_text(GTK_LABEL(g_c.overview_status)),
-            "starting...") != 0);
-
-    t_ok(
-        "all dedicated native-client port controls exist",
-        g_c.wiiu_pad_port &&
-        g_c.wiiu_console_port &&
-        g_c.old3ds_port);
-
-    t_eq_int(
-        "Old3DS port is loaded into its own tab",
-        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(g_c.old3ds_port)),
-        5085);
-
-    /*
-     * Backend-specific controls must really appear when pcble is selected.
-     * Merely constructing them is not enough: a previous regression left
-     * the whole panel hidden while the backend itself worked correctly.
-     */
-    s.output_backend = 1;
-    gtk_shell_update(sh, &s);
-    sleep(1);
-
-    t_ok(
-        "pcble panel is visible when pcble2gamepad is selected",
-        g_c.pcble_settings &&
-        gtk_widget_get_visible(g_c.pcble_settings));
-
-    t_ok(
-        "pcble Pair / Sync button is visible",
-        g_c.pcble_pair &&
-        gtk_widget_get_visible(g_c.pcble_pair));
-
-    t_ok(
-        "Titan panel is hidden while pcble is selected",
-        g_c.titan_settings &&
-        !gtk_widget_get_visible(g_c.titan_settings));
-
-    s.output_backend = 0;
-    gtk_shell_update(sh, &s);
-    sleep(1);
-
-    t_ok(
-        "pcble panel hides again when Titan is selected",
-        g_c.pcble_settings &&
-        !gtk_widget_get_visible(g_c.pcble_settings));
-
-    /*
-     * Pin the two distinct shaping paths to the widgets themselves.
-     * This catches the easy regression where a slider is visible but its
-     * on_scale() branch was forgotten.
-     */
-    gtk_range_set_value(
-        GTK_RANGE(g_c.range[0]),
-        73);
-
-    gtk_range_set_value(
-        GTK_RANGE(g_c.output_range[0]),
-        84);
-
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(g_c.output_invert_ry),
-        TRUE);
-
-    SDL_LockMutex(sh->lock);
-
-    int input_range =
-        sh->settings.stick_range[0];
-
-    int output_range =
-        sh->settings.output_stick_range[0];
-
-    int output_invert =
-        sh->settings.output_invert_ry;
-
-    SDL_UnlockMutex(sh->lock);
-
-    t_eq_int(
-        "Input shaping slider updates local input settings",
-        input_range,
-        73);
-
-    t_eq_int(
-        "Output shaping slider updates final output settings",
-        output_range,
-        84);
-
-    t_eq_int(
-        "Output shaping toggle updates final output settings",
-        output_invert,
-        1);
-
-    t_ok(
-        "Local left stick preview exists",
-        g_c.input_stick_preview[0] != NULL);
-
-    t_ok(
-        "Local right stick preview exists",
-        g_c.input_stick_preview[1] != NULL);
-
-    t_ok(
-        "Output left stick preview exists",
-        g_c.output_stick_preview[0] != NULL);
-
-    t_ok(
-        "Output right stick preview exists",
-        g_c.output_stick_preview[1] != NULL);
-
-    /* A second pass with different values, because a combo box with no
-     * matching row and a scale outside its range both warn. */
-    s.wiiu_console_height = 1080;
-    s.wiiu_console_bitrate_mbps = 30;
-    s.wiiu_pad_bitrate_mbps = 20;
-    s.browser_height = 480;
-    s.wiiu_console_enabled = 1;
-    s.wiiu_pad_enabled = 1;
-    gtk_shell_update(sh, &s);
-    sleep(1);
-
-    gtk_shell_stop(sh);
-
-    t_ok("no GTK warning while building it", g_warnings == 0);
-    if (g_warnings) {
-        printf("  first of %d: %s\n", g_warnings, g_first);
+    /* Real live-theme and localization checks, also on the GTK thread.
+     * Restore the initial theme/language without touching persistent .env. */
+    if (sh->wozt && sh->wozt->themes->len == 7) {
+        char *initial = g_strdup(wozt_ui_standard_theme_id(sh->wozt));
+        wozt_ui_standard_apply_theme(sh->wozt, "ocean");
+        t_eq_str("Ocean theme applies live", wozt_ui_standard_theme_id(sh->wozt), "ocean");
+        wozt_ui_standard_apply_theme(sh->wozt, initial);
+        t_eq_str("Original theme restored", wozt_ui_standard_theme_id(sh->wozt), initial);
+        g_free(initial);
     }
+    if (sh->wozt && sh->wozt->languages->len == 9) {
+        char *initial = g_strdup(wozt_ui_standard_language_id(sh->wozt));
+        sh->loading = 1;
+        wozt_ui_standard_apply_language(sh->wozt, "fr", sh->settings_window);
+        t_eq_str("French localization applies live", wozt_ui_standard_language_id(sh->wozt), "fr");
+        wozt_ui_standard_apply_language(sh->wozt, initial, sh->settings_window);
+        sh->loading = 0;
+        t_eq_str("Original language restored", wozt_ui_standard_language_id(sh->wozt), initial);
+        g_free(initial);
+    }
+
+    t_ok("Reset method selector exists", g_c.reset_method != NULL);
+    t_ok("Reset method page has script controls",
+         g_c.reset_script && g_c.reset_script_panel);
+    if (g_c.reset_method) {
+        t_eq_int("Reset method defaults to script in the layout test",
+                 gtk_combo_box_get_active(GTK_COMBO_BOX(g_c.reset_method)), 0);
+        gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.reset_method), 1);
+        t_eq_int("Selecting Bluetooth persists through reset_method_set",
+                 g_test_reset_method, RESET_METHOD_BLUETOOTH);
+    }
+    t_ok("Bluetooth reset panel becomes visible",
+         g_c.reset_bt_panel && gtk_widget_get_visible(g_c.reset_bt_panel));
+    t_ok("Bluetooth target selector exists", g_c.reset_bt_target != NULL);
+    t_ok("Bluetooth adapter selector exists", g_c.reset_bt_adapter != NULL);
+    t_ok("Test dongle button exists", g_c.reset_bt_test_adapter != NULL);
+    t_ok("Capture wake beacon button exists", g_c.reset_bt_capture != NULL);
+    t_ok("Test beacon button exists", g_c.reset_bt_test_beacon != NULL);
+    t_ok("overview receives the live server status",
+         g_c.overview_status &&
+         strcmp(gtk_label_get_text(GTK_LABEL(g_c.overview_status)), "starting...") != 0);
+    t_ok("all dedicated native-client port controls exist",
+         g_c.wiiu_pad_port && g_c.wiiu_console_port && g_c.old3ds_port);
+    if (g_c.old3ds_port)
+        t_eq_int("Old3DS port is loaded into its own tab",
+                 gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(g_c.old3ds_port)), 5085);
+
+    /* Let the application's normal 200ms on_tick consume this update. */
+    probe->settings.output_backend = 1;
+    gtk_shell_update(sh, &probe->settings);
+    g_timeout_add(600, gtk_layout_probe_pcble, probe);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean gtk_layout_probe_pcble(gpointer user_data)
+{
+    GtkLayoutProbe *probe = user_data;
+    t_ok("PCBLE probe remains on GTK main context",
+         g_main_context_is_owner(g_main_context_default()));
+    t_ok("pcble panel is visible when pcble2gamepad is selected",
+         g_c.pcble_settings && gtk_widget_get_visible(g_c.pcble_settings));
+    t_ok("pcble Pair / Sync button is visible",
+         g_c.pcble_pair && gtk_widget_get_visible(g_c.pcble_pair));
+    t_ok("Titan panel is hidden while pcble is selected",
+         g_c.titan_settings && !gtk_widget_get_visible(g_c.titan_settings));
+    probe->settings.output_backend = 0;
+    gtk_shell_update(probe->shell, &probe->settings);
+    g_timeout_add(600, gtk_layout_probe_titan, probe);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean gtk_layout_probe_titan(gpointer user_data)
+{
+    GtkLayoutProbe *probe = user_data;
+    GtkShell *sh = probe->shell;
+    t_ok("Titan probe remains on GTK main context",
+         g_main_context_is_owner(g_main_context_default()));
+    t_ok("pcble panel hides again when Titan is selected",
+         g_c.pcble_settings && !gtk_widget_get_visible(g_c.pcble_settings));
+
+    /* These callbacks drive real settings and must not race GTK redraw. */
+    if (g_c.range[0]) gtk_range_set_value(GTK_RANGE(g_c.range[0]), 73);
+    if (g_c.output_range[0]) gtk_range_set_value(GTK_RANGE(g_c.output_range[0]), 84);
+    if (g_c.output_invert_ry)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.output_invert_ry), TRUE);
+    SDL_LockMutex(sh->lock);
+    const int input_range = sh->settings.stick_range[0];
+    const int output_range = sh->settings.output_stick_range[0];
+    const int output_invert = sh->settings.output_invert_ry;
+    SDL_UnlockMutex(sh->lock);
+    t_eq_int("Input shaping slider updates local input settings", input_range, 73);
+    t_eq_int("Output shaping slider updates final output settings", output_range, 84);
+    t_eq_int("Output shaping toggle updates final output settings", output_invert, 1);
+    t_ok("Local left stick preview exists", g_c.input_stick_preview[0] != NULL);
+    t_ok("Local right stick preview exists", g_c.input_stick_preview[1] != NULL);
+    t_ok("Output left stick preview exists", g_c.output_stick_preview[0] != NULL);
+    t_ok("Output right stick preview exists", g_c.output_stick_preview[1] != NULL);
+
+    probe->settings.wiiu_console_height = 1080;
+    probe->settings.wiiu_console_bitrate_mbps = 30;
+    probe->settings.wiiu_pad_bitrate_mbps = 20;
+    probe->settings.browser_height = 480;
+    probe->settings.wiiu_console_enabled = 1;
+    probe->settings.wiiu_pad_enabled = 1;
+    gtk_shell_update(sh, &probe->settings);
+    g_timeout_add(600, gtk_layout_probe_complete, probe);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean gtk_layout_probe_complete(gpointer user_data)
+{
+    GtkLayoutProbe *probe = user_data;
+    t_ok("Final GTK probe remains on GTK main context",
+         g_main_context_is_owner(g_main_context_default()));
+    gtk_layout_probe_finish(probe);
+    return G_SOURCE_REMOVE;
+}
+
+int main(void)
+{
+    if (!getenv("DISPLAY")) {
+        printf("no display; skipped\n");
+        return 0;
+    }
+    g_log_set_default_handler(count_warnings, NULL);
+    AppSettings settings = APP_SETTINGS_DEFAULTS;
+    GtkShellCallbacks callbacks = {on_settings, on_action, on_pair, NULL};
+    t_begin("the settings window builds and opens");
+    GtkShell *shell = gtk_shell_start(&settings, &callbacks);
+    t_ok("the shell starts", shell != NULL);
+    if (!shell) return t_report();
+
+    /* Application-facing APIs are mutex/idle based; no direct GTK calls. */
+    for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; i++)
+        gtk_shell_set_client_status(shell, i, "2 connected — 1280x720@60, 8000 kbps");
+    gtk_shell_set_wiiu_status(shell, "waiting for a pad");
+    gtk_shell_set_status(shell,
+        "running — capture online — browser server listening — native server listening");
+    gtk_shell_update(shell, &settings);
+    gtk_shell_debug_show_settings(shell);
+
+    GtkLayoutProbe probe = {.shell = shell, .settings = settings};
+    g_mutex_init(&probe.lock);
+    g_cond_init(&probe.cond);
+    /* The timer callback is dispatched by the GTK main loop (gtk-shell),
+     * not by the calling thread. Give the initial UI 500ms to settle. */
+    g_timeout_add(500, gtk_layout_probe_initial, &probe);
+    g_mutex_lock(&probe.lock);
+    const gint64 deadline = g_get_monotonic_time() + 15 * G_TIME_SPAN_SECOND;
+    while (!probe.done && g_cond_wait_until(&probe.cond, &probe.lock, deadline)) {
+        /* Re-evaluate the condition after each wakeup. */
+    }
+    const gboolean completed = probe.done;
+    g_mutex_unlock(&probe.lock);
+    gtk_shell_stop(shell);
+    g_cond_clear(&probe.cond);
+    g_mutex_clear(&probe.lock);
+
+    t_ok("GTK-thread probe finishes without timeout", completed);
+    t_ok("no GTK warning while building it", g_warnings == 0);
+    if (g_warnings)
+        printf("  first of %d: %s\n", g_warnings, g_first);
     return t_report();
 }
