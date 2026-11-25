@@ -737,13 +737,14 @@ void jc2_from_pro_frame(Jc2Side side, const uint8_t b[3], const uint16_t sticks[
 void jc2_from_pro_frame_vertical(Jc2Side side, const uint8_t b[3], const uint16_t sticks[4],
                                  Jc2Input *out)
 {
-    /* Joy-Con held upright as half of a pair: every button keeps its name. */
+    /* Upright Joy-Con as half of a pair: left owns LX/LY, right owns RX/RY.
+     * Never fall back to the opposite stick when the selected stick is
+     * neutral.  That made movement and camera move together: moving LX/LY
+     * also drove the right Joy-Con whenever RX/RY were centered (and vice
+     * versa).  The sideways single-Joy-Con converter above keeps its own
+     * intentional fallback for one-controller usage. */
     int first = side == JC2_LEFT ? 0 : 2;
     double x = pro_axis(sticks, first), y = pro_axis(sticks, first + 1);
-    if (x * x + y * y < 0.01) {
-        x = pro_axis(sticks, 2 - first);
-        y = pro_axis(sticks, 3 - first);
-    }
     uint16_t v = 0;
     if (side == JC2_LEFT) {
         if (b[2] & PRO2_DOWN) v |= JC2_L_DOWN;

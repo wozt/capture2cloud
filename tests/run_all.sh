@@ -118,6 +118,9 @@ timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
 timed "C: WUP touch"          run_c_test test_wup_touch ""
 timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
 timed "C: pcble protocol"   run_c_test test_pcble_protocol ""
+# Both sticks must remain independent in Joy-Con 2 pair/mixed upright mode.
+# This is a pure mapping test; no Bluetooth adapter or paired Switch needed.
+timed "C: Joy-Con 2 stick routing" run_c_test test_jc2_stick_routing "gio-2.0"
 timed "C: reset method"     run_c_test test_reset_method "sdl2 gio-2.0"
 # glib because server/web_stream.c now answers a WebSocket upgrade, whose
 # handshake is a SHA-1 and a base64 -- both GLib's.
