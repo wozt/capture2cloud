@@ -94,6 +94,7 @@ wiiu_console/bringup/*/*.rpx
 wiiu_console/bringup/*/*.elf
 wiiu_console/bringup/*/*.wuhb
 
+
 # USB Ethernet research. The Linux drivers are GPL-2.0 and are reference
 # only; the firmware is Nintendo's and console-specific. Neither belongs
 # in this repository.
@@ -120,3 +121,4 @@ release*/
 /3ds/capture2cloud-old3ds.lst
 
 .vscode/
+__pycache__/
