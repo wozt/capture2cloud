@@ -3973,7 +3973,7 @@ static void build_settings_window(GtkShell *shell) {
     GdkGeometry geometry = {0};
     /* Actual minimum, not the natural width of the nested controller grids.
      * Main scroll view handles any temporary overflow while resizing. */
-    geometry.min_width = 460;
+    geometry.min_width = 600;
     geometry.min_height = 420;
     gtk_window_set_geometry_hints(GTK_WINDOW(win), win, &geometry, GDK_HINT_MIN_SIZE);
     /* GTK3 exposes a setter, not a public geometry-hints getter. Keep the

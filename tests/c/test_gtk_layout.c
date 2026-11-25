@@ -609,9 +609,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     gtk_widget_get_size_request(sh->settings_window, &requested_width, NULL);
     const gint configured_minimum = GPOINTER_TO_INT(g_object_get_data(
         G_OBJECT(sh->settings_window), "wozt-minimum-width"));
-    t_ok("The window permits shrinking to 460px",
+    t_ok("The window permits shrinking to 600px",
          gtk_window_get_resizable(GTK_WINDOW(sh->settings_window)) &&
-         configured_minimum == 460 &&
+         configured_minimum == 600 &&
          (requested_width < 0 || requested_width <= configured_minimum));
     GtkWidget *dashboard_scroller = gtk_widget_get_parent(g_c.wozt_dashboard);
     if (GTK_IS_VIEWPORT(dashboard_scroller))
