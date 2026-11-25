@@ -393,7 +393,8 @@ static void publish_client_status(void) {
         GtkShellClient client;
     } MAP[] = {
         { SS_STREAM_WEB,  GTK_SHELL_CLIENT_BROWSER },
-        { SS_STREAM_H264, GTK_SHELL_CLIENT_NATIVE },
+        /* Native Switch and Android share one H.264 encode: their
+         * per-platform connected counts are sampled separately below. */
         { SS_STREAM_DRC,  GTK_SHELL_CLIENT_WIIU_PAD },
         { SS_STREAM_WIIU, GTK_SHELL_CLIENT_WIIU_CONSOLE },
         { SS_STREAM_OLD3DS, GTK_SHELL_CLIENT_OLD3DS },
@@ -413,6 +414,59 @@ static void publish_client_status(void) {
                      fps > 0 ? fps : 60, kbps);
         }
         gtk_shell_set_client_status(g_shell, MAP[i].client, line);
+    }
+
+    /* Switch/Android distinguish only clients that advertise identity.
+     * Legacy clients are counted explicitly as unclassified, never guessed. */
+    {
+        int switches = 0, androids = 0, legacy = 0;
+        switch_stream_native_platform_counts(g_switch, &switches, &androids, &legacy);
+        int w = 0, h = 0, fps = 0, kbps = 0;
+        (void)gst_webrtc_stream_slot_info(g_gst, SS_STREAM_H264, &w, &h, &fps, &kbps);
+        char line[160];
+        if (switches > 0)
+            snprintf(line, sizeof(line), "%d Switch — %dx%d@%d, %d kbps",
+                     switches, w, h, fps, kbps);
+        else
+            snprintf(line, sizeof(line), "%s", legacy
+                     ? "0 Switch identified" : "nothing connected — not encoding");
+        if (legacy > 0) {
+            size_t n = strlen(line);
+            snprintf(line + n, sizeof(line) - n, " | %d legacy unknown", legacy);
+        }
+        gtk_shell_set_client_status(g_shell, GTK_SHELL_CLIENT_NATIVE, line);
+        if (androids > 0)
+            snprintf(line, sizeof(line), "%d Android — %dx%d@%d, %d kbps",
+                     androids, w, h, fps, kbps);
+        else
+            snprintf(line, sizeof(line), "%s", legacy
+                     ? "0 Android identified" : "nothing connected — not encoding");
+        if (legacy > 0) {
+            size_t n = strlen(line);
+            snprintf(line + n, sizeof(line) - n, " | %d legacy unknown", legacy);
+        }
+        gtk_shell_set_client_status(g_shell, GTK_SHELL_CLIENT_ANDROID, line);
+    }
+    {
+        WupStreamMetrics metrics = {0};
+        wup_stream_metrics_snapshot(g_wup_stream, &metrics);
+        char summary[160], detailed[240];
+        if (metrics.valid) {
+            snprintf(summary, sizeof(summary), "connected — 854x480 — %.1f FPS", metrics.fps);
+            snprintf(detailed, sizeof(detailed),
+                "FPS %.1f | New %.1f | Capt %.1f\n"
+                "Repeat %u | Drop %u | Err %u\nScale %.1f | Frame %.1f ms",
+                metrics.fps, metrics.fresh_fps, metrics.captured_fps,
+                metrics.repeated, metrics.dropped, metrics.errors,
+                metrics.scale_ms, metrics.frame_call_ms);
+        } else {
+            snprintf(summary, sizeof(summary), "%s", g_wup_stream
+                ? wup_stream_status(g_wup_stream) : "WUP Stream disabled");
+            snprintf(detailed, sizeof(detailed),
+                "FPS -- | New -- | Capt --\nRepeat -- | Drop -- | Err --\nScale -- | Frame -- ms");
+        }
+        gtk_shell_set_client_status(g_shell, GTK_SHELL_CLIENT_WUPSTREAM, summary);
+        gtk_shell_set_wup_metrics(g_shell, detailed);
     }
 
     /*
@@ -1721,10 +1775,9 @@ int main(int argc, char **argv) {
             const Uint32 now_pad = SDL_GetTicks();
             if (g_shell && now_pad - pad_status_at >= 1000) {
                 pad_status_at = now_pad;
+                /* Radio status never displays the other GamePad mode. */
                 gtk_shell_set_wiiu_status(g_shell,
-                    g_settings.wup_stream_enabled
-                      ? (g_wup_stream ? wup_stream_status(g_wup_stream) : "WUP Stream stopped")
-                      : (g_wiiu_pad ? wiiu_pad_status(g_wiiu_pad) : "not running"));
+                    g_wiiu_pad ? wiiu_pad_status(g_wiiu_pad) : "not running");
                 publish_client_status();
                 publish_server_status();
             }

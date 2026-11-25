@@ -315,7 +315,7 @@ static void finish_connect(void) {
     hello.magic = C2S_MAGIC;
     hello.version = C2S_VERSION;
     hello.token_len = token_len;
-    hello.reserved = 0;
+    hello.reserved = c2s_le16(C2S_HELLO_CAP_SWITCH);
     if (send_all(&hello, sizeof(hello)) != 0 ||
         (token_len && send_all(g_token, token_len) != 0)) {
         fail("sending hello", errno, "the host closed during the handshake");

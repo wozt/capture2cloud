@@ -101,6 +101,10 @@ void switch_stream_set_drc_available(SwitchStream *s, int available);
 int switch_stream_stream_codec(SwitchStream *s, int slot);
 
 int switch_stream_client_count(SwitchStream *s);
+/* Snapshot connected native client identities. Legacy clients are counted
+ * separately, not misidentified as Switch or Android. Thread-safe. */
+void switch_stream_native_platform_counts(SwitchStream *s, int *switches,
+                                          int *androids, int *legacy);
 
 /* How many could connect at once. A constant, but one the rest of the
  * program should not have to know the name of. */

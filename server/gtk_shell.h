@@ -34,6 +34,8 @@ typedef enum {
     GTK_SHELL_CLIENT_WIIU_PAD,      /* a real GamePad, over the radio */
     GTK_SHELL_CLIENT_WIIU_CONSOLE,  /* homebrew running on a Wii U */
     GTK_SHELL_CLIENT_OLD3DS,        /* Old 3DS / Old 2DS homebrew */
+    GTK_SHELL_CLIENT_ANDROID,       /* identified Android direct clients */
+    GTK_SHELL_CLIENT_WUPSTREAM,     /* Wii U GamePad on Wi-Fi / WUP helper */
     GTK_SHELL_CLIENT_COUNT
 } GtkShellClient;
 
@@ -105,6 +107,7 @@ void gtk_shell_set_status(GtkShell *shell, const char *text);
 /* What the GamePad bridge is doing, shown on its own line under the
  * setting that turns it on. Written from the host once a second. */
 void gtk_shell_set_wiiu_status(GtkShell *shell, const char *text);
+void gtk_shell_set_wup_metrics(GtkShell *shell, const char *text);
 
 /* One line per client family, on that family's own page: how many are
  * connected and what they are being sent. Thread-safe, callable before

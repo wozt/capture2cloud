@@ -140,7 +140,8 @@ class DirectClient(
             hello.putInt(Protocol.MAGIC)
             hello.put(Protocol.VERSION.toByte())
             hello.put(tokenBytes.size.toByte())
-            hello.putShort(0)
+            // Client identity is informational and backward compatible.
+            hello.putShort(0x0200.toShort())
             hello.put(tokenBytes)
             s.getOutputStream().write(hello.array())
             s.getOutputStream().flush()

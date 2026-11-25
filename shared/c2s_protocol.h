@@ -164,6 +164,10 @@ static inline uint32_t c2s_le32(uint32_t v)
 #define C2S_HELLO_CAP_OPUS_UDP  0x0004u
 #define C2S_HELLO_CAP_ADPCM_UDP 0x0008u
 #define C2S_HELLO_CAP_OLD3DS    0x8000u
+/* Informational client identities. Older clients send 0 and remain supported.
+ * These bits affect monitoring only; they never grant control rights. */
+#define C2S_HELLO_CAP_SWITCH    0x0100u
+#define C2S_HELLO_CAP_ANDROID   0x0200u
 
 /* C2sHelloAck.reserved */
 #define C2S_ACK_FLAG_PCM_UDP    0x01u

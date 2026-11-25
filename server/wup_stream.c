@@ -41,6 +41,7 @@ struct WupStream {
     unsigned last_input_seq;
     WupTouch touch;
     int last_touch_contact; /* physical touchscreen only, never stick axes */
+    double scale_avg_us; /* smoothed measured sws_scale duration */
 };
 
 static int axis(int v) {
@@ -120,8 +121,27 @@ int wup_stream_connected(const WupStream *w) {
 
 const char *wup_stream_status(WupStream *w) {
     if (!w) return "WUP Stream disabled";
-    if (wup_stream_connected(w)) return "WUP Stream connected (854x480, ~60 fps)";
+    if (wup_stream_connected(w)) return "WUP Stream connected (854x480)";
     return w->error;
+}
+
+void wup_stream_metrics_snapshot(const WupStream *w, WupStreamMetrics *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!wup_stream_connected(w)) return;
+    const C2cWupShared *m = w->shared;
+    const unsigned sent = atomic_load_explicit(&m->stats_tx_fps10, memory_order_acquire);
+    if (!sent) return; /* helper has not completed its first sample */
+    out->fps = sent / 10.0;
+    out->fresh_fps = atomic_load_explicit(&m->stats_new_fps10, memory_order_acquire) / 10.0;
+    out->captured_fps = atomic_load_explicit(&m->stats_capture_fps10, memory_order_acquire) / 10.0;
+    out->repeated = atomic_load_explicit(&m->stats_repeat, memory_order_acquire);
+    out->dropped = atomic_load_explicit(&m->stats_drop, memory_order_acquire);
+    out->errors = atomic_load_explicit(&m->stats_error, memory_order_acquire);
+    out->frame_call_ms = atomic_load_explicit(&m->stats_frame_us, memory_order_acquire) / 1000.0;
+    out->scale_ms = atomic_load_explicit(&m->stats_scale_us, memory_order_acquire) / 1000.0;
+    out->valid = 1;
 }
 
 void wup_stream_poll(WupStream *w, int touch_mode) {
@@ -222,7 +242,19 @@ void wup_stream_push_video(WupStream *w, const VideoFrame *frame, int width, int
     int stride[4] = {frame->stride[0], frame->stride[1], frame->stride[2], 0};
     uint8_t *dst[4] = {w->shared->video[chosen], NULL, NULL, NULL};
     int out_stride[4] = {C2C_WUP_W * 4, 0, 0, 0};
-    if (sws_scale(w->sws, src, stride, 0, height, dst, out_stride) <= 0) {
+    const Uint64 scale_started = SDL_GetPerformanceCounter();
+    const int scaled_lines = sws_scale(w->sws, src, stride, 0, height, dst, out_stride);
+    const Uint64 scale_finished = SDL_GetPerformanceCounter();
+    if (scaled_lines > 0) {
+        const Uint64 hz = SDL_GetPerformanceFrequency();
+        const double measured_us = hz
+            ? (scale_finished - scale_started) * 1000000.0 / (double)hz : 0.0;
+        w->scale_avg_us = w->scale_avg_us == 0.0 ? measured_us :
+            w->scale_avg_us * 0.85 + measured_us * 0.15;
+        atomic_store_explicit(&w->shared->stats_scale_us,
+                              (unsigned)(w->scale_avg_us + 0.5), memory_order_release);
+    }
+    if (scaled_lines <= 0) {
         atomic_store(&w->shared->video_state[chosen], 0);
         return;
     }

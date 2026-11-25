@@ -176,6 +176,8 @@ typedef struct {
     int on_drc_port;   /* arrived on the GamePad's own port */
     int on_wiiu_port;  /* arrived on the Wii U console's own port */
     int on_old3ds_port; /* arrived on the Old 3DS / Old 2DS port */
+    /* 0 legacy/unknown, 1 Switch, 2 Android. Not an authentication factor. */
+    unsigned char native_platform;
     /* MPEG-4 Part 2 pictures after a dropped P-frame are unusable until
      * the next I-frame.  Keep this peer parked at a clean boundary rather
      * than forwarding corruption while a replacement keyframe is made. */
@@ -1243,6 +1245,27 @@ int switch_stream_client_count(SwitchStream *s) {
     return n;
 }
 
+void switch_stream_native_platform_counts(SwitchStream *s, int *switches,
+                                          int *androids, int *legacy)
+{
+    int counts[3] = {0, 0, 0};
+    if (s) {
+        SDL_LockMutex(s->mutex);
+        for (int i = 0; i < SS_MAX_CLIENTS; ++i) {
+            const SsClient *c = &s->clients[i];
+            if (!c->in_use || !c->handshake_done || c->is_ws ||
+                c->on_drc_port || c->on_wiiu_port || c->on_old3ds_port)
+                continue;
+            counts[c->native_platform == 1 ? 1 :
+                   c->native_platform == 2 ? 2 : 0]++;
+        }
+        SDL_UnlockMutex(s->mutex);
+    }
+    if (switches) *switches = counts[1];
+    if (androids) *androids = counts[2];
+    if (legacy) *legacy = counts[0];
+}
+
 /* --- receiving ------------------------------------------------------ */
 
 static void client_consume(SsClient *c, uint32_t bytes) {
@@ -1292,6 +1315,14 @@ static void handle_hello(SwitchStream *s, int index) {
     }
 
     ack.accepted = 1;
+    /* Do not guess from codec or peer IP: both devices share the native port.
+     * Older clients have neither bit, so their platform remains unknown. */
+    if (!c->is_ws && !c->on_drc_port && !c->on_wiiu_port && !c->on_old3ds_port) {
+        const uint16_t identity = c2s_le16(hello.reserved) &
+            (C2S_HELLO_CAP_SWITCH | C2S_HELLO_CAP_ANDROID);
+        c->native_platform = identity == C2S_HELLO_CAP_SWITCH ? 1 :
+                             identity == C2S_HELLO_CAP_ANDROID ? 2 : 0;
+    }
     /*
      * A pad is a player, always, and no password is involved.
      *

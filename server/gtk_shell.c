@@ -48,6 +48,8 @@ struct GtkShell {
     char status[160];
     char wiiu_status_text[160];
     volatile int wiiu_status_dirty;
+    char wup_metrics_text[240];
+    volatile int wup_metrics_dirty;
     char client_status_text[GTK_SHELL_CLIENT_COUNT][160];
     volatile int client_status_dirty;
 
@@ -78,7 +80,7 @@ struct GtkShell {
 typedef struct {
     GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
     GtkWidget *wiiu_pad_enabled, *wiiu_pad_port, *wiiu_pad_bitrate;
-    GtkWidget *wup_stream_enabled, *wup_touch_mode;
+    GtkWidget *wup_stream_enabled, *wup_touch_mode, *wup_metrics_label;
     GtkWidget *wiiu_console_enabled, *wiiu_console_port;
     GtkWidget *wiiu_console_resolution, *wiiu_console_bitrate;
     GtkWidget *old3ds_port;
@@ -3524,7 +3526,10 @@ static GtkWidget *wozt_client_icon_label(const char *title)
     else if (strstr(title, "Switch / Android")) {
         first = "switch";
         second = "android";
-    } else if (strstr(title, "GamePad")) first = "gamepad";
+    } else if (strstr(title, "WUP Stream")) first = "wup";
+    else if (strstr(title, "Switch")) first = "switch";
+    else if (strstr(title, "Android")) first = "android";
+    else if (strstr(title, "GamePad")) first = "gamepad";
     else if (strstr(title, "Wii U Console")) first = "wiiu";
     else if (strstr(title, "Old 3DS")) first = "3ds";
     if (!first) return gtk_label_new(title);
@@ -3581,12 +3586,12 @@ static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 1);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 2);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 1);
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(scroll), 0);
-    gtk_widget_set_size_request(scroll, 1, 198);
+    gtk_widget_set_size_request(scroll, 1, 190);
     gtk_container_add(GTK_CONTAINER(scroll), grid);
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), scroll,
                              wozt_client_icon_label(title));
@@ -4037,10 +4042,14 @@ static void build_settings_window(GtkShell *shell) {
         add_client_icon_status(grid, row++, "Browser");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_NATIVE] =
-        add_client_icon_status(grid, row++, "Switch / Android");
+        add_client_icon_status(grid, row++, "Switch");
+    g_c.overview_client_status[GTK_SHELL_CLIENT_ANDROID] =
+        add_client_icon_status(grid, row++, "Android");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_PAD] =
         add_client_icon_status(grid, row++, "Wii U GamePad");
+    g_c.overview_client_status[GTK_SHELL_CLIENT_WUPSTREAM] =
+        add_client_icon_status(grid, row++, "WUP Stream GamePad");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
         add_client_icon_status(grid, row++, "Wii U Console");
@@ -4143,8 +4152,8 @@ static void build_settings_window(GtkShell *shell) {
         add_client_status(grid, row++, "watching now");
 
 
-    /* --- Client · Switch / Android -------------------------------- */
-    make_page("Client · Switch / Android", clients, &grid);
+    /* --- Client · Switch ----------------------------------------- */
+    make_page("Client · Switch", clients, &grid);
     row = 0;
 
     g_c.switch_enabled = add_row(
@@ -4175,9 +4184,8 @@ static void build_settings_window(GtkShell *shell) {
 
     {
         GtkWidget *note = gtk_label_new(
-            "Switch and Android clients negotiate their own profile and "
-            "share the native stream. These settings are unrelated to the "
-            "browser encoder.");
+            "Native TCP settings are shared by Switch and Android. "
+            "Connected devices are counted separately by their handshake.");
 
         gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
         gtk_label_set_max_width_chars(GTK_LABEL(note), 70);
@@ -4186,26 +4194,24 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* --- Client · Wii U GamePad ----------------------------------- */
+    /* WOZT_0856_SPLIT_CLIENTS: direct radio and WUP occupy separate tabs. */
+    /* --- Client · Android ----------------------------------------- */
+    make_page("Client · Android", clients, &grid);
+    row = 0;
+    add_section_header(grid, row++, "Android native client");
+    g_c.client_status[GTK_SHELL_CLIENT_ANDROID] =
+        add_client_status(grid, row++, "connected now");
+    GtkWidget *android_note = gtk_label_new(
+        "Android uses the same native TCP listener as Switch. "
+        "Port and enable settings are on the Switch tab; device identity "
+        "is measured from the handshake, not guessed from the codec.");
+    gtk_label_set_line_wrap(GTK_LABEL(android_note), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(android_note), 42);
+    gtk_widget_set_halign(android_note, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(grid), android_note, 0, row++, 2, 1);
+
+    /* --- Client · GamePad direct radio ----------------------------- */
     make_page("Client · Wii U GamePad", clients, &grid);
-    GtkWidget *wiiu_pad_page = grid;
-    GtkWidget *wiiu_pad_columns = gtk_flow_box_new();
-    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(wiiu_pad_columns), GTK_SELECTION_NONE);
-    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(wiiu_pad_columns), 1);
-    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(wiiu_pad_columns), 2);
-    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(wiiu_pad_columns), 6);
-    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(wiiu_pad_columns), 2);
-    gtk_widget_set_halign(wiiu_pad_columns, GTK_ALIGN_START);
-    GtkWidget *wiiu_pad_direct = gtk_grid_new();
-    GtkWidget *wiiu_pad_wup = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(wiiu_pad_direct), 1);
-    gtk_grid_set_row_spacing(GTK_GRID(wiiu_pad_wup), 1);
-    gtk_grid_set_column_spacing(GTK_GRID(wiiu_pad_direct), 3);
-    gtk_grid_set_column_spacing(GTK_GRID(wiiu_pad_wup), 3);
-    gtk_flow_box_insert(GTK_FLOW_BOX(wiiu_pad_columns), wiiu_pad_direct, -1);
-    gtk_flow_box_insert(GTK_FLOW_BOX(wiiu_pad_columns), wiiu_pad_wup, -1);
-    gtk_grid_attach(GTK_GRID(wiiu_pad_page), wiiu_pad_columns, 0, 0, 2, 1);
-    grid = wiiu_pad_direct;
     row = 0;
     add_section_header(grid, row++, "Direct radio bridge");
 
@@ -4287,8 +4293,8 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* WUP Stream: independent LAN protocol on the same GamePad. */
-    grid = wiiu_pad_wup;
+    /* --- Client · GamePad WUP Wi-Fi ------------------------------- */
+    make_page("Client · WUP Stream GamePad", clients, &grid);
     row = 0;
     add_section_header(grid, row++, "WUP Stream (Wi-Fi homebrew)");
     g_c.wup_stream_enabled = add_row(
@@ -4315,6 +4321,18 @@ static void build_settings_window(GtkShell *shell) {
     gtk_widget_set_halign(wup_note, GTK_ALIGN_START);
     add_row(grid, row++, "", wup_note);
     gtk_label_set_max_width_chars(GTK_LABEL(wup_note), 40);
+
+    g_c.client_status[GTK_SHELL_CLIENT_WUPSTREAM] =
+        add_client_status(grid, row++, "stream");
+    g_c.wup_metrics_label = gtk_label_new("FPS -- | New -- | Capt --\nRepeat -- | Drop -- | Err --\nScale -- | Frame -- ms");
+    gtk_widget_set_halign(g_c.wup_metrics_label, GTK_ALIGN_START);
+    gtk_label_set_selectable(GTK_LABEL(g_c.wup_metrics_label), TRUE);
+    gtk_label_set_line_wrap(GTK_LABEL(g_c.wup_metrics_label), TRUE);
+    gtk_widget_set_tooltip_text(g_c.wup_metrics_label,
+        "Measured helper throughput: Tx frames, new frames, producer frames, "
+        "repeated/overwritten frames, failures and frame-call duration "
+        "(including pacing). Not network bitrate or end-to-end latency.");
+    gtk_grid_attach(GTK_GRID(grid), g_c.wup_metrics_label, 0, row++, 2, 1);
 
     /* --- Client · Wii U Console ----------------------------------- */
     make_page("Client · Wii U Console", clients, &grid);
@@ -4426,9 +4444,9 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* All five notebook pages inherit the same compact control density.
+    /* All seven notebook pages inherit the same compact control density.
      * Keep the WUP touch options usable without a very wide combo. */
-    for (int page_i = 0; page_i < 5; ++page_i)
+    for (int page_i = 0; page_i < 7; ++page_i)
         wozt_compact_client_widgets(gtk_notebook_get_nth_page(
             GTK_NOTEBOOK(clients), page_i));
     if (g_c.wup_touch_mode) {
@@ -6079,6 +6097,15 @@ static gboolean on_tick(gpointer user_data) {
             }
         }
     }
+    if (shell->wup_metrics_dirty) {
+        shell->wup_metrics_dirty = 0;
+        char snapshot[240];
+        SDL_LockMutex(shell->lock);
+        snprintf(snapshot, sizeof(snapshot), "%s", shell->wup_metrics_text);
+        SDL_UnlockMutex(shell->lock);
+        if (g_c.wup_metrics_label)
+            gtk_label_set_text(GTK_LABEL(g_c.wup_metrics_label), snapshot);
+    }
     if (shell->wiiu_status_dirty) {
         shell->wiiu_status_dirty = 0;
         char text[160];
@@ -6342,6 +6369,15 @@ void gtk_shell_set_client_status(GtkShell *shell, GtkShellClient client, const c
              "%s", text);
     SDL_UnlockMutex(shell->lock);
     shell->client_status_dirty = 1;
+}
+
+void gtk_shell_set_wup_metrics(GtkShell *shell, const char *text)
+{
+    if (!shell || !text) return;
+    SDL_LockMutex(shell->lock);
+    snprintf(shell->wup_metrics_text, sizeof(shell->wup_metrics_text), "%s", text);
+    SDL_UnlockMutex(shell->lock);
+    shell->wup_metrics_dirty = 1;
 }
 
 void gtk_shell_set_wiiu_status(GtkShell *shell, const char *text) {

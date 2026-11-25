@@ -29,7 +29,8 @@ static void set_input(C2cWupShared *m, const wupstream_input_t *in) {
     atomic_fetch_add_explicit(&m->input_seq, 1, memory_order_release);
 }
 
-static void newest_frame(C2cWupShared *m, unsigned char *last) {
+static int newest_frame(C2cWupShared *m, unsigned char *last,
+                        unsigned *sequence) {
     int best = -1;
     unsigned best_seq = 0;
     for (int k = 0; k < C2C_WUP_VIDEO_SLOTS; ++k) {
@@ -38,13 +39,15 @@ static void newest_frame(C2cWupShared *m, unsigned char *last) {
             best = k; best_seq = m->video_sequence[k];
         }
     }
-    if (best < 0) return;
+    if (best < 0) return 0;
     int expected = 2;
     if (!atomic_compare_exchange_strong_explicit(&m->video_state[best], &expected, 3,
                                                   memory_order_acq_rel, memory_order_acquire))
-        return;
+        return 0;
+    if (sequence) *sequence = best_seq;
     memcpy(last, m->video[best], C2C_WUP_VIDEO_SIZE);
     atomic_store_explicit(&m->video_state[best], 0, memory_order_release);
+    return 1;
 }
 
 static void pull_audio(C2cWupShared *m, int16_t *out, unsigned frames) {
@@ -94,13 +97,44 @@ int main(int argc, char **argv) {
         atomic_store_explicit(&m->connected, 1, memory_order_release);
         atomic_store(&m->audio_read, atomic_load(&m->audio_write));
         double prev = monotonic(), audio_remainder = 0;
+        double sample_started = prev, frame_total = 0;
+        unsigned tx = 0, fresh = 0, dropped = 0, errors = 0;
+        unsigned last_seq = 0;
+        unsigned last_captured = atomic_load_explicit(&m->frame_generation, memory_order_acquire);
+        atomic_store(&m->stats_tx_fps10, 0);
         while (!interrupted && atomic_load(&m->running)) {
             wupstream_input_t in;
             if (wupstream_input(pad, &in) != 0) break;
             set_input(m, &in);
-            newest_frame(m, last);
-            if (wupstream_frame(pad, last, C2C_WUP_W * 4, WUPSTREAM_BGRA) != 0) break;
+            unsigned seq = 0;
+            if (newest_frame(m, last, &seq)) {
+                fresh++;
+                if (last_seq && seq > last_seq + 1) dropped += seq - last_seq - 1;
+                last_seq = seq;
+            }
+            const double frame_started = monotonic();
+            int sent = wupstream_frame(pad, last, C2C_WUP_W * 4, WUPSTREAM_BGRA);
+            frame_total += (monotonic() - frame_started) * 1000000.0;
+            if (sent != 0) { errors++; break; }
+            tx++;
             double now = monotonic();
+            if (now - sample_started >= 1.0) {
+                const double span = now - sample_started;
+                const unsigned total_captured = atomic_load_explicit(
+                    &m->frame_generation, memory_order_acquire);
+                atomic_store(&m->stats_new_fps10, (unsigned)(10.0 * fresh / span + .5));
+                atomic_store(&m->stats_capture_fps10,
+                    (unsigned)(10.0 * (total_captured - last_captured) / span + .5));
+                atomic_store(&m->stats_repeat, tx >= fresh ? tx - fresh : 0);
+                atomic_store(&m->stats_drop, dropped);
+                atomic_store(&m->stats_error, errors);
+                atomic_store(&m->stats_frame_us, tx ? (unsigned)(frame_total / tx) : 0);
+                atomic_store_explicit(&m->stats_tx_fps10,
+                    (unsigned)(10.0 * tx / span + .5), memory_order_release);
+                sample_started = now; tx = fresh = dropped = errors = 0;
+                frame_total = 0;
+                last_captured = total_captured;
+            }
             double elapsed = now - prev;
             prev = now;
             if (elapsed < 0.0) elapsed = 0.0;
@@ -115,6 +149,7 @@ int main(int argc, char **argv) {
                 if (wupstream_audio(pad, samples, (int)nf) != 0) break;
             }
         }
+        atomic_store(&m->stats_tx_fps10, 0);
         atomic_store_explicit(&m->connected, 0, memory_order_release);
         set_input(m, NULL);
         wupstream_close(pad);
