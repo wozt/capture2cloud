@@ -351,11 +351,22 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Stick preview receives a live WOZT background color",
          sh->wozt && wozt_ui_standard_get_color(sh->wozt, "entry", &preview_background));
     char *slider_rules = sh->wozt ? gtk_css_provider_to_string(sh->wozt->css) : NULL;
+    /* GtkCssProvider serializes declarations as e.g. "background-image: none"
+     * even if the generated source had "background-image:none". Assert on
+     * whitespace-independent CSS tokens, not one serialization format. */
+    GString *slider_tokens = slider_rules ? g_string_sized_new(strlen(slider_rules)) : NULL;
+    if (slider_tokens) {
+        for (const unsigned char *p = (const unsigned char *)slider_rules; *p; ++p)
+            if (!g_ascii_isspace(*p)) g_string_append_c(slider_tokens, (char)*p);
+    }
+    const char *slider_css = slider_tokens ? slider_tokens->str : NULL;
     t_ok("Slider track, highlight and thumb have palette-driven CSS",
-         slider_rules && strstr(slider_rules, "scale trough") &&
-         strstr(slider_rules, "scale trough highlight") &&
-         strstr(slider_rules, "scale slider") &&
-         strstr(slider_rules, "background-image:none"));
+         slider_css && strstr(slider_css, "scaletrough{") &&
+         strstr(slider_css, "scaletroughhighlight") &&
+         strstr(slider_css, "scaleslider") &&
+         strstr(slider_css, "background-image:none") &&
+         strstr(slider_css, "background-color:"));
+    if (slider_tokens) g_string_free(slider_tokens, TRUE);
     g_free(slider_rules);
     GList *output_children = g_c.wozt_inner_output
         ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output)) : NULL;

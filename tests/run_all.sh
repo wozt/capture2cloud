@@ -87,11 +87,14 @@ run_c_test_x11() {
             return
         fi
     fi
-    if ! $LOW env C2C_RESOURCE_ROOT="$PROJECT_DIR" NO_AT_BRIDGE=1 xvfb-run -a "$BUILD_DIR/$name"; then
+    local gtk_exit=0
+    $LOW env C2C_RESOURCE_ROOT="$PROJECT_DIR" NO_AT_BRIDGE=1 xvfb-run -a "$BUILD_DIR/$name" || gtk_exit=$?
+    if [ "$gtk_exit" -ne 0 ]; then
         failed=1
-        # Optional backtrace for persistent GTK crashes.
-        if command -v gdb >/dev/null 2>&1; then
-            echo "  GTK test failed; collecting optional GDB backtrace"
+        # A failed assertion exits with code 1 and already prints its details.
+        # Rerun under GDB only for signal exits (e.g. SIGSEGV=139, SIGABRT=134).
+        if [ "$gtk_exit" -ge 128 ] && command -v gdb >/dev/null 2>&1; then
+            echo "  GTK crashed (exit $gtk_exit); collecting optional GDB backtrace"
             $LOW env C2C_RESOURCE_ROOT="$PROJECT_DIR" NO_AT_BRIDGE=1 xvfb-run -a gdb -q -batch -ex run -ex "thread apply all bt 12" --args "$BUILD_DIR/$name" || true
         fi
     fi
