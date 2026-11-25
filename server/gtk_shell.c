@@ -201,7 +201,7 @@ static const int wozt_group_size[3] = {2, 2, 4};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
     315, 435,   /* natural Overview + scrollable Clients at ~800px */
-    620, 710,   /* compact two-column Output and Local input */
+    620, 560,   /* compact Output and natural-width Local input */
     225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
 };
 
@@ -270,7 +270,7 @@ static void wozt_dashboard_reflow(int width)
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
                 const gboolean natural = section_index == 0 ||
-                    (section_index == 2 && n == 2);
+                    ((section_index == 2 || section_index == 3) && n == 2);
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
@@ -297,7 +297,7 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
     const int controller_width = width / wozt_dashboard_group_columns(width, 1);
     GtkOrientation output_direction = controller_width >= 665
         ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
-    GtkOrientation input_direction = controller_width >= 710
+    GtkOrientation input_direction = controller_width >= 590
         ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
     if (g_c.wozt_inner_output)
         gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), output_direction);
@@ -2393,9 +2393,9 @@ static gboolean stick_preview_draw(
     const int h =
         gtk_widget_get_allocated_height(area);
 
-    const gboolean tiny_output_preview =
-        GPOINTER_TO_INT(g_object_get_data(
-            G_OBJECT(area), "c2c-preview-output")) && w < 96;
+    /* A 38px preview displays the geometry; numeric values stay in
+     * the translated controls and in the live preview tooltip. */
+    const gboolean tiny_output_preview = w < 96;
     const double cx = w * 0.5;
     const double cy = h * (tiny_output_preview ? 0.41 : 0.48);
     const double radius =
@@ -2511,8 +2511,14 @@ static gboolean stick_preview_draw(
         tiny_output_preview ? "D%d A%d G%d" : "dz %d%%  ax %d%%  dg %d%%",
         dz, range, diagonal);
 
-    cairo_move_to(cr, tiny_output_preview ? 4.0 : 8.0, h - 10.0);
-    cairo_show_text(cr, line);
+    gchar *old_tooltip = gtk_widget_get_tooltip_text(area);
+    if (g_strcmp0(old_tooltip, line) != 0)
+        gtk_widget_set_tooltip_text(area, line);
+    g_free(old_tooltip);
+    if (w >= 72 && h >= 60) {
+        cairo_move_to(cr, tiny_output_preview ? 4.0 : 8.0, h - 10.0);
+        cairo_show_text(cr, line);
+    }
 
     return FALSE;
 }
@@ -3213,6 +3219,53 @@ static void wozt_pack_controller_columns_tightly(GtkWidget *columns)
     g_list_free(children);
 }
 
+/* WOZT_0841_COMPACT_PREVIEW */
+/* "visual preview" is already an explanation on the section and preview;
+ * the inline label only consumes space. Keep the framed stick widgets and
+ * their signals, removing just that redundant text widget. */
+static gboolean wozt_remove_preview_caption(GtkWidget *area)
+{
+    if (!GTK_IS_WIDGET(area)) return FALSE;
+    GtkWidget *frame = gtk_widget_get_parent(area);
+    GtkWidget *pair = frame ? gtk_widget_get_parent(frame) : NULL;
+    GtkWidget *inline_row = pair ? gtk_widget_get_parent(pair) : NULL;
+    if (!GTK_IS_BOX(inline_row)) return FALSE;
+    GList *children = gtk_container_get_children(GTK_CONTAINER(inline_row));
+    gboolean found = FALSE;
+    for (GList *it = children; it; it = it->next) {
+        GtkWidget *child = GTK_WIDGET(it->data);
+        if (GTK_IS_LABEL(child) &&
+            g_strcmp0(gtk_label_get_text(GTK_LABEL(child)), "visual preview") == 0) {
+            gtk_widget_destroy(child);
+            found = TRUE;
+            break;
+        }
+    }
+    g_list_free(children);
+    gtk_box_set_spacing(GTK_BOX(inline_row), 0);
+    gtk_widget_set_halign(inline_row, GTK_ALIGN_START);
+    return found;
+}
+
+static void wozt_make_input_sliders_dense(void)
+{
+    GtkWidget *controls[] = {
+        g_c.lt_threshold, g_c.deadzone[0], g_c.range[0], g_c.diagonal[0],
+        g_c.rt_threshold, g_c.deadzone[1], g_c.range[1], g_c.diagonal[1]
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(controls); ++i) {
+        GtkWidget *scale = controls[i];
+        if (!GTK_IS_SCALE(scale)) continue;
+        /* No font-size change: only GTK scale chrome and widget margins. */
+        gtk_widget_set_margin_top(scale, 0);
+        gtk_widget_set_margin_bottom(scale, 0);
+        gtk_widget_set_valign(scale, GTK_ALIGN_CENTER);
+        gtk_widget_set_size_request(scale, 116, 14);
+        gtk_style_context_add_class(gtk_widget_get_style_context(scale),
+                                    "wozt-input-tight-scale");
+    }
+}
+
 static void wozt_compact_controller_output(void)
 {
     if (GTK_IS_GRID(g_c.pcble_settings)) {
@@ -3234,9 +3287,9 @@ static void wozt_compact_controller_output(void)
     wozt_pack_controller_columns_tightly(g_c.wozt_inner_output);
 
     if (g_c.output_stick_preview[0])
-        gtk_widget_set_size_request(g_c.output_stick_preview[0], 76, 76);
+        gtk_widget_set_size_request(g_c.output_stick_preview[0], 38, 38);
     if (g_c.output_stick_preview[1])
-        gtk_widget_set_size_request(g_c.output_stick_preview[1], 76, 76);
+        gtk_widget_set_size_request(g_c.output_stick_preview[1], 38, 38);
 
     GtkWidget *shaping = NULL;
     if (g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output)) {
@@ -3253,6 +3306,8 @@ static void wozt_compact_controller_output(void)
         /* The preview must not inherit the long slider-label column width. */
         if (!wozt_inline_output_row(shaping, "visual preview"))
             g_warning("wozt-ui: cannot inline output visual preview");
+        else if (!wozt_remove_preview_caption(g_c.output_stick_preview[0]))
+            g_warning("wozt-ui: cannot remove redundant output preview label");
     }
 }
 /* Controller input matches Output's compact two-column layout. The original
@@ -3277,13 +3332,18 @@ static void wozt_compact_controller_input(void)
         gtk_grid_set_column_spacing(GTK_GRID(source), 3);
         wozt_unellipsize_tree(source);
         wozt_unellipsize_pcble_combo(g_c.gamepad_device, 210);
-        /* Preview label and drawings sit together, not in the widest column. */
+        /* Make the device combo follow its own label instead of inheriting
+         * the width of the wider "local controller" first grid column. */
+        if (!wozt_inline_output_row(source, "device"))
+            g_warning("wozt-ui: cannot inline local device row");
         if (!wozt_inline_output_row(source, "visual preview"))
             g_warning("wozt-ui: cannot inline local input preview");
+        else if (!wozt_remove_preview_caption(g_c.input_stick_preview[0]))
+            g_warning("wozt-ui: cannot remove redundant input preview label");
     }
     for (int side = 0; side < 2; ++side)
         if (g_c.input_stick_preview[side])
-            gtk_widget_set_size_request(g_c.input_stick_preview[side], 76, 76);
+            gtk_widget_set_size_request(g_c.input_stick_preview[side], 38, 38);
 
     if (GTK_IS_GRID(calibration)) {
         gtk_grid_set_row_spacing(GTK_GRID(calibration), 0);
@@ -3292,6 +3352,7 @@ static void wozt_compact_controller_input(void)
         wozt_stack_stick_sliders(calibration);
         wozt_unellipsize_tree(calibration);
         wozt_limit_scale_tree(calibration, 116);
+        wozt_make_input_sliders_dense();
     }
 }
 
@@ -4865,7 +4926,7 @@ static void build_settings_window(GtkShell *shell) {
 
     row = 0;
 
-    add_section_header(grid, row++, "Source controller");
+    add_section_header(grid, row++, "Source controller and Input shaping");
 
     g_c.gamepad_enabled = add_row(
         grid,
@@ -4880,8 +4941,6 @@ static void build_settings_window(GtkShell *shell) {
         G_CALLBACK(on_combo),
         shell);
     add_row(grid, row++, "device", g_c.gamepad_device);
-
-    add_section_header(grid, row++, "Input shaping");
 
     add_row(
         grid,

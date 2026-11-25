@@ -474,8 +474,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (g_c.output_deadzone[0])
         gtk_widget_get_size_request(g_c.output_deadzone[0],
                                     &output_slider_width, NULL);
-    t_ok("Output stick previews use 76px drawing surfaces",
-         output_preview_w[0] == 76 && output_preview_w[1] == 76);
+    t_ok("Output stick previews use 38px drawing surfaces",
+         output_preview_w[0] == 38 && output_preview_w[1] == 38);
     GtkWidget *logging_row = g_c.pcble_verbose
         ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
     t_ok("Output logging toggle sits immediately after its label",
@@ -487,9 +487,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         ? gtk_widget_get_parent(preview_frame) : NULL;
     GtkWidget *preview_inline = preview_pair
         ? gtk_widget_get_parent(preview_pair) : NULL;
-    t_ok("Output visual preview is next to its label, not slider labels",
+    GList *output_preview_children = GTK_IS_BOX(preview_inline)
+        ? gtk_container_get_children(GTK_CONTAINER(preview_inline)) : NULL;
+    t_ok("Output preview remains inline without its redundant caption",
          GTK_IS_BOX(preview_inline) &&
-         gtk_widget_get_parent(preview_inline) == sliders_grid);
+         gtk_widget_get_parent(preview_inline) == sliders_grid &&
+         g_list_length(output_preview_children) == 1);
+    g_list_free(output_preview_children);
     GList *packed_output = g_c.wozt_inner_output
         ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output)) : NULL;
     gboolean output_children_natural = g_list_length(packed_output) == 2;
@@ -600,14 +604,48 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (g_c.input_stick_preview[0])
         gtk_widget_get_size_request(g_c.input_stick_preview[0],
                                     &preview_width, &preview_height);
-    t_ok("Input stick previews use 76px drawing surfaces",
-         g_c.input_stick_preview[0] && preview_width == 76 && preview_height == 76);
+    t_ok("Input stick previews use 38px drawing surfaces",
+         g_c.input_stick_preview[0] && preview_width == 38 && preview_height == 38);
     t_ok("Stick sliders no longer request entire panel widths",
          g_c.range[0] && !gtk_widget_get_hexpand(g_c.range[0]));
     gint input_slider_width = -1;
     if (g_c.deadzone[0])
         gtk_widget_get_size_request(g_c.deadzone[0], &input_slider_width, NULL);
     t_eq_int("Input sliders match Output's 116px width", input_slider_width, 116);
+    /* WOZT_0841_GTK_REGRESSIONS */
+    GtkWidget *device_inline = g_c.gamepad_device
+        ? gtk_widget_get_parent(g_c.gamepad_device) : NULL;
+    GList *device_children = GTK_IS_BOX(device_inline)
+        ? gtk_container_get_children(GTK_CONTAINER(device_inline)) : NULL;
+    t_ok("Input device selector is inline with its label",
+         GTK_IS_BOX(device_inline) && g_list_length(device_children) == 2 &&
+         GTK_IS_LABEL(device_children->data));
+    g_list_free(device_children);
+    GtkWidget *input_preview_frame = g_c.input_stick_preview[0]
+        ? gtk_widget_get_parent(g_c.input_stick_preview[0]) : NULL;
+    GtkWidget *input_preview_pair = input_preview_frame
+        ? gtk_widget_get_parent(input_preview_frame) : NULL;
+    GtkWidget *input_preview_inline = input_preview_pair
+        ? gtk_widget_get_parent(input_preview_pair) : NULL;
+    GList *input_preview_children = GTK_IS_BOX(input_preview_inline)
+        ? gtk_container_get_children(GTK_CONTAINER(input_preview_inline)) : NULL;
+    t_ok("Input preview has no redundant caption",
+         GTK_IS_BOX(input_preview_inline) &&
+         g_list_length(input_preview_children) == 1);
+    g_list_free(input_preview_children);
+    GtkWidget *input_scale_grid = g_c.deadzone[0]
+        ? gtk_widget_get_parent(g_c.deadzone[0]) : NULL;
+    t_ok("Input slider rows have zero extra grid spacing",
+         GTK_IS_GRID(input_scale_grid) &&
+         gtk_grid_get_row_spacing(GTK_GRID(input_scale_grid)) == 0);
+    GtkStyleContext *input_scale_style = g_c.deadzone[0]
+        ? gtk_widget_get_style_context(g_c.deadzone[0]) : NULL;
+    t_ok("Input slider has dedicated compact CSS class and no margins",
+         input_scale_style &&
+         gtk_style_context_has_class(input_scale_style, "wozt-input-tight-scale") &&
+         gtk_widget_get_margin_top(g_c.deadzone[0]) == 0 &&
+         gtk_widget_get_margin_bottom(g_c.deadzone[0]) == 0);
+
     GtkWidget *input_sliders_grid = g_c.lt_threshold
         ? gtk_widget_get_parent(g_c.lt_threshold) : NULL;
     gint input_lt_row = -1, input_last_left = -1;
@@ -721,6 +759,19 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Overview is packed at its natural width, without expansion",
          GTK_IS_BOX(overview_line) && !overview_expand && !overview_fill &&
          !gtk_widget_get_hexpand(g_c.wozt_sections[0]));
+    wozt_dashboard_reflow(controller_join_width);
+    GtkWidget *input_line = gtk_widget_get_parent(g_c.wozt_sections[3]);
+    gboolean input_expand = TRUE, input_fill = TRUE;
+    if (GTK_IS_BOX(input_line)) {
+        guint input_padding = 0;
+        GtkPackType input_pack_type = GTK_PACK_START;
+        gtk_box_query_child_packing(GTK_BOX(input_line), g_c.wozt_sections[3],
+                                    &input_expand, &input_fill,
+                                    &input_padding, &input_pack_type);
+    }
+    t_ok("Local input has natural width beside Output",
+         GTK_IS_BOX(input_line) && !input_expand && !input_fill &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[3]));
     t_ok("Overview server status wraps instead of widening the section",
          g_c.overview_status &&
          gtk_label_get_line_wrap(GTK_LABEL(g_c.overview_status)) &&

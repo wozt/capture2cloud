@@ -171,6 +171,7 @@
     "watching now": "現在の視聴",
     "backend": "バックエンド",
     "Source controller": "入力元コントローラー",
+    "Source controller and Input shaping": "入力元コントローラーと入力補正",
     "local controller": "ローカルコントローラー",
     "device": "デバイス",
     "Input shaping": "入力補正",

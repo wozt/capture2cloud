@@ -171,6 +171,7 @@
     "watching now": "현재 시청",
     "backend": "백엔드",
     "Source controller": "입력 컨트롤러",
+    "Source controller and Input shaping": "입력 컨트롤러 및 입력 보정",
     "local controller": "로컬 컨트롤러",
     "device": "장치",
     "Input shaping": "입력 보정",

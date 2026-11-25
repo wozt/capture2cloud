@@ -349,6 +349,11 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
         "window.wozt-window notebook tab {padding:1px 4px;}"
         "window.wozt-window notebook header {margin-bottom:2px;}"
         "window.wozt-window scale slider {min-width:10px;min-height:10px;}"
+        /* GTK3 native scale margins otherwise dominate the row height.
+         * Input calibration only: no font-size overrides, theme colors stay. */
+        "window.wozt-window scale.wozt-input-tight-scale {margin:0;padding:0;min-height:0;}"
+        "window.wozt-window scale.wozt-input-tight-scale trough {margin:0;padding:0;min-height:4px;}"
+        "window.wozt-window scale.wozt-input-tight-scale slider {margin:0;padding:0;min-height:14px;}"
         "window.wozt-window notebook tab:checked {background:%s;color:%s;}"
         "menu,tooltip,dialog {border-radius:0;} menu,dialog {background:%s;color:%s;}"
         "tooltip {background:%s;color:%s;}"

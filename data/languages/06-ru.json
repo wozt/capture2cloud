@@ -171,6 +171,7 @@
     "watching now": "смотрят сейчас",
     "backend": "бэкенд",
     "Source controller": "Исходный контроллер",
+    "Source controller and Input shaping": "Исходный контроллер и формирование входа",
     "local controller": "локальный контроллер",
     "device": "устройство",
     "Input shaping": "Формирование входа",
