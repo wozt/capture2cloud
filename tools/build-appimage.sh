@@ -91,12 +91,13 @@ if ! command -v linuxdeploy-plugin-gtk.sh >/dev/null 2>&1; then
     mkdir -p "$DIST/tools"
     if [[ ! -x "$DIST/tools/linuxdeploy-plugin-gtk.sh" ]]; then
         curl -fL --retry 3 -o "$DIST/tools/linuxdeploy-plugin-gtk.sh" \
-          https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk.sh
+          https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/7a3fbc31a9e5075073ff8790f26effbac5f84453/linuxdeploy-plugin-gtk.sh
         chmod 755 "$DIST/tools/linuxdeploy-plugin-gtk.sh"
     fi
     export PATH="$DIST/tools:$PATH"
 fi
 export APPIMAGE_EXTRACT_AND_RUN=1
+export DEPLOY_GTK_VERSION=3
 (
     cd "$DIST"
     "$LINUXDEPLOY" --appdir "$APPDIR" \

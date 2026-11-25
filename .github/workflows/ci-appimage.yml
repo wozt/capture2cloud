@@ -131,15 +131,15 @@ jobs:
         include:
           - platform: switch
             image: devkitpro/devkita64:latest
-            packages: switch-dev switch-sdl2 switch-sdl2_ttf switch-ffmpeg switch-libopus switch-libvpx switch-libogg
+            packages: libnx switch-sdl2 switch-sdl2_ttf switch-ffmpeg switch-libopus switch-libvpx switch-libogg
             asset: capture2cloud-switch.zip
           - platform: wiiu-console
             image: devkitpro/devkitppc:latest
-            packages: wiiu-dev wiiu-sdl2 wiiu-sdl2_ttf ppc-brotli
+            packages: wut wiiu-sdl2 wiiu-sdl2_ttf ppc-brotli
             asset: capture2cloud-wiiu-console.zip
           - platform: old3ds
             image: devkitpro/devkitarm:latest
-            packages: 3ds-dev 3ds-libjpeg-turbo 3ds-libopus
+            packages: libctru 3ds-libjpeg-turbo 3ds-libopus
             asset: capture2cloud-old3ds.zip
     container:
       image: ${{ matrix.image }}
@@ -170,6 +170,23 @@ jobs:
             [[ "$installed" == 1 ]] || exit 1
           fi
           dkp-pacman -Q "${required[@]}"
+          # Check the actual compiler, SDK rules and packaging tools, rather
+          # than treating devkitPro package groups as installed packages.
+          case '${{ matrix.platform }}' in
+            switch)
+              test -x /opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc
+              test -f /opt/devkitpro/libnx/switch_rules
+              ;;
+            wiiu-console)
+              test -x /opt/devkitpro/devkitPPC/bin/powerpc-eabi-gcc
+              test -f /opt/devkitpro/wut/share/wut_rules
+              ;;
+            old3ds)
+              test -x /opt/devkitpro/devkitARM/bin/arm-none-eabi-gcc
+              test -f /opt/devkitpro/devkitARM/3ds_rules
+              ;;
+            *) exit 1 ;;
+          esac
       - name: Build and package fresh ${{ matrix.platform }} client
         shell: bash
         env:
