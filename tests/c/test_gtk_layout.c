@@ -711,12 +711,33 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
             gtk_widget_get_tooltip_text(tab) != NULL;
         pages_are_dense = pages_are_dense && GTK_IS_GRID(inner) &&
             gtk_grid_get_row_spacing(GTK_GRID(inner)) == 1 &&
-            gtk_grid_get_column_spacing(GTK_GRID(inner)) == 3;
+            gtk_grid_get_column_spacing(GTK_GRID(inner)) == 3 &&
+            gtk_widget_get_valign(inner) == GTK_ALIGN_START &&
+            gtk_container_get_border_width(GTK_CONTAINER(inner)) == 1;
     }
     t_ok("Seven distinct Client tabs show SVG icons with accessible names",
          client_tabs_are_icons &&
          gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 7);
-    t_ok("All seven Client pages use compact one-pixel row spacing", pages_are_dense);
+    t_ok("All seven Client pages use compact top-aligned 1px padding", pages_are_dense);
+    GtkWidget *client_grid = g_c.wozt_clients_notebook
+        ? gtk_widget_get_parent(g_c.wozt_clients_notebook) : NULL;
+    GtkWidget *client_outer = GTK_IS_GRID(client_grid)
+        ? gtk_widget_get_parent(client_grid) : NULL;
+    gboolean grid_expand = FALSE, grid_fill = FALSE;
+    if (GTK_IS_BOX(client_outer)) {
+        guint padding = 0;
+        GtkPackType pack = GTK_PACK_START;
+        gtk_box_query_child_packing(GTK_BOX(client_outer), client_grid,
+                                    &grid_expand, &grid_fill, &padding, &pack);
+    }
+    t_ok("Clients notebook fills its section height with 1px top/bottom margins",
+         GTK_IS_BOX(client_outer) && GTK_IS_GRID(client_grid) &&
+         gtk_widget_get_margin_top(client_outer) == 1 &&
+         gtk_widget_get_margin_bottom(client_outer) == 1 &&
+         gtk_widget_get_vexpand(client_outer) &&
+         gtk_widget_get_vexpand(client_grid) &&
+         gtk_widget_get_vexpand(g_c.wozt_clients_notebook) &&
+         grid_expand && grid_fill);
     t_ok("Client ports use one-frame GTK style and compact requisitions",
          g_c.port && g_c.switch_port && g_c.wiiu_pad_port &&
          g_c.wiiu_console_port && g_c.old3ds_port &&
@@ -1098,10 +1119,18 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.backend_status &&
          gtk_label_get_line_wrap(GTK_LABEL(g_c.backend_status)) &&
          gtk_label_get_max_width_chars(GTK_LABEL(g_c.backend_status)) == 34);
-    t_ok("Overview client statuses use compact natural widths",
+    t_ok("Overview client statuses stay single-line, with shortened idle text",
          g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] &&
          gtk_label_get_max_width_chars(GTK_LABEL(
-             g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER])) == 34);
+             g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER])) == 34 &&
+         !gtk_label_get_line_wrap(GTK_LABEL(
+             g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER])) &&
+         gtk_label_get_ellipsize(GTK_LABEL(
+             g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER])) == PANGO_ELLIPSIZE_END &&
+         g_strcmp0(wozt_overview_client_summary(
+             "nothing connected — not encoding"), "idle — no-enc") == 0 &&
+         g_strcmp0(wozt_overview_client_summary("2 connected — 60 FPS"),
+                   "2 connected — 60 FPS") == 0);
 
     GtkWidget *overview_grid = g_c.overview_status
         ? gtk_widget_get_parent(g_c.overview_status) : NULL;

@@ -3485,6 +3485,15 @@ static GtkWidget *make_button(GtkShell *shell, const char *label, GtkShellAction
 /* A client family's statistics line: selectable, wrapping, and dim until
  * the host has something to put in it. Written once a second from the
  * program, which is the only side that knows who is connected. */
+/* The compact Overview summarizes absence without duplicating the full
+ * wording of the corresponding Client tab. Never infer connectivity. */
+static const char *wozt_overview_client_summary(const char *full)
+{
+    if (g_strcmp0(full, "nothing connected — not encoding") == 0)
+        return "idle — no-enc";
+    return full ? full : "";
+}
+
 static GtkWidget *add_client_status(GtkWidget *grid, int row, const char *label) {
     GtkWidget *w = gtk_label_new("nothing connected");
     gtk_widget_set_halign(w, GTK_ALIGN_START);
@@ -3584,6 +3593,7 @@ static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **
      * even when Browser (five small rows) is selected. Bound that height;
      * the contents of longer client tabs remain accessible by scrolling. */
     GtkWidget *grid = gtk_grid_new();
+    gtk_widget_set_valign(grid, GTK_ALIGN_START);
     gtk_grid_set_row_spacing(GTK_GRID(grid), 1);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
     gtk_container_set_border_width(GTK_CONTAINER(grid), 1);
@@ -3650,15 +3660,28 @@ static GtkWidget *make_stack_page(
     gtk_widget_set_margin_start(outer, 5);
     /* Save 3px only in Local input; other dashboard sections keep 5px. */
     gtk_widget_set_margin_end(outer, index == 3 ? 2 : 5);
-    gtk_widget_set_margin_top(outer, 2);
-    gtk_widget_set_margin_bottom(outer, 3);
+    /* The Clients notebook should sit 1px inside the section border
+     * both vertically and use its full height, including wrapped rows. */
+    gtk_widget_set_margin_top(outer, index == 1 ? 1 : 2);
+    gtk_widget_set_margin_bottom(outer, index == 1 ? 1 : 3);
+    if (index == 1) {
+        gtk_widget_set_valign(outer, GTK_ALIGN_FILL);
+        gtk_widget_set_vexpand(outer, TRUE);
+    }
     gtk_container_add(GTK_CONTAINER(frame), outer);
     /* Description is on the section heading/info tooltip only. */
     GtkWidget *grid = gtk_grid_new();
     gtk_widget_set_hexpand(grid, TRUE);
     gtk_grid_set_row_spacing(GTK_GRID(grid), 2);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 5);
-    gtk_box_pack_start(GTK_BOX(outer), grid, FALSE, FALSE, 0);
+    /* Without vertical expansion, the 190px notebook is centered inside
+     * a frame as tall as Overview, leaving a conspicuous empty strip. */
+    if (index == 1) {
+        gtk_widget_set_valign(grid, GTK_ALIGN_FILL);
+        gtk_widget_set_vexpand(grid, TRUE);
+    }
+    gtk_box_pack_start(GTK_BOX(outer), grid,
+                       index == 1, index == 1, 0);
     if (index < 8) g_c.wozt_sections[index] = frame;
     /* Temporarily append the frame. The first configure event moves it
      * into an independent horizontal row, without changing widget identity. */
@@ -4057,12 +4080,17 @@ static void build_settings_window(GtkShell *shell) {
     g_c.overview_client_status[GTK_SHELL_CLIENT_OLD3DS] =
         add_client_icon_status(grid, row++, "Old 3DS / Old 2DS");
 
-    /* Other Clients tabs retain their previous width. Overview alone uses
-     * shorter natural widths for its five selectable/wrapping status lines. */
-    for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; ++i)
-        if (g_c.overview_client_status[i])
-            gtk_label_set_max_width_chars(
-                GTK_LABEL(g_c.overview_client_status[i]), 34);
+    /* Overview is a one-line summary; the seven Client tabs retain the
+     * full selectable/wrapping messages. Longer live values may ellipsize
+     * instead of doubling the height of the compact status list. */
+    for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; ++i) {
+        GtkWidget *status = g_c.overview_client_status[i];
+        if (!status) continue;
+        gtk_label_set_max_width_chars(GTK_LABEL(status), 34);
+        gtk_label_set_line_wrap(GTK_LABEL(status), FALSE);
+        gtk_label_set_single_line_mode(GTK_LABEL(status), TRUE);
+        gtk_label_set_ellipsize(GTK_LABEL(status), PANGO_ELLIPSIZE_END);
+    }
 
     add_section_header(grid, row++, "Quick actions");
 
@@ -6093,7 +6121,10 @@ static gboolean on_tick(gpointer user_data) {
             if (g_c.overview_client_status[i]) {
                 gtk_label_set_text(
                     GTK_LABEL(g_c.overview_client_status[i]),
-                    text[i]);
+                    wozt_overview_client_summary(text[i]));
+                /* Full message remains accessible on hover. */
+                gtk_widget_set_tooltip_text(
+                    g_c.overview_client_status[i], text[i]);
             }
         }
     }
