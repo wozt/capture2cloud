@@ -269,8 +269,11 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
+                /* Overview never stretches; when the controller pair
+                 * shares a row, Output stays compact and Local input uses
+                 * the remaining width. A lone controller still fills its row. */
                 const gboolean natural = section_index == 0 ||
-                    ((section_index == 2 || section_index == 3) && n == 2);
+                    (section_index == 2 && n == 2);
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
@@ -3247,6 +3250,10 @@ static gboolean wozt_remove_preview_caption(GtkWidget *area)
     return found;
 }
 
+/* Local input uses precisely the same GtkScale geometry as Output.
+ * The former 14px forced height and special CSS made GTK3's highlight
+ * paint as a solid rectangle over adjacent rows. Keep the existing
+ * one-column, zero-grid-gap arrangement and all value-change callbacks. */
 static void wozt_make_input_sliders_dense(void)
 {
     GtkWidget *controls[] = {
@@ -3256,13 +3263,12 @@ static void wozt_make_input_sliders_dense(void)
     for (guint i = 0; i < G_N_ELEMENTS(controls); ++i) {
         GtkWidget *scale = controls[i];
         if (!GTK_IS_SCALE(scale)) continue;
-        /* No font-size change: only GTK scale chrome and widget margins. */
         gtk_widget_set_margin_top(scale, 0);
         gtk_widget_set_margin_bottom(scale, 0);
-        gtk_widget_set_valign(scale, GTK_ALIGN_CENTER);
-        gtk_widget_set_size_request(scale, 116, 14);
-        gtk_style_context_add_class(gtk_widget_get_style_context(scale),
-                                    "wozt-input-tight-scale");
+        gtk_widget_set_valign(scale, GTK_ALIGN_FILL);
+        gtk_widget_set_size_request(scale, 116, -1);
+        gtk_style_context_remove_class(gtk_widget_get_style_context(scale),
+                                       "wozt-input-tight-scale");
     }
 }
 

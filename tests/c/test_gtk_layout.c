@@ -640,9 +640,16 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_grid_get_row_spacing(GTK_GRID(input_scale_grid)) == 0);
     GtkStyleContext *input_scale_style = g_c.deadzone[0]
         ? gtk_widget_get_style_context(g_c.deadzone[0]) : NULL;
-    t_ok("Input slider has dedicated compact CSS class and no margins",
+    gint input_scale_height = -2, output_scale_height = -3;
+    if (g_c.deadzone[0] && g_c.output_deadzone[0]) {
+        gtk_widget_get_size_request(g_c.deadzone[0], NULL, &input_scale_height);
+        gtk_widget_get_size_request(g_c.output_deadzone[0], NULL, &output_scale_height);
+    }
+    t_ok("Input sliders use Output's normal CSS and natural height",
          input_scale_style &&
-         gtk_style_context_has_class(input_scale_style, "wozt-input-tight-scale") &&
+         !gtk_style_context_has_class(input_scale_style, "wozt-input-tight-scale") &&
+         input_scale_height == -1 && output_scale_height == -1 &&
+         gtk_widget_get_valign(g_c.deadzone[0]) == GTK_ALIGN_FILL &&
          gtk_widget_get_margin_top(g_c.deadzone[0]) == 0 &&
          gtk_widget_get_margin_bottom(g_c.deadzone[0]) == 0);
 
@@ -700,12 +707,11 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.gamepad_device &&
          input_right_grid != gtk_widget_get_parent(g_c.gamepad_device));
     wozt_dashboard_reflow(1650);
-    /* Both controller panels now use natural widths when sharing a row.
-     * Neither should expand into the spare space; the responsive path
-     * still expands them when each occupies its own row (checked below). */
-    t_ok("Both controller panels stay naturally narrow when sharing a row",
+    /* Output stays naturally narrow; input consumes the remaining
+     * horizontal space. Both frames still share the controller row. */
+    t_ok("Output stays compact and Local input fills the shared row",
          g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
-         g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
          gtk_widget_get_parent(g_c.wozt_sections[2]) ==
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     t_ok("Overview and Clients share an independent row at 1650px",
@@ -774,9 +780,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                     &input_expand, &input_fill,
                                     &input_padding, &input_pack_type);
     }
-    t_ok("Local input has natural width beside Output",
-         GTK_IS_BOX(input_line) && !input_expand && !input_fill &&
-         !gtk_widget_get_hexpand(g_c.wozt_sections[3]));
+    t_ok("Local input fills the right side beside Output",
+         GTK_IS_BOX(input_line) && input_expand && input_fill &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[3]));
     t_ok("Overview server status wraps instead of widening the section",
          g_c.overview_status &&
          gtk_label_get_line_wrap(GTK_LABEL(g_c.overview_status)) &&
