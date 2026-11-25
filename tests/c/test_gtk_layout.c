@@ -473,8 +473,20 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(1144, 0), 2);
     t_eq_int("1144px: controller panels remain full width",
              wozt_dashboard_group_columns(1144, 1), 1);
-    t_eq_int("1650px: controller sections share one line",
-             wozt_dashboard_group_columns(1650, 1), 2);
+    /* Controller output now needs 960px (full, untruncated labels),
+     * Local input 760px, plus the 6px gutter and 30px outer allowance.
+     * The row should wrap at 1650px and join at the computed threshold.
+     * Derive this boundary from the source widths to avoid stale tests. */
+    t_eq_int("1650px: controller sections wrap to separate lines",
+             wozt_dashboard_group_columns(1650, 1), 1);
+    const int controller_join_width =
+        wozt_section_target_width[2] + wozt_section_target_width[3] + 36;
+    t_eq_int("Controller sections separate just below their width budget",
+             wozt_dashboard_group_columns(controller_join_width - 1, 1), 1);
+    t_eq_int("Controller sections join at their width budget",
+             wozt_dashboard_group_columns(controller_join_width, 1), 2);
+    t_eq_int("1800px: controller sections share one line",
+             wozt_dashboard_group_columns(1800, 1), 2);
     t_eq_int("1650px: all four small sections share one line",
              wozt_dashboard_group_columns(1650, 2), 4);
     t_eq_int("2200px: four small sections remain in one line",
@@ -535,8 +547,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Overview and Clients share an independent row at 1650px",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
-    t_ok("Controller panels share their own row at 1650px",
-         gtk_widget_get_parent(g_c.wozt_sections[2]) ==
+    t_ok("Controller panels use separate rows at 1650px",
+         gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     t_ok("Four small sections occupy the same row at 1650px",
          gtk_widget_get_parent(g_c.wozt_sections[4]) ==
@@ -550,6 +562,16 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              gtk_widget_get_parent(g_c.wozt_sections[2]) &&
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[4]));
+    /* Verify actual GTK reparenting both below and at the packing
+     * threshold; keep all widgets, callbacks and settings intact. */
+    wozt_dashboard_reflow(controller_join_width - 1);
+    t_ok("Controller frames have separate parents below the width budget",
+         gtk_widget_get_parent(g_c.wozt_sections[2]) !=
+             gtk_widget_get_parent(g_c.wozt_sections[3]));
+    wozt_dashboard_reflow(controller_join_width);
+    t_ok("Controller frames share a parent at the width budget",
+         gtk_widget_get_parent(g_c.wozt_sections[2]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[3]));
     wozt_dashboard_reflow(720);
     t_ok("A narrow window wraps the controller panels into separate rows",
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
