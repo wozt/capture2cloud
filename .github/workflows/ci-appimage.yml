@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Install Capture2Cloud build/runtime dependencies
@@ -62,7 +62,7 @@ jobs:
             GTK_DATA_PREFIX="$PWD/dist/squashfs-root/usr" \
             dist/check-gtk-icons
       - name: Upload Linux ZIP, AppImage and checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: capture2cloud-linux
           path: |
@@ -75,8 +75,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -116,7 +116,7 @@ jobs:
               > "$HOME/.android/capture2cloud-signing/password"
           fi
           bash tools/build-release-client.sh android
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: capture2cloud-android
           path: dist/client-artifacts/*.apk
@@ -144,7 +144,7 @@ jobs:
     container:
       image: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install matching devkitPro portlibs and host packaging tools
         shell: bash
         env:
@@ -155,14 +155,27 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential python3 git curl zip unzip ca-certificates file \
             pkg-config automake autoconf libtool cmake
-          dkp-pacman -Syu --needed --noconfirm $PORTLIB_PACKAGES
-          dkp-pacman -Q
+          # Official devkitPro images already include many required portlibs.
+          # Avoid refreshing repositories when all dependencies are installed.
+          read -r -a required <<< "$PORTLIB_PACKAGES"
+          if ! dkp-pacman -Q "${required[@]}" >/dev/null 2>&1; then
+            installed=0
+            for delay in 0 10 30 60; do
+              sleep "$delay"
+              if dkp-pacman -Syu --needed --noconfirm "${required[@]}"; then
+                installed=1
+                break
+              fi
+            done
+            [[ "$installed" == 1 ]] || exit 1
+          fi
+          dkp-pacman -Q "${required[@]}"
       - name: Build and package fresh ${{ matrix.platform }} client
         shell: bash
         env:
           DEVKITPRO: /opt/devkitpro
         run: bash tools/build-release-client.sh '${{ matrix.platform }}'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: capture2cloud-${{ matrix.platform }}
           path: dist/client-artifacts/${{ matrix.asset }}
@@ -172,7 +185,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install PC GamePad transport build dependencies
         run: |
           sudo apt-get update
@@ -182,7 +195,7 @@ jobs:
       - name: Build GamePad host client from source, using pinned libdrc/x264 vendor
         shell: bash
         run: bash tools/build-release-client.sh wiiu-gamepad
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: capture2cloud-wiiu-gamepad
           path: dist/client-artifacts/capture2cloud-wiiu-gamepad.zip
@@ -198,10 +211,10 @@ jobs:
       group: capture2cloud-versioned-release-main
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: capture2cloud-*
           path: dist

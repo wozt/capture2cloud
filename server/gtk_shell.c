@@ -282,7 +282,7 @@ static int wozt_utility_pair_min_width(void)
 static int wozt_dashboard_group_columns(int width, int group)
 {
     if (group < 0 || group >= 3) return 1;
-    const int space = MAX(180, width - 30);
+    const int space = MAX(0, width - 30);
     const int first = wozt_group_first[group];
     const gboolean reset_top = wozt_reset_fits_top();
     const int count = group == 2 && reset_top ? 1 : wozt_group_size[group];
@@ -381,6 +381,11 @@ static void wozt_dashboard_reflow(int width)
     if (signature == g_c.wozt_layout_mode) return;
     GtkWidget *dashboard = g_c.wozt_dashboard;
     const gboolean reset_top = wozt_reset_fits_top();
+    const int capacities[3] = {
+        wozt_dashboard_group_columns(width, 0),
+        wozt_dashboard_group_columns(width, 1),
+        wozt_dashboard_group_columns(width, 2)
+    };
 
     /* Take one reference per section before detaching. No callbacks, controls,
      * settings or views are recreated during a responsive transition. */
@@ -400,7 +405,7 @@ static void wozt_dashboard_reflow(int width)
     for (int group = 0; group < 3; ++group) {
         const int first = wozt_group_first[group];
         const int count = group == 2 && reset_top ? 1 : wozt_group_size[group];
-        const int capacity = wozt_dashboard_group_columns(width, group);
+        const int capacity = capacities[group];
         for (int offset = 0; offset < count; offset += capacity) {
             const int n = MIN(capacity, count - offset);
             GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);

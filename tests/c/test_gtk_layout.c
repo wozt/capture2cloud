@@ -747,7 +747,7 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_eq_int("1650px: both compact controller sections share a row",
              wozt_dashboard_group_columns(1650, 1), 2);
     /* Measure the actual join threshold with the active GTK/font metrics. */
-    int controller_join_width = 180;
+    int controller_join_width = 1;
     while (controller_join_width < 4096 &&
            wozt_dashboard_group_columns(controller_join_width, 1) < 2)
         ++controller_join_width;
@@ -1235,6 +1235,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              gtk_widget_get_parent(g_c.wozt_sections[6]));
     /* Verify actual GTK reparenting both below and at the packing
      * threshold; keep all widgets, callbacks and settings intact. */
+    controller_join_width = 1;
+    while (controller_join_width < 4096 &&
+           wozt_dashboard_group_columns(controller_join_width, 1) < 2)
+        ++controller_join_width;
     wozt_dashboard_reflow(controller_join_width - 1);
     t_ok("Controller frames have separate parents below the width budget",
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
@@ -1247,6 +1251,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Overview and Clients share their row at the measured breakpoint",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
+    controller_join_width = 1;
+    while (controller_join_width < 4096 &&
+           wozt_dashboard_group_columns(controller_join_width, 1) < 2)
+        ++controller_join_width;
     wozt_dashboard_reflow(controller_join_width - 1);
     t_ok("Narrow stacked rows retain controlled proportional expansion",
          wozt_dashboard_rows_have_natural_heights());
