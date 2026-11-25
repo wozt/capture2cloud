@@ -526,6 +526,40 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Default width keeps Overview and Clients together",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
+    /* Unlike the previous TRUE/TRUE GtkBox packing, Overview must not
+     * take half of the available width. Clients absorbs all spare width. */
+    GtkWidget *overview_line = gtk_widget_get_parent(g_c.wozt_sections[0]);
+    gboolean overview_expand = TRUE, overview_fill = TRUE;
+    if (GTK_IS_BOX(overview_line)) {
+        guint overview_padding = 0;
+        GtkPackType overview_pack_type = GTK_PACK_START;
+        gtk_box_query_child_packing(GTK_BOX(overview_line), g_c.wozt_sections[0],
+                                    &overview_expand, &overview_fill,
+                                    &overview_padding, &overview_pack_type);
+    }
+    t_ok("Overview is packed at its natural width, without expansion",
+         GTK_IS_BOX(overview_line) && !overview_expand && !overview_fill &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[0]));
+    t_ok("Overview server status wraps instead of widening the section",
+         g_c.overview_status &&
+         gtk_label_get_line_wrap(GTK_LABEL(g_c.overview_status)) &&
+         gtk_label_get_max_width_chars(GTK_LABEL(g_c.overview_status)) == 34);
+    t_ok("Overview client statuses use compact natural widths",
+         g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] &&
+         gtk_label_get_max_width_chars(GTK_LABEL(
+             g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER])) == 34);
+    GtkWidget *clients_line = gtk_widget_get_parent(g_c.wozt_sections[1]);
+    gboolean clients_expand = FALSE, clients_fill = FALSE;
+    if (GTK_IS_BOX(clients_line)) {
+        guint clients_padding = 0;
+        GtkPackType clients_pack_type = GTK_PACK_START;
+        gtk_box_query_child_packing(GTK_BOX(clients_line), g_c.wozt_sections[1],
+                                    &clients_expand, &clients_fill,
+                                    &clients_padding, &clients_pack_type);
+    }
+    t_ok("Clients consumes the spare width in the first row",
+         GTK_IS_BOX(clients_line) && clients_expand && clients_fill &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(gtk_widget_get_allocated_width(sh->settings_window));
 
     /* Real live-theme and localization checks, also on the GTK thread.

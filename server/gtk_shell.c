@@ -199,7 +199,7 @@ static Controls g_c;
 static const int wozt_group_first[3] = {0, 2, 4};
 static const int wozt_group_size[3] = {2, 2, 4};
 static const int wozt_section_target_width[8] = {
-    260, 565,   /* Overview, Clients notebook */
+    370, 565,   /* Overview natural width, Clients notebook */
     760, 760,   /* Controller output, Local input */
     225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
 };
@@ -262,9 +262,17 @@ static void wozt_dashboard_reflow(int width)
             gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
             for (int j = 0; j < n; ++j) {
                 GtkWidget *frame = g_c.wozt_sections[first + offset + j];
-                gtk_widget_set_halign(frame, GTK_ALIGN_FILL);
-                gtk_widget_set_hexpand(frame, TRUE);
-                gtk_box_pack_start(GTK_BOX(line), frame, TRUE, TRUE, 0);
+                /* WOZT_0833_OVERVIEW_NATURAL_WIDTH:
+                 * A GtkBox with two TRUE/TRUE children splits its surplus
+                 * 50/50, creating a huge unused area in Overview. Only
+                 * Clients consumes extra horizontal space. This also works
+                 * when Overview occupies a line on its own. */
+                const gboolean overview = first + offset + j == 0;
+                gtk_widget_set_halign(frame,
+                    overview ? GTK_ALIGN_START : GTK_ALIGN_FILL);
+                gtk_widget_set_hexpand(frame, !overview);
+                gtk_box_pack_start(GTK_BOX(line), frame,
+                                   !overview, !overview, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);
@@ -3503,12 +3511,16 @@ static void build_settings_window(GtkShell *shell) {
     g_c.overview_status = gtk_label_new("starting...");
     gtk_widget_set_halign(g_c.overview_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.overview_status), TRUE);
+    /* Keep every status character, wrapping rather than widening Overview. */
+    gtk_label_set_line_wrap(GTK_LABEL(g_c.overview_status), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(g_c.overview_status), 34);
     add_row(grid, row++, "status", g_c.overview_status);
 
     g_c.backend_status = gtk_label_new("");
     gtk_widget_set_halign(g_c.backend_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.backend_status), TRUE);
     gtk_label_set_line_wrap(GTK_LABEL(g_c.backend_status), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(g_c.backend_status), 34);
     add_row(grid, row++, "controller output", g_c.backend_status);
 
     add_section_header(grid, row++, "Connected clients");
@@ -3527,6 +3539,13 @@ static void build_settings_window(GtkShell *shell) {
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_OLD3DS] =
         add_client_status(grid, row++, "Old 3DS / Old 2DS");
+
+    /* Other Clients tabs retain their previous width. Overview alone uses
+     * shorter natural widths for its five selectable/wrapping status lines. */
+    for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; ++i)
+        if (g_c.overview_client_status[i])
+            gtk_label_set_max_width_chars(
+                GTK_LABEL(g_c.overview_client_status[i]), 34);
 
     add_section_header(grid, row++, "Quick actions");
 
