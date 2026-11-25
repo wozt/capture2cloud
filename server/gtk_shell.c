@@ -198,9 +198,10 @@ static Controls g_c;
  * always contract, and all widgets remain available at narrow widths. */
 static const int wozt_group_first[3] = {0, 2, 4};
 static const int wozt_group_size[3] = {2, 2, 4};
+/* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
-    370, 565,   /* Overview natural width, Clients notebook */
-    820, 760,   /* Controller output, Local input */
+    315, 435,   /* natural Overview + scrollable Clients at ~800px */
+    620, 710,   /* compact two-column Output and Local input */
     225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
 };
 
@@ -268,7 +269,8 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
-                const gboolean natural = section_index == 0;
+                const gboolean natural = section_index == 0 ||
+                    (section_index == 2 && n == 2);
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
@@ -290,13 +292,12 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
     (void)userdata;
     const int width = event->width;
     wozt_dashboard_reflow(width);
-    /* Output has two compact internal columns, input still has three.
-     * When controllers share a line, estimate each panel's available width
-     * independently of the full dashboard width. */
+    /* Both controllers now have two compact columns. When two panels
+     * share a line, estimate their own widths; stack internally if needed. */
     const int controller_width = width / wozt_dashboard_group_columns(width, 1);
-    GtkOrientation output_direction = controller_width >= 780
+    GtkOrientation output_direction = controller_width >= 665
         ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
-    GtkOrientation input_direction = controller_width >= 880
+    GtkOrientation input_direction = controller_width >= 710
         ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
     if (g_c.wozt_inner_output)
         gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), output_direction);
@@ -2969,30 +2970,6 @@ static void wozt_pair_named_rows(GtkWidget *grid, const char *left, const char *
     g_object_unref(c1);
 }
 
-/* WOZT_0829_THREE_INNER_COLUMNS */
-/* Preserve the original widgets, signals and g_c pointers: only their parent
- * grid changes. At narrow widths wozt_window_configured() turns the common
- * GtkBox vertical, so the third column is still accessible without clipping. */
-static gboolean wozt_move_calibration_row(GtkWidget *source, GtkWidget *dest,
-                                          const char *name, int row)
-{
-    GtkWidget *label = NULL, *control = NULL;
-    int source_row = -1;
-    if (!wozt_find_grid_row(source, name, &label, &control, &source_row)) {
-        g_warning("wozt-ui: calibration field not found: %s", name);
-        return FALSE;
-    }
-    g_object_ref(label);
-    g_object_ref(control);
-    gtk_container_remove(GTK_CONTAINER(source), label);
-    gtk_container_remove(GTK_CONTAINER(source), control);
-    gtk_grid_attach(GTK_GRID(dest), label, 0, row, 1, 1);
-    gtk_grid_attach(GTK_GRID(dest), control, 1, row, 1, 1);
-    g_object_unref(label);
-    g_object_unref(control);
-    return TRUE;
-}
-
 /* WOZT_0836_CONTROLLER_OUTPUT_COMPACT */
 static void wozt_unellipsize_tree(GtkWidget *widget)
 {
@@ -3151,7 +3128,7 @@ static void wozt_unellipsize_pcble_combo(GtkWidget *combo, int width)
  * Move the existing GTK widgets; do not recreate their signals/settings.
  * Validate all rows before detaching anything so a source variation cannot
  * silently discard a setting or leave a partially modified grid. */
-static void wozt_stack_output_sliders(GtkWidget *grid)
+static void wozt_stack_stick_sliders(GtkWidget *grid)
 {
     if (!GTK_IS_GRID(grid)) return;
     const char *names[] = {
@@ -3219,9 +3196,8 @@ static gboolean wozt_inline_output_row(GtkWidget *grid, const char *name)
 /* Use natural widths instead of TRUE/TRUE GtkBox packing, which left a large
  * empty strip between backend and calibration. The section FRAME still grows
  * with the responsive dashboard, and narrow views still stack vertically. */
-static void wozt_pack_output_columns_tightly(void)
+static void wozt_pack_controller_columns_tightly(GtkWidget *columns)
 {
-    GtkWidget *columns = g_c.wozt_inner_output;
     if (!GTK_IS_BOX(columns)) return;
     GList *children = gtk_container_get_children(GTK_CONTAINER(columns));
     if (g_list_length(children) == 2) {
@@ -3255,7 +3231,7 @@ static void wozt_compact_controller_output(void)
         if (!wozt_inline_output_row(g_c.pcble_settings, "logging"))
             g_warning("wozt-ui: cannot inline output logging row");
     }
-    wozt_pack_output_columns_tightly();
+    wozt_pack_controller_columns_tightly(g_c.wozt_inner_output);
 
     if (g_c.output_stick_preview[0])
         gtk_widget_set_size_request(g_c.output_stick_preview[0], 76, 76);
@@ -3271,7 +3247,7 @@ static void wozt_compact_controller_output(void)
     if (GTK_IS_GRID(shaping)) {
         gtk_grid_set_row_spacing(GTK_GRID(shaping), 0);
         gtk_grid_set_column_spacing(GTK_GRID(shaping), 2);
-        wozt_stack_output_sliders(shaping);
+        wozt_stack_stick_sliders(shaping);
         wozt_unellipsize_tree(shaping);
         wozt_limit_scale_tree(shaping, 116);
         /* The preview must not inherit the long slider-label column width. */
@@ -3279,23 +3255,44 @@ static void wozt_compact_controller_output(void)
             g_warning("wozt-ui: cannot inline output visual preview");
     }
 }
-static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output)
+/* Controller input matches Output's compact two-column layout. The original
+ * widgets and signals are reused. No third GtkGrid or duplicated controls. */
+static void wozt_compact_controller_input(void)
 {
-    if (output) return;
-    GtkWidget *columns = output ? g_c.wozt_inner_output : g_c.wozt_inner_input;
-    if (!GTK_IS_BOX(columns) || !GTK_IS_GRID(calibration)) return;
-    GtkWidget *right = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(right), 2);
-    gtk_grid_set_column_spacing(GTK_GRID(right), 5);
-    gtk_widget_set_hexpand(right, TRUE);
-    gtk_box_pack_start(GTK_BOX(columns), right, TRUE, TRUE, 0);
-    /* Same row names in both controllers, independent control bindings. */
-    const char *fields[] = {
-        "right stick", "RT threshold (%)", "right stick deadzone (%)",
-        "right axis saturation (%)", "right diagonal saturation (%)"
-    };
-    for (guint i = 0; i < G_N_ELEMENTS(fields); ++i)
-        wozt_move_calibration_row(calibration, right, fields[i], (int)i);
+    GtkWidget *columns = g_c.wozt_inner_input;
+    if (!GTK_IS_BOX(columns)) return;
+    GList *children = gtk_container_get_children(GTK_CONTAINER(columns));
+    if (g_list_length(children) != 2) {
+        g_warning("wozt-ui: input controller should have two inner columns");
+        g_list_free(children);
+        return;
+    }
+    GtkWidget *source = GTK_WIDGET(children->data);
+    GtkWidget *calibration = GTK_WIDGET(children->next->data);
+    g_list_free(children);
+
+    wozt_pack_controller_columns_tightly(columns);
+    if (GTK_IS_GRID(source)) {
+        gtk_grid_set_row_spacing(GTK_GRID(source), 2);
+        gtk_grid_set_column_spacing(GTK_GRID(source), 3);
+        wozt_unellipsize_tree(source);
+        wozt_unellipsize_pcble_combo(g_c.gamepad_device, 210);
+        /* Preview label and drawings sit together, not in the widest column. */
+        if (!wozt_inline_output_row(source, "visual preview"))
+            g_warning("wozt-ui: cannot inline local input preview");
+    }
+    for (int side = 0; side < 2; ++side)
+        if (g_c.input_stick_preview[side])
+            gtk_widget_set_size_request(g_c.input_stick_preview[side], 76, 76);
+
+    if (GTK_IS_GRID(calibration)) {
+        gtk_grid_set_row_spacing(GTK_GRID(calibration), 0);
+        gtk_grid_set_column_spacing(GTK_GRID(calibration), 2);
+        /* These same eight labels exist in input and output calibration. */
+        wozt_stack_stick_sliders(calibration);
+        wozt_unellipsize_tree(calibration);
+        wozt_limit_scale_tree(calibration, 116);
+    }
 }
 
 /* WOZT_0831_COMPACT_BUTTONS
@@ -3304,7 +3301,8 @@ static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output
  * If a button had no tooltip, preserve its full original label there. */
 static void wozt_compact_action_labels(GtkWidget *widget)
 {
-    if (widget == g_c.wozt_sections[2]) return;
+    if (widget == g_c.wozt_sections[2] ||
+        widget == g_c.wozt_sections[3]) return;
     if (GTK_IS_BUTTON(widget) && GTK_IS_BIN(widget)) {
         GtkWidget *child = gtk_bin_get_child(GTK_BIN(widget));
         if (GTK_IS_LABEL(child)) {
@@ -4851,7 +4849,6 @@ static void build_settings_window(GtkShell *shell) {
 
 
     /* Backend left, shaping right: two compact inner columns. */
-    wozt_split_stick_calibration(grid, TRUE);
     wozt_compact_controller_output();
 
     /* ===============================================================
@@ -5010,8 +5007,8 @@ static void build_settings_window(GtkShell *shell) {
     }
 
 
-    /* Source / left calibration / right calibration: three inner columns. */
-    wozt_split_stick_calibration(grid, FALSE);
+    /* Source plus calibration: two compact inner columns. */
+    wozt_compact_controller_input();
 
     /* ===============================================================
      * CAPTURE

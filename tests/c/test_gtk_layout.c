@@ -381,18 +381,18 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Controller output has two genuine internal columns",
          g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output) &&
          g_list_length(output_children) == 2);
-    t_ok("Local input has three genuine internal columns",
+    t_ok("Local input has two genuine internal columns",
          g_c.wozt_inner_input && GTK_IS_BOX(g_c.wozt_inner_input) &&
-         g_list_length(input_children) == 3);
+         g_list_length(input_children) == 2);
     g_list_free(output_children);
     g_list_free(input_children);
     t_ok("Output left and right stick controls share one compact grid",
          g_c.output_deadzone[0] && g_c.output_deadzone[1] &&
          gtk_widget_get_parent(g_c.output_deadzone[0]) ==
              gtk_widget_get_parent(g_c.output_deadzone[1]));
-    t_ok("Input left and right stick controls occupy different inner grids",
+    t_ok("Input left and right stick controls share one compact grid",
          g_c.deadzone[0] && g_c.deadzone[1] &&
-         gtk_widget_get_parent(g_c.deadzone[0]) !=
+         gtk_widget_get_parent(g_c.deadzone[0]) ==
              gtk_widget_get_parent(g_c.deadzone[1]));
     GtkWidget *session_grid = g_c.pcble_reconnect
         ? gtk_widget_get_parent(g_c.pcble_reconnect) : NULL;
@@ -555,14 +555,18 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     /* Each functional row picks its own capacity; no shared grid columns. */
     t_eq_int("720px: overview and clients stack",
              wozt_dashboard_group_columns(720, 0), 1);
+    /* WOZT_0840_RESPONSIVE_TESTS */
+    t_eq_int("820px: compact Overview and Clients share a line",
+             wozt_dashboard_group_columns(820, 0), 2);
+    t_eq_int("780px: Overview and Clients still stack when narrow",
+             wozt_dashboard_group_columns(780, 0), 1);
     t_eq_int("1144px: overview and clients fit on one line",
              wozt_dashboard_group_columns(1144, 0), 2);
     t_eq_int("1144px: controller panels remain full width",
              wozt_dashboard_group_columns(1144, 1), 1);
-    /* Controller output now needs 960px (full, untruncated labels),
-     * Local input 760px, plus the 6px gutter and 30px outer allowance.
-     * The row should wrap at 1650px and join at the computed threshold.
-     * Derive this boundary from the source widths to avoid stale tests. */
+    /* Controller budgets now match their compact two-column contents.
+     * Derive the joining boundary from their targets and the 36px gutter
+     * allowance, rather than relying on a stale fixed-width test. */
     t_eq_int("1650px: both compact controller sections share a row",
              wozt_dashboard_group_columns(1650, 1), 2);
     const int controller_join_width =
@@ -596,10 +600,38 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (g_c.input_stick_preview[0])
         gtk_widget_get_size_request(g_c.input_stick_preview[0],
                                     &preview_width, &preview_height);
-    t_ok("Stick preview is bounded to 116px",
-         g_c.input_stick_preview[0] && preview_width == 116 && preview_height == 116);
+    t_ok("Input stick previews use 76px drawing surfaces",
+         g_c.input_stick_preview[0] && preview_width == 76 && preview_height == 76);
     t_ok("Stick sliders no longer request entire panel widths",
          g_c.range[0] && !gtk_widget_get_hexpand(g_c.range[0]));
+    gint input_slider_width = -1;
+    if (g_c.deadzone[0])
+        gtk_widget_get_size_request(g_c.deadzone[0], &input_slider_width, NULL);
+    t_eq_int("Input sliders match Output's 116px width", input_slider_width, 116);
+    GtkWidget *input_sliders_grid = g_c.lt_threshold
+        ? gtk_widget_get_parent(g_c.lt_threshold) : NULL;
+    gint input_lt_row = -1, input_last_left = -1;
+    gint input_rt_row = -1, input_last_right = -1;
+    gint input_lt_col = -1, input_rt_col = -1;
+    if (GTK_IS_GRID(input_sliders_grid) && g_c.rt_threshold &&
+        g_c.diagonal[0] && g_c.diagonal[1]) {
+        gtk_container_child_get(GTK_CONTAINER(input_sliders_grid), g_c.lt_threshold,
+                                "top-attach", &input_lt_row,
+                                "left-attach", &input_lt_col, NULL);
+        gtk_container_child_get(GTK_CONTAINER(input_sliders_grid), g_c.diagonal[0],
+                                "top-attach", &input_last_left, NULL);
+        gtk_container_child_get(GTK_CONTAINER(input_sliders_grid), g_c.rt_threshold,
+                                "top-attach", &input_rt_row,
+                                "left-attach", &input_rt_col, NULL);
+        gtk_container_child_get(GTK_CONTAINER(input_sliders_grid), g_c.diagonal[1],
+                                "top-attach", &input_last_right, NULL);
+    }
+    t_ok("Input calibration has one slider column, left then right",
+         GTK_IS_GRID(input_sliders_grid) && input_lt_col == 1 &&
+         input_rt_col == 1 && input_lt_row >= 0 &&
+         input_last_left == input_lt_row + 3 &&
+         input_rt_row == input_lt_row + 4 &&
+         input_last_right == input_lt_row + 7);
     /* Each calibration group lives in a DISTINCT GtkGrid: both grids have
      * their own label=0/control=1 columns. Checking global column 3 was an
      * obsolete assertion from the earlier single-grid (four-column) UI. */
@@ -630,6 +662,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.gamepad_device &&
          input_right_grid != gtk_widget_get_parent(g_c.gamepad_device));
     wozt_dashboard_reflow(1650);
+    t_ok("Output stays naturally narrow only beside Local input",
+         g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
+         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]));
     t_ok("Overview and Clients share an independent row at 1650px",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
@@ -658,7 +693,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Controller frames share a parent at the width budget",
          gtk_widget_get_parent(g_c.wozt_sections[2]) ==
              gtk_widget_get_parent(g_c.wozt_sections[3]));
+    wozt_dashboard_reflow(820);
+    t_ok("Overview and Clients share the first row at 820px",
+         gtk_widget_get_parent(g_c.wozt_sections[0]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(720);
+    t_ok("Controller output fills its row again when alone",
+         g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]));
     t_ok("A narrow window wraps the controller panels into separate rows",
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[3]));
