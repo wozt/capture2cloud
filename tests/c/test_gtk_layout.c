@@ -342,6 +342,50 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 5);
     t_ok("Theme and language selectors exist",
          g_c.wozt_theme_combo && g_c.wozt_language_combo);
+    t_eq_int("1040px window uses multiple dashboard columns",
+             wozt_dashboard_layout_for_width(1040), 1);
+    t_eq_int("1650px window uses side-by-side controller sections",
+             wozt_dashboard_layout_for_width(1650), 2);
+    t_eq_int("2200px window uses three dashboard columns",
+             wozt_dashboard_layout_for_width(2200), 3);
+    GtkWidget *small_brand = sh->settings_window
+        ? g_object_get_data(G_OBJECT(sh->settings_window), "wozt-brand-icon") : NULL;
+    GdkPixbuf *brand_pixbuf = small_brand && GTK_IS_IMAGE(small_brand)
+        ? gtk_image_get_pixbuf(GTK_IMAGE(small_brand)) : NULL;
+    t_ok("Header PNG was really resampled to 20x20",
+         brand_pixbuf && gdk_pixbuf_get_width(brand_pixbuf) <= 20 &&
+         gdk_pixbuf_get_height(brand_pixbuf) <= 20);
+    GtkWidget *browser_page = g_c.wozt_clients_notebook
+        ? gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_c.wozt_clients_notebook), 0) : NULL;
+    t_ok("Client tab contents scroll instead of reserving tallest tab height",
+         browser_page && GTK_IS_SCROLLED_WINDOW(browser_page));
+    gint preview_width = 0, preview_height = 0;
+    if (g_c.input_stick_preview[0])
+        gtk_widget_get_size_request(g_c.input_stick_preview[0],
+                                    &preview_width, &preview_height);
+    t_ok("Stick preview is bounded to 116px",
+         g_c.input_stick_preview[0] && preview_width == 116 && preview_height == 116);
+    t_ok("Stick sliders no longer request entire panel widths",
+         g_c.range[0] && !gtk_widget_get_hexpand(g_c.range[0]));
+    gint right_axis_col = -1;
+    if (g_c.output_deadzone[1] &&
+        GTK_IS_GRID(gtk_widget_get_parent(g_c.output_deadzone[1])))
+        gtk_container_child_get(GTK_CONTAINER(gtk_widget_get_parent(g_c.output_deadzone[1])),
+                                g_c.output_deadzone[1], "left-attach", &right_axis_col, NULL);
+    t_eq_int("Right output calibration is in the second inner column",
+             right_axis_col, 3);
+    wozt_dashboard_reflow(1);
+    if (g_c.wozt_dashboard && g_c.wozt_sections[1]) {
+        gint clients_col = -1, output_span = 0;
+        gtk_container_child_get(GTK_CONTAINER(g_c.wozt_dashboard), g_c.wozt_sections[1],
+                                "left-attach", &clients_col, NULL);
+        gtk_container_child_get(GTK_CONTAINER(g_c.wozt_dashboard), g_c.wozt_sections[2],
+                                "width", &output_span, NULL);
+        t_eq_int("Clients is in the second dashboard column", clients_col, 1);
+        t_eq_int("Controller output spans both columns at 1040px", output_span, 2);
+    }
+    wozt_dashboard_reflow(wozt_dashboard_layout_for_width(
+        gtk_widget_get_allocated_width(sh->settings_window)));
 
     /* Real live-theme and localization checks, also on the GTK thread.
      * Restore the initial theme/language without touching persistent .env. */
