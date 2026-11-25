@@ -18,8 +18,20 @@ trap cleanup EXIT
 
 git clone --filter=blob:none https://github.com/3DSGuy/Project_CTR.git "$TEMP_DIR/Project_CTR"
 git -C "$TEMP_DIR/Project_CTR" checkout --detach "$REVISION"
-make -C "$TEMP_DIR/Project_CTR/makerom" deps
-make -C "$TEMP_DIR/Project_CTR/makerom" program
+# The recursive 3DS make exports cross-compilers. Build makerom and its
+# dependencies with the native host compiler, never devkitARM.
+host_make() {
+    env -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES -u CC -u CXX -u LD \
+        -u AR -u CFLAGS -u CXXFLAGS -u LDFLAGS -u CPPFLAGS \
+        make -C "$TEMP_DIR/Project_CTR/makerom" \
+        CC=/usr/bin/gcc CXX=/usr/bin/g++ "$@"
+}
+host_make deps
+host_make program
+file "$TEMP_DIR/Project_CTR/makerom/bin/makerom"
+if [[ "$(uname -m)" == x86_64 ]]; then
+    file "$TEMP_DIR/Project_CTR/makerom/bin/makerom" | grep -q 'x86-64'
+fi
 mkdir -p "$PROJECT_DIR/build-tools"
 install -m 0755 "$TEMP_DIR/Project_CTR/makerom/bin/makerom" "$OUTPUT"
 

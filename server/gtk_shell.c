@@ -6666,10 +6666,10 @@ static gboolean on_tick(gpointer user_data) {
         snprintf(text, sizeof(text), "%s", shell->status);
         SDL_UnlockMutex(shell->lock);
         if (g_c.status_label) {
-            gtk_label_set_text(GTK_LABEL(g_c.status_label), text);
+            wozt_ui_label_set_text(GTK_LABEL(g_c.status_label), text);
         }
         if (g_c.overview_status) {
-            gtk_label_set_text(GTK_LABEL(g_c.overview_status), text);
+            wozt_ui_label_set_text(GTK_LABEL(g_c.overview_status), text);
         }
         gtk_status_icon_set_tooltip_text(shell->icon, text);
     }

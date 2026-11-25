@@ -22,17 +22,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config curl file xvfb zip \
+            build-essential pkg-config curl file xvfb xauth zip unzip git nasm nodejs python3 gstreamer1.0-tools \
             libsdl2-dev libpulse-dev libjpeg-dev libgtk-3-dev libx11-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libgstreamer-plugins-bad1.0-dev \
-            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
             gstreamer1.0-libav gstreamer1.0-nice \
             libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev \
             libglib2.0-dev libjson-glib-dev libbluetooth-dev libssl-dev \
             adwaita-icon-theme librsvg2-common libgdk-pixbuf2.0-bin
-      - name: Validate bundled themes and translations
-        run: python3 tools/check-wozt-assets.py
+      - name: Verify required runtime plugins and localization
+        run: |
+          gst-inspect-1.0 x264enc >/dev/null
+          gst-inspect-1.0 vp8enc >/dev/null
+          gst-inspect-1.0 opusenc >/dev/null
+          python3 tools/check-wozt-assets.py
+          python3 tools/check-wozt-tooltips.py
+          python3 tools/check-wozt-translations.py --strict
       - name: Build server and PCBLE backends
         shell: bash
         run: |
@@ -74,9 +80,27 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: android-actions/setup-android@v3
-      - name: Install Android SDK 36
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Install Android SDK 36 using runner command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          manager="$(command -v sdkmanager || true)"
+          if [[ -z "$manager" ]]; then
+            manager="$(find "$sdk/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n1)"
+          fi
+          test -x "$manager"
+          export ANDROID_HOME="$sdk"
+          export ANDROID_SDK_ROOT="$sdk"
+          # Avoid pipefail treating yes's expected SIGPIPE as a failure.
+          set +o pipefail
+          yes | "$manager" --sdk_root="$sdk" --licenses >/dev/null
+          set -o pipefail
+          "$manager" --sdk_root="$sdk" 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'
+          test -f "$sdk/platforms/android-36/android.jar"
+          test -x "$sdk/build-tools/36.0.0/aapt2"
+          printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\n' "$sdk" "$sdk" >> "$GITHUB_ENV"
+          printf '%s\n%s\n' "$sdk/platform-tools" "$sdk/build-tools/36.0.0" >> "$GITHUB_PATH"
       - name: Build Android (signed when release secrets are configured)
         shell: bash
         env:
@@ -107,7 +131,7 @@ jobs:
         include:
           - platform: switch
             image: devkitpro/devkita64:latest
-            packages: switch-dev switch-sdl2 switch-sdl2_ttf switch-ffmpeg switch-opus
+            packages: switch-dev switch-sdl2 switch-sdl2_ttf switch-ffmpeg switch-libopus switch-libvpx switch-libogg
             asset: capture2cloud-switch.zip
           - platform: wiiu-console
             image: devkitpro/devkitppc:latest
@@ -129,9 +153,10 @@ jobs:
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential python3 git curl zip unzip ca-certificates \
+            build-essential python3 git curl zip unzip ca-certificates file \
             pkg-config automake autoconf libtool cmake
-          dkp-pacman -Sy --needed --noconfirm $PORTLIB_PACKAGES
+          dkp-pacman -Syu --needed --noconfirm $PORTLIB_PACKAGES
+          dkp-pacman -Q
       - name: Build and package fresh ${{ matrix.platform }} client
         shell: bash
         env:
@@ -152,7 +177,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config git zip \
+            build-essential pkg-config git zip binutils file \
             libavcodec-dev libavutil-dev libswscale-dev libopus-dev libcairo2-dev
       - name: Build GamePad host client from source, using pinned libdrc/x264 vendor
         shell: bash

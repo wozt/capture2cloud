@@ -73,7 +73,44 @@ case "$platform" in
       mkdir -p wiiu_gamepad/vendor
       cp -a "$repo/gamepad/vendor/." wiiu_gamepad/vendor/
     fi
+    # Rebuild the matching fork against the pinned DRH-patched x264 ABI 140.
+    DRC_REV=2c1fc8ea03670a06d11acf8a733c7b99096d1362
+    drc_src="$ROOT/dist/libdrc-source"
+    x264="$ROOT/wiiu_gamepad/vendor/x264"
+    drc_vendor="$ROOT/wiiu_gamepad/vendor/libdrc"
+    if [[ ! -d "$drc_src/.git" ]]; then
+      git clone --no-checkout https://github.com/wozt/libdrc.git "$drc_src"
+    fi
+    git -C "$drc_src" fetch --depth=1 origin "$DRC_REV"
+    git -C "$drc_src" checkout --detach "$DRC_REV"
+    [[ "$(git -C "$drc_src" rev-parse HEAD)" == "$DRC_REV" ]]
+    mkdir -p "$x264/lib/pkgconfig" "$drc_vendor/include"
+    # The original pkg-config file points into a developer's home directory.
+    sed -i 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$x264/lib/pkgconfig/x264.pc"
+    (
+      cd "$drc_src"
+      export PKG_CONFIG_PATH="$x264/lib/pkgconfig"
+      # Upstream configure appends flags without inserting whitespace.
+      export CXXFLAGS="-I$x264/include "
+      export LDFLAGS="-L$x264/lib "
+      bash ./configure --prefix="$x264" --disable-demos
+      make clean
+      # Upstream links libraries before object files: keep them despite
+      # the host linker's --as-needed default; use the packaged ABI at runtime.
+      make -j2 libdrc CXXFLAGS="-O2 -fPIC -Iinclude -std=gnu++11 $(pkg-config --cflags libswscale x264)" \
+        LDFLAGS="-Wl,--no-as-needed $(pkg-config --libs libswscale x264) -pthread -Wl,-rpath,'\$\$ORIGIN'/../x264/lib"
+    )
+    cp -a "$drc_src/include/drc" "$drc_vendor/include/"
+    install -m 755 "$drc_src/libdrc.so" "$drc_vendor/libdrc.so"
+    install -m 644 "$drc_src/libdrc.a" "$drc_vendor/libdrc.a"
+    nm -D --defined-only "$drc_vendor/libdrc.so" | c++filt > "$ROOT/dist/libdrc-symbols.txt"
+    for symbol in PushEncodedVidFrame TakeResyncRequest ReinitStream; do
+      grep -F "drc::Streamer::$symbol(" "$ROOT/dist/libdrc-symbols.txt"
+    done
     make -C wiiu_gamepad -j2
+    LD_LIBRARY_PATH="$drc_vendor:$x264/lib" ldd -r wiiu_gamepad/wiiu_pad > "$ROOT/dist/wiiu-gamepad-link.txt"
+    cat "$ROOT/dist/wiiu-gamepad-link.txt"
+    if grep -E 'not found|undefined symbol' "$ROOT/dist/wiiu-gamepad-link.txt"; then exit 1; fi
     test -s wiiu_gamepad/wiiu_pad
     test -s wiiu_gamepad/vendor/libdrc/libdrc.so
     test -s wiiu_gamepad/vendor/x264/lib/libx264.so.140

@@ -113,7 +113,7 @@ fi
 OUT="$DIST/capture2cloud-x86_64.AppImage"
 if [[ "${BUILT[0]}" != "$OUT" ]]; then mv -- "${BUILT[0]}" "$OUT"; fi
 chmod 755 "$OUT"
-sha256sum "$OUT" > "$OUT.sha256"
+(cd "$DIST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256")
 # Extracted smoke check: verify that fonts/icons/JSON can be opened by all
 # users, and that the output has executable launchers.
 EXTRACT="$DIST/squashfs-root"

@@ -1027,7 +1027,7 @@ static int async_drain_rx(void)
     return 0;
 }
 
-static int async_thread_entry(int argc, const char **argv)
+static int async_thread_entry(int argc, void *argv)
 {
     (void)argc;
     (void)argv;
