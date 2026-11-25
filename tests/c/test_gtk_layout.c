@@ -408,6 +408,39 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("PCBLE session controls form two buttons per row",
          GTK_IS_GRID(session_grid) && pair_column == 1 &&
          stop_row == 1 && refresh_row == 1);
+    gint session_column = -1;
+    if (GTK_IS_GRID(session_grid) && GTK_IS_GRID(g_c.pcble_settings))
+        gtk_container_child_get(GTK_CONTAINER(g_c.pcble_settings), session_grid,
+                                "left-attach", &session_column, NULL);
+    t_eq_int("Bluetooth action buttons begin in leftmost column, no label",
+             session_column, 0);
+    gint combo_width = -1;
+    if (g_c.pcble_controller)
+        gtk_widget_get_size_request(g_c.pcble_controller, &combo_width, NULL);
+    t_eq_int("Controller profile combo matches other adapter selectors",
+             combo_width, 210);
+    GtkWidget *sliders_grid = g_c.output_lt_threshold
+        ? gtk_widget_get_parent(g_c.output_lt_threshold) : NULL;
+    gint lt_row = -1, left_final_row = -1, rt_row = -1, right_final_row = -1;
+    gint lt_col = -1, rt_col = -1;
+    if (GTK_IS_GRID(sliders_grid) && g_c.output_rt_threshold &&
+        g_c.output_diagonal[0] && g_c.output_diagonal[1] &&
+        gtk_widget_get_parent(g_c.output_rt_threshold) == sliders_grid) {
+        gtk_container_child_get(GTK_CONTAINER(sliders_grid), g_c.output_lt_threshold,
+                                "top-attach", &lt_row, "left-attach", &lt_col, NULL);
+        gtk_container_child_get(GTK_CONTAINER(sliders_grid), g_c.output_diagonal[0],
+                                "top-attach", &left_final_row, NULL);
+        gtk_container_child_get(GTK_CONTAINER(sliders_grid), g_c.output_rt_threshold,
+                                "top-attach", &rt_row, "left-attach", &rt_col, NULL);
+        gtk_container_child_get(GTK_CONTAINER(sliders_grid), g_c.output_diagonal[1],
+                                "top-attach", &right_final_row, NULL);
+    }
+    t_ok("Output sliders use one column, left group above right group",
+         GTK_IS_GRID(sliders_grid) && lt_col == 1 && rt_col == 1 &&
+         lt_row >= 0 && left_final_row == lt_row + 3 &&
+         rt_row == lt_row + 4 && right_final_row == lt_row + 7);
+    t_ok("Output frame expands to the available row width",
+         g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]));
     gint output_preview_w[2] = {-1, -1};
     gint output_slider_width = -1;
     for (int side = 0; side < 2; ++side)
@@ -419,8 +452,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                     &output_slider_width, NULL);
     t_ok("Output stick previews use 76px drawing surfaces",
          output_preview_w[0] == 76 && output_preview_w[1] == 76);
-    t_ok("Output sliders request a compact 122px width",
-         output_slider_width == 122);
+    t_ok("Output sliders request a compact 116px width",
+         output_slider_width == 116);
     GtkWidget *color_grid = g_c.pcble_body_color
         ? gtk_widget_get_parent(g_c.pcble_body_color) : NULL;
     t_ok("PCBLE appearance swatches are in a compact nested grid",
@@ -477,8 +510,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
      * Local input 760px, plus the 6px gutter and 30px outer allowance.
      * The row should wrap at 1650px and join at the computed threshold.
      * Derive this boundary from the source widths to avoid stale tests. */
-    t_eq_int("1650px: controller sections wrap to separate lines",
-             wozt_dashboard_group_columns(1650, 1), 1);
+    t_eq_int("1650px: both compact controller sections share a row",
+             wozt_dashboard_group_columns(1650, 1), 2);
     const int controller_join_width =
         wozt_section_target_width[2] + wozt_section_target_width[3] + 36;
     t_eq_int("Controller sections separate just below their width budget",
@@ -525,8 +558,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (output_right_grid && GTK_IS_GRID(output_right_grid))
         gtk_container_child_get(GTK_CONTAINER(output_right_grid),
                                 g_c.output_deadzone[1], "left-attach", &right_axis_col, NULL);
-    t_eq_int("Right output calibration is paired in the second control column",
-             right_axis_col, 3);
+    t_eq_int("Right output calibration shares the same control column",
+             right_axis_col, 1);
     t_ok("Output calibration and backend are in independent inner grids",
          output_right_grid && GTK_IS_GRID(output_right_grid) &&
          output_left_grid && GTK_IS_GRID(output_left_grid) &&
@@ -547,8 +580,8 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Overview and Clients share an independent row at 1650px",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
-    t_ok("Controller panels use separate rows at 1650px",
-         gtk_widget_get_parent(g_c.wozt_sections[2]) !=
+    t_ok("Controller panels share their responsive row at 1650px",
+         gtk_widget_get_parent(g_c.wozt_sections[2]) ==
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     t_ok("Four small sections occupy the same row at 1650px",
          gtk_widget_get_parent(g_c.wozt_sections[4]) ==

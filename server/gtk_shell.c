@@ -200,7 +200,7 @@ static const int wozt_group_first[3] = {0, 2, 4};
 static const int wozt_group_size[3] = {2, 2, 4};
 static const int wozt_section_target_width[8] = {
     370, 565,   /* Overview natural width, Clients notebook */
-    960, 760,   /* Controller output, Local input */
+    820, 760,   /* Controller output, Local input */
     225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
 };
 
@@ -268,7 +268,7 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
-                const gboolean natural = section_index == 0 || section_index == 2;
+                const gboolean natural = section_index == 0;
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
@@ -290,15 +290,18 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
     (void)userdata;
     const int width = event->width;
     wozt_dashboard_reflow(width);
-    /* The three internal controller columns fit when they have the full row.
-     * If both controllers share a row, base orientation on HALF the space. */
+    /* Output has two compact internal columns, input still has three.
+     * When controllers share a line, estimate each panel's available width
+     * independently of the full dashboard width. */
     const int controller_width = width / wozt_dashboard_group_columns(width, 1);
-    GtkOrientation direction = controller_width >= 880
+    GtkOrientation output_direction = controller_width >= 780
+        ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
+    GtkOrientation input_direction = controller_width >= 880
         ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
     if (g_c.wozt_inner_output)
-        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), direction);
+        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), output_direction);
     if (g_c.wozt_inner_input)
-        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_input), direction);
+        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_input), input_direction);
     return FALSE;
 }
 
@@ -3065,7 +3068,8 @@ static void wozt_compact_session_buttons(GtkWidget *grid, const char *row_name)
         g_object_unref(buttons[i]);
     }
     gtk_container_remove(GTK_CONTAINER(grid), control);
-    gtk_grid_attach(GTK_GRID(grid), tight, 1, row, 1, 1);
+    gtk_container_remove(GTK_CONTAINER(grid), label);
+    gtk_grid_attach(GTK_GRID(grid), tight, 0, row, 2, 1);
     gtk_widget_show_all(tight);
 }
 
@@ -3132,11 +3136,55 @@ static void wozt_unellipsize_pcble_combo(GtkWidget *combo, int width)
     GList *cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(combo));
     for (GList *it = cells; it; it = it->next) {
         if (GTK_IS_CELL_RENDERER_TEXT(it->data)) {
-            gtk_cell_renderer_set_fixed_size(GTK_CELL_RENDERER(it->data), -1, -1);
+            gtk_cell_renderer_set_fixed_size(GTK_CELL_RENDERER(it->data),
+                                             MAX(48, width - 30), -1);
             g_object_set(it->data, "ellipsize", PANGO_ELLIPSIZE_NONE, NULL);
         }
     }
     g_list_free(cells);
+}
+
+/* WOZT_0838_STACK_OUTPUT_SLIDERS
+ * Keep the eight controls in one narrow column, ordered by left then right.
+ * Move the existing GTK widgets; do not recreate their signals/settings.
+ * Validate all rows before detaching anything so a source variation cannot
+ * silently discard a setting or leave a partially modified grid. */
+static void wozt_stack_output_sliders(GtkWidget *grid)
+{
+    if (!GTK_IS_GRID(grid)) return;
+    const char *names[] = {
+        "LT threshold (%)",
+        "left stick deadzone (%)",
+        "left axis saturation (%)",
+        "left diagonal saturation (%)",
+        "RT threshold (%)",
+        "right stick deadzone (%)",
+        "right axis saturation (%)",
+        "right diagonal saturation (%)"
+    };
+    GtkWidget *labels[G_N_ELEMENTS(names)] = {NULL};
+    GtkWidget *controls[G_N_ELEMENTS(names)] = {NULL};
+    int first_row = G_MAXINT;
+    for (guint i = 0; i < G_N_ELEMENTS(names); ++i) {
+        int row = -1;
+        if (!wozt_find_grid_row(grid, names[i], &labels[i], &controls[i], &row)) {
+            g_warning("wozt-ui: output slider field not found: %s", names[i]);
+            return;
+        }
+        first_row = MIN(first_row, row);
+    }
+    for (guint i = 0; i < G_N_ELEMENTS(names); ++i) {
+        g_object_ref(labels[i]);
+        g_object_ref(controls[i]);
+        gtk_container_remove(GTK_CONTAINER(grid), labels[i]);
+        gtk_container_remove(GTK_CONTAINER(grid), controls[i]);
+    }
+    for (guint i = 0; i < G_N_ELEMENTS(names); ++i) {
+        gtk_grid_attach(GTK_GRID(grid), labels[i], 0, first_row + (int)i, 1, 1);
+        gtk_grid_attach(GTK_GRID(grid), controls[i], 1, first_row + (int)i, 1, 1);
+        g_object_unref(labels[i]);
+        g_object_unref(controls[i]);
+    }
 }
 
 static void wozt_compact_controller_output(void)
@@ -3145,7 +3193,7 @@ static void wozt_compact_controller_output(void)
         gtk_grid_set_row_spacing(GTK_GRID(g_c.pcble_settings), 2);
         gtk_grid_set_column_spacing(GTK_GRID(g_c.pcble_settings), 4);
         wozt_unellipsize_tree(g_c.pcble_settings);
-        wozt_unellipsize_pcble_combo(g_c.pcble_controller, 290);
+        wozt_unellipsize_pcble_combo(g_c.pcble_controller, 210);
         wozt_unellipsize_pcble_combo(g_c.pcble_primary, 210);
         wozt_unellipsize_pcble_combo(g_c.pcble_secondary, 210);
         wozt_unellipsize_pcble_combo(g_c.pcble_mouse_side, 210);
@@ -3167,14 +3215,11 @@ static void wozt_compact_controller_output(void)
         g_list_free(children);
     }
     if (GTK_IS_GRID(shaping)) {
-        gtk_grid_set_row_spacing(GTK_GRID(shaping), 1);
-        gtk_grid_set_column_spacing(GTK_GRID(shaping), 3);
-        wozt_pair_named_rows(shaping, "LT threshold (%)", "RT threshold (%)");
-        wozt_pair_named_rows(shaping, "left stick deadzone (%)", "right stick deadzone (%)");
-        wozt_pair_named_rows(shaping, "left axis saturation (%)", "right axis saturation (%)");
-        wozt_pair_named_rows(shaping, "left diagonal saturation (%)", "right diagonal saturation (%)");
+        gtk_grid_set_row_spacing(GTK_GRID(shaping), 0);
+        gtk_grid_set_column_spacing(GTK_GRID(shaping), 2);
+        wozt_stack_output_sliders(shaping);
         wozt_unellipsize_tree(shaping);
-        wozt_limit_scale_tree(shaping, 122);
+        wozt_limit_scale_tree(shaping, 116);
     }
 }
 static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output)
