@@ -203,14 +203,14 @@ static Controls g_c;
  * These are target widths, NOT GTK minimum size requests. The scroller can
  * always contract, and all widgets remain available at narrow widths. */
 static const int wozt_group_first[3] = {0, 2, 4};
-static const int wozt_group_size[3] = {2, 2, 4};
+static const int wozt_group_size[3] = {2, 2, 3};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
     260, 300,   /* compact Overview; Clients notebook scrolls horizontally */
     620, 350,   /* two output columns; compact one-column local input */
     /* Budgets MUST exceed the GTK minimum of each packed row. Otherwise
      * GTK blocks a resize before configure-event can reflow the row. */
-    320, 455, 410, 340 /* Capture, Monitor, Reset, Maintenance */
+    290, 310, 410, 340 /* Capture, Monitor, Reset, Maintenance */
 };
 
 /* WOZT_0855_OVERVIEW_REFLOW
@@ -221,7 +221,8 @@ static const int wozt_section_target_width[8] = {
 static int wozt_section_layout_width(int index)
 {
     const int fallback = wozt_section_target_width[index];
-    if (index != 0 && index != 1 && index != 2 && index != 3) return fallback;
+    if (index != 0 && index != 1 && index != 2 && index != 3 &&
+        index != 4 && index != 5) return fallback;
     GtkWidget *frame = g_c.wozt_sections[index];
     if (!GTK_IS_WIDGET(frame)) return fallback;
     gint minimum = 0, natural = 0;
@@ -242,7 +243,15 @@ static int wozt_dashboard_group_columns(int width, int group)
     const int count = wozt_group_size[group];
     int total = 0, packed = 0;
     for (int i = 0; i < count; ++i) {
-        const int need = wozt_section_layout_width(first + i) + (i ? 6 : 0);
+        /* WOZT_0862_MONITOR_CAPTURE_STACK: monitor and Capture are
+         * two framed, VERTICALLY stacked sections but only one column
+         * in the responsive group. Other groups keep their original order. */
+        const int need_width = group == 2
+            ? (i == 0 ? MAX(wozt_section_layout_width(5),
+                            wozt_section_layout_width(4))
+                      : wozt_section_layout_width(5 + i))
+            : wozt_section_layout_width(first + i);
+        const int need = need_width + (i ? 6 : 0);
         if (packed && total + need > space) break;
         total += need;
         ++packed;
@@ -291,19 +300,35 @@ static void wozt_dashboard_reflow(int width)
             gtk_widget_set_hexpand(line, TRUE);
             gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
             for (int j = 0; j < n; ++j) {
-                GtkWidget *frame = g_c.wozt_sections[first + offset + j];
-                /* WOZT_0850_RIGHTMOST_FILLS_ROW:
-                 * Keep the first n-1 frames compact and adjacent. ONLY the
-                 * final frame of every independent dashboard line absorbs
-                 * surplus width. This holds for controllers, Overview/Clients,
-                 * the four tools, and their wrapped single-frame rows.
-                 * Reflow breakpoints still use the GTK preferred widths. */
+                const int slot = offset + j;
                 const gboolean last = j == n - 1;
+                if (group == 2 && slot == 0) {
+                    /* Local monitor above Capture, with TWO distinct frames.
+                     * They travel together through every responsive reflow. */
+                    GtkWidget *column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+                    gtk_widget_set_halign(column,
+                                         last ? GTK_ALIGN_FILL : GTK_ALIGN_START);
+                    gtk_widget_set_hexpand(column, last);
+                    gtk_box_pack_start(GTK_BOX(line), column, last, last, 0);
+                    GtkWidget *monitor = g_c.wozt_sections[5];
+                    GtkWidget *capture = g_c.wozt_sections[4];
+                    gtk_widget_set_halign(monitor, GTK_ALIGN_FILL);
+                    gtk_widget_set_halign(capture, GTK_ALIGN_FILL);
+                    gtk_widget_set_hexpand(monitor, TRUE);
+                    gtk_widget_set_hexpand(capture, TRUE);
+                    gtk_box_pack_start(GTK_BOX(column), monitor, FALSE, TRUE, 0);
+                    gtk_box_pack_start(GTK_BOX(column), capture, FALSE, TRUE, 0);
+                    gtk_widget_show_all(column);
+                    continue;
+                }
+                GtkWidget *frame = g_c.wozt_sections[
+                    group == 2 ? 5 + slot : first + slot];
+                /* Rightmost item of each row takes the surplus. The vertical
+                 * monitor/capture pair counts as ONE such item. */
                 gtk_widget_set_halign(frame,
                                       last ? GTK_ALIGN_FILL : GTK_ALIGN_START);
                 gtk_widget_set_hexpand(frame, last);
-                gtk_box_pack_start(GTK_BOX(line), frame,
-                                   last, last, 0);
+                gtk_box_pack_start(GTK_BOX(line), frame, last, last, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);
@@ -5416,6 +5441,12 @@ static void build_settings_window(GtkShell *shell) {
         row++,
         "capture format",
         g_c.capture_format);
+    /* A one-setting frame should not impose a wide column. */
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 1);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
+    gtk_widget_set_halign(grid, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(grid, FALSE);
+    wozt_unellipsize_pcble_combo(g_c.capture_format, 155);
 
 
     /* ===============================================================
@@ -5467,11 +5498,23 @@ static void build_settings_window(GtkShell *shell) {
         "drawing",
         make_check(shell, "wait for display (vsync)"));
 
-    /* These are short, independent local controls. Pair each row without
-     * altering GTK font sizes or the per-control signal connections. */
-    wozt_pair_named_rows(grid, "speakers", "audio output");
-    wozt_pair_named_rows(grid, "volume (%)", "brightness (%)");
-    wozt_pair_named_rows(grid, "contrast (%)", "drawing");
+    /* One compact column, exactly like the controller panels.
+     * Keep all six original controls and signal connections. */
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 1);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
+    gtk_widget_set_halign(grid, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(grid, FALSE);
+    GtkWidget *monitor_scales[] = {g_c.volume, g_c.brightness, g_c.contrast};
+    for (guint i = 0; i < G_N_ELEMENTS(monitor_scales); ++i) {
+        GtkWidget *scale = monitor_scales[i];
+        gtk_widget_set_hexpand(scale, FALSE);
+        gtk_widget_set_margin_top(scale, 0);
+        gtk_widget_set_margin_bottom(scale, 0);
+        gtk_widget_set_size_request(scale, 116, 15);
+        gtk_widget_set_valign(scale, GTK_ALIGN_FILL);
+        gtk_style_context_add_class(gtk_widget_get_style_context(scale),
+                                    "wozt-calibration-scale");
+    }
 
 
     /* ===============================================================
