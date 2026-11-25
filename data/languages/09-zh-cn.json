@@ -396,7 +396,7 @@
     "stream": "串流",
     "Choose how Capture2Cloud wakes the target console. This is independent from the controller-output backend.": "选择 Capture2Cloud 唤醒目标主机的方式。这与控制器输出后端无关。",
     "Everything on this page changes what a remote client receives. The sub-tabs are deliberately named Client · ... so these controls cannot be confused with server hardware settings.": "本页所有设置都会改变远程客户端接收的内容。子标签页特意命名为“客户端 · …”，以免与服务器硬件设置混淆。",
-    "Inputs from browsers, native clients and the local controller are merged first. This page chooses how that final state reaches thereal console.": "浏览器、原生客户端和本地控制器的输入会先合并。本页选择如何将最终状态发送到实体主机。",
+    "Inputs from browsers, native clients and the local controller are merged first. This page chooses how that final state reaches the real console.": "浏览器、原生客户端和本地控制器的输入会先合并。本页选择如何将最终状态发送到实体主机。",
     "One-shot server and hardware actions. These are operations, not client preferences.": "服务器和硬件的一次性操作，并非客户端偏好设置。",
     "Only the physical SDL controller connected to this computer. These settings are applied before its state joins browser and native-client input.": "仅适用于连接到本机的实体 SDL 控制器。这些设置在其状态与浏览器和原生客户端输入合并前应用。",
     "Settings for the HDMI capture source itself. These sit upstream of every client and therefore affect the whole server.": "HDMI 采集源本身的设置。它们位于所有客户端的上游，因此影响整个服务器。",

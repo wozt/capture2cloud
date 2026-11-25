@@ -396,7 +396,7 @@
     "stream": "ストリーム",
     "Choose how Capture2Cloud wakes the target console. This is independent from the controller-output backend.": "Capture2Cloudが対象のゲーム機を起動する方法を選択します。コントローラー出力バックエンドとは独立しています。",
     "Everything on this page changes what a remote client receives. The sub-tabs are deliberately named Client · ... so these controls cannot be confused with server hardware settings.": "このページの設定はすべてリモートクライアントの受信内容に影響します。サーバーのハードウェア設定と区別するため、サブタブには「クライアント · …」と付けています。",
-    "Inputs from browsers, native clients and the local controller are merged first. This page chooses how that final state reaches thereal console.": "ブラウザー、ネイティブクライアント、ローカルコントローラーの入力を先に統合します。このページで最終状態を実機に送る方法を選択します。",
+    "Inputs from browsers, native clients and the local controller are merged first. This page chooses how that final state reaches the real console.": "ブラウザー、ネイティブクライアント、ローカルコントローラーの入力を先に統合します。このページで最終状態を実機に送る方法を選択します。",
     "One-shot server and hardware actions. These are operations, not client preferences.": "サーバーやハードウェアの単発操作です。クライアント設定ではありません。",
     "Only the physical SDL controller connected to this computer. These settings are applied before its state joins browser and native-client input.": "このコンピューターに接続した物理SDLコントローラーのみが対象です。ブラウザーやネイティブクライアントの入力と統合する前に適用します。",
     "Settings for the HDMI capture source itself. These sit upstream of every client and therefore affect the whole server.": "HDMIキャプチャーソース自体の設定です。すべてのクライアントより上流にあり、サーバー全体に影響します。",

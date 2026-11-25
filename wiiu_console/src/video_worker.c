@@ -56,7 +56,7 @@ static unsigned g_dropped;
 static unsigned g_errors;
 
 
-static int worker_entry(int argc, const char **argv)
+static int worker_entry(int argc, void *argv)
 {
     (void)argc;
     (void)argv;

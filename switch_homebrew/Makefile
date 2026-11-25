@@ -44,7 +44,9 @@ DATA		:=	data
 # The parent directory holds c2s_protocol.h, shared verbatim with the
 # host so the wire format cannot drift between the two.
 INCLUDES	:=	src ../shared
-ROMFS		:=	resources
+# RomFS is optional: a clean checkout has no resources directory.
+# Preserve packaging automatically if actual resources are added later.
+ROMFS		:=	$(if $(wildcard $(TOPDIR)/resources/*),resources)
 
 APP_TITLE	:=	Capture2Cloud Client
 APP_AUTHOR	:=	wozt
