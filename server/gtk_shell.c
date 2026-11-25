@@ -201,8 +201,10 @@ static const int wozt_group_size[3] = {2, 2, 4};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
     315, 435,   /* natural Overview + scrollable Clients at ~800px */
-    620, 560,   /* compact Output and natural-width Local input */
-    225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
+    620, 560,   /* Output keeps two inner columns; input is one grid */
+    /* Budgets MUST exceed the GTK minimum of each packed row. Otherwise
+     * GTK blocks a resize before configure-event can reflow the row. */
+    320, 455, 410, 340 /* Capture, Monitor, Reset, Maintenance */
 };
 
 static int wozt_dashboard_group_columns(int width, int group)
@@ -293,17 +295,13 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
 {
     (void)widget;
     (void)userdata;
-    const int width = event->width;
-    wozt_dashboard_reflow(width);
-    /* Controller output retains two compact inner columns. The local
-     * input has one uninterrupted vertical grid. */
-    const int controller_width = width / wozt_dashboard_group_columns(width, 1);
-    GtkOrientation output_direction = controller_width >= 665
-        ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
-    /* Output retains responsive side-by-side/stacked columns.
-     * Local input is now one GtkGrid and must not be oriented. */
-    if (g_c.wozt_inner_output)
-        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), output_direction);
+    wozt_dashboard_reflow(event->width);
+    /* The DASHBOARD reflows controller frames, but Output's two genuine
+     * internal columns must NEVER stack, including below 665px. The main
+     * scroller handles overflow if a very narrow window cannot fit them. */
+    if (GTK_IS_BOX(g_c.wozt_inner_output))
+        gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output),
+                                      GTK_ORIENTATION_HORIZONTAL);
     return FALSE;
 }
 
@@ -2353,6 +2351,18 @@ static double preview_sat_for_angle(
            (diagonal_pct - range_pct) * diagonality) / 100.0;
 }
 
+/* The visible guide circle (including the 1px outline) has diameter N-2
+ * inside an NxN drawing surface. The preview frame label is outside it. */
+static void wozt_stick_preview_geometry(int w, int h,
+                                        double *cx, double *cy, double *radius)
+{
+    const double guide_stroke = 1.0;
+    const double inset = 1.0;
+    *cx = w / 2.0;
+    *cy = h / 2.0;
+    *radius = MAX(0.0, (MIN(w, h) - 2.0 * inset - guide_stroke) / 2.0);
+}
+
 static gboolean stick_preview_draw(
     GtkWidget *area,
     cairo_t *cr,
@@ -2394,19 +2404,19 @@ static gboolean stick_preview_draw(
     const int h =
         gtk_widget_get_allocated_height(area);
 
-    /* A 38px preview displays the geometry; numeric values stay in
-     * the translated controls and in the live preview tooltip. */
-    const gboolean tiny_output_preview = w < 96;
-    const double cx = w * 0.5;
-    const double cy = h * (tiny_output_preview ? 0.41 : 0.48);
-    const double radius =
-        MIN(w, h) * (tiny_output_preview ? 0.26 : 0.33);
+    double cx = 0.0, cy = 0.0, radius = 0.0;
+    wozt_stick_preview_geometry(w, h, &cx, &cy, &radius);
 
     gdk_cairo_set_source_rgba(cr, &preview_bg);
     cairo_paint(cr);
+    /* A real 70px square, not a GTK frame with an oversized inset. */
+    cairo_set_line_width(cr, 1.0);
+    gdk_cairo_set_source_rgba(cr, &preview_border);
+    cairo_rectangle(cr, 0.5, 0.5, MAX(0, w - 1), MAX(0, h - 1));
+    cairo_stroke(cr);
 
-    /* outer guide */
-    cairo_set_line_width(cr, 1.2);
+    /* Guide circle: 68px visible diameter for a 70px square. */
+    cairo_set_line_width(cr, 1.0);
     gdk_cairo_set_source_rgba(cr, &preview_border);
     cairo_arc(cr, cx, cy, radius, 0.0, 2.0 * G_PI);
     cairo_stroke(cr);
@@ -2495,31 +2505,15 @@ static gboolean stick_preview_draw(
     cairo_arc(cr, cx, cy, 2.2, 0.0, 2.0 * G_PI);
     cairo_fill(cr);
 
-    /* simple legend */
-    cairo_select_font_face(
-        cr,
-        "Sans",
-        CAIRO_FONT_SLANT_NORMAL,
-        CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 9.0);
-    cairo_set_source_rgb(cr, 0.92, 0.92, 0.92);
-
+    /* Numerical values belong in controls and the live tooltip,
+     * not inside the square (which would displace or shrink the circle). */
     char line[96];
-
-    snprintf(
-        line,
-        sizeof(line),
-        tiny_output_preview ? "D%d A%d G%d" : "dz %d%%  ax %d%%  dg %d%%",
-        dz, range, diagonal);
-
+    snprintf(line, sizeof(line), "dz %d%%  ax %d%%  dg %d%%",
+             dz, range, diagonal);
     gchar *old_tooltip = gtk_widget_get_tooltip_text(area);
     if (g_strcmp0(old_tooltip, line) != 0)
         gtk_widget_set_tooltip_text(area, line);
     g_free(old_tooltip);
-    if (w >= 72 && h >= 60) {
-        cairo_move_to(cr, tiny_output_preview ? 4.0 : 8.0, h - 10.0);
-        cairo_show_text(cr, line);
-    }
 
     return FALSE;
 }
@@ -2532,6 +2526,9 @@ static GtkWidget *make_stick_preview(
 {
     GtkWidget *frame =
         gtk_frame_new(title);
+    /* Cairo draws the exact square border; a GTK shadow would add another
+     * outline and padding around the 70x70 drawing area. */
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_NONE);
 
     GtkWidget *area =
         gtk_drawing_area_new();
@@ -4929,11 +4926,12 @@ static void build_settings_window(GtkShell *shell) {
 
     add_section_header(grid, row++, "Source controller and Input shaping");
 
-    g_c.gamepad_enabled = add_row(
-        grid,
-        row++,
-        "local controller",
-        make_check(shell, "send input from this machine"));
+    /* No orphan label column: checkbox starts at the LEFT edge of
+     * the one-column source/calibration grid. Keep its original callback. */
+    g_c.gamepad_enabled = make_check(shell, "send input from this machine");
+    gtk_widget_set_hexpand(g_c.gamepad_enabled, FALSE);
+    gtk_widget_set_halign(g_c.gamepad_enabled, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(grid), g_c.gamepad_enabled, 0, row++, 2, 1);
 
     g_c.gamepad_device = gtk_combo_box_text_new();
     g_signal_connect(

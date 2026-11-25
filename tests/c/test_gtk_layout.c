@@ -394,7 +394,17 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          wozt_css_rule_has_declaration(
              slider_css, "scale.wozt-calibration-scaleslider{", "min-width:12px;") &&
          wozt_css_rule_has_declaration(
-             slider_css, "scale.wozt-calibration-scaleslider{", "border-top-width:1px;"));
+             slider_css, "scale.wozt-calibration-scaleslider{", "border-top-width:1px;") &&
+         /* Both the empty track and the filled highlight paint a fixed
+          * 2px stripe, irrespective of their allocated GTK node height. */
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletrough{", "background-size:100%2px;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletroughhighlight{", "background-size:100%2px;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletroughhighlight{", "background-image:") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletrough{", "background-image:"));
     if (slider_tokens) g_string_free(slider_tokens, TRUE);
     g_free(slider_rules);
     GList *output_children = g_c.wozt_inner_output
@@ -405,9 +415,11 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          reconnect_text && GTK_IS_LABEL(reconnect_text) &&
          !gtk_label_get_line_wrap(GTK_LABEL(reconnect_text)) &&
          gtk_label_get_ellipsize(GTK_LABEL(reconnect_text)) == PANGO_ELLIPSIZE_NONE);
-    t_ok("Controller output has two genuine internal columns",
+    t_ok("Controller output has two permanent horizontal columns",
          g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output) &&
-         g_list_length(output_children) == 2);
+         g_list_length(output_children) == 2 &&
+         gtk_orientable_get_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output)) ==
+             GTK_ORIENTATION_HORIZONTAL);
     t_ok("Local input uses one shared vertical grid",
          g_c.wozt_inner_input && GTK_IS_GRID(g_c.wozt_inner_input) &&
          gtk_widget_get_parent(g_c.gamepad_enabled) == g_c.wozt_inner_input &&
@@ -540,6 +552,17 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          output_children_natural);
     t_ok("Output sliders request a compact 116px width",
          output_slider_width == 116);
+    /* The main window may narrow, but the TWO internal output grids
+     * must never flip orientation as dashboard rows reflow. */
+    wozt_dashboard_reflow(720);
+    GdkEventConfigure narrow = {0};
+    narrow.width = 720;
+    wozt_window_configured(sh->settings_window, &narrow, NULL);
+    t_ok("Output remains horizontal below the former 665px cutoff",
+         GTK_IS_BOX(g_c.wozt_inner_output) &&
+         gtk_orientable_get_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output)) ==
+             GTK_ORIENTATION_HORIZONTAL);
+    wozt_dashboard_reflow(1144);
     t_ok("Output calibration rows have zero spacing",
          GTK_IS_GRID(sliders_grid) &&
          gtk_grid_get_row_spacing(GTK_GRID(sliders_grid)) == 0);
@@ -615,6 +638,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(1800, 1), 2);
     t_eq_int("1650px: all four small sections share one line",
              wozt_dashboard_group_columns(1650, 2), 4);
+    /* Reflow thresholds must exceed the minimum widths of packed GTK
+     * children: otherwise the window gets stuck before configure-event. */
+    t_eq_int("1360px: four small sections reflow to three before blocking resize",
+             wozt_dashboard_group_columns(1360, 2), 3);
+    t_eq_int("1100px: small sections reflow to pairs",
+             wozt_dashboard_group_columns(1100, 2), 2);
+    t_eq_int("780px: small sections stack before their minimum width",
+             wozt_dashboard_group_columns(780, 2), 1);
     t_eq_int("2200px: four small sections remain in one line",
              wozt_dashboard_group_columns(2200, 2), 4);
     t_ok("Dashboard is a vertical container of independent rows",
@@ -765,6 +796,22 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(device_inline) == input_right_grid &&
          gtk_widget_get_parent(input_preview_inline) == input_right_grid &&
          input_preview_row >= 0 && input_lt_row > input_preview_row);
+    gint toggle_column = -1, toggle_span = -1;
+    if (GTK_IS_GRID(input_right_grid) && g_c.gamepad_enabled)
+        gtk_container_child_get(GTK_CONTAINER(input_right_grid),
+                                g_c.gamepad_enabled, "left-attach", &toggle_column,
+                                "width", &toggle_span, NULL);
+    t_ok("Local input toggle starts at x=0 without an orphan label",
+         g_c.gamepad_enabled && toggle_column == 0 && toggle_span == 2 &&
+         gtk_widget_get_halign(g_c.gamepad_enabled) == GTK_ALIGN_START);
+    double px = -1.0, py = -1.0, radius = -1.0;
+    wozt_stick_preview_geometry(70, 70, &px, &py, &radius);
+    t_ok("70px preview has a centered visible 68px circle",
+         px == 35.0 && py == 35.0 &&
+         fabs(2.0 * (radius + 0.5) - 68.0) < 0.0001);
+    t_ok("Preview frames add no shadow around the 70px drawing surface",
+         input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
+         gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
     /* Output stays naturally narrow; input consumes the remaining
      * horizontal space. Both frames still share the controller row. */

@@ -370,20 +370,32 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
         "window.wozt-window scale slider {"
         "background-image:none;background-color:%s;"
         "border:1px solid %s;border-radius:0;box-shadow:none;}"
-        /* Only 16 controller-calibration scales are styled this tightly.
-         * 3px tracks stay thin; the 12px thumb + borders stays square. */
+        /* GTK3 may allocate the trough/highlight as tall as the thumb,
+         * even with min-height:3px. Use a vertically CENTERED, fixed-size
+         * 2px background image for BOTH pieces, independent of allocation.
+         * GTK3 supports background-size/position/repeat (CSS3). */
         "window.wozt-window scale.wozt-calibration-scale {"
         "margin:0;padding:0;min-height:0;}"
         "window.wozt-window scale.wozt-calibration-scale contents {"
         "margin:0;padding:0;min-height:0;}"
         "window.wozt-window scale.wozt-calibration-scale trough {"
-        "min-height:3px;margin:0;padding:0;border-width:0;}"
+        "min-height:3px;margin:0;padding:0;border-width:0;"
+        "background-color:transparent;"
+        "background-image:linear-gradient(to right,%s,%s);"
+        "background-size:100%% 2px;background-repeat:no-repeat;"
+        "background-position:center center;}"
+        "window.wozt-window scale.wozt-calibration-scale trough highlight {"
+        "min-height:0;margin:0;padding:0;border-width:0;"
+        "background-color:transparent;"
+        "background-image:linear-gradient(to right,%s,%s);"
+        "background-size:100%% 2px;background-repeat:no-repeat;"
+        "background-position:center center;}"
         "window.wozt-window scale.wozt-calibration-scale trough slider,"
         "window.wozt-window scale.wozt-calibration-scale slider {"
         "min-height:12px;min-width:12px;margin:0;padding:0;border-width:1px;}"
         "window.wozt-window scale.wozt-calibration-scale value {"
         "margin:0;padding:0;}",
-        v[2], v[3], v[6], v[6], v[3]);
+        v[2], v[3], v[6], v[6], v[3], v[2], v[2], v[6], v[6]);
     char *complete_css = g_strconcat(css, slider_css, NULL);
     g_free(slider_css);
     GError *error = NULL;
