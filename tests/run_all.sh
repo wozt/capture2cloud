@@ -10,6 +10,54 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# C2C_0835_SMART_TEST_SELECTION
+# The smart selector calls this script with --only, never --changed.
+if [ "${1:-}" = "--changed" ]; then
+    shift
+    exec python3 "$PROJECT_DIR/tools/smart_tests.py" "$@"
+fi
+
+VALID_SUITES=" test_gamepad_bridge test_controller_shaping test_wup_touch test_output_pcble test_pcble_protocol test_jc2_stick_routing test_reset_method test_web_stream_auth test_change_watch test_ws_frame test_rtp_mtu test_h264_encoders test_gtk_layout test_drc_encoder wozt-assets wozt-tooltips javascript native security smart "
+if [ "${1:-}" = "--list" ]; then
+    printf 'Available suites: %s\n' "$VALID_SUITES"
+    printf 'Aliases: gtk (test_gtk_layout), js (javascript)\n'
+    exit 0
+fi
+
+ONLY_SUITE=""
+if [ "${1:-}" = "--only" ]; then
+    shift
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+        echo 'Usage: ./tests/run_all.sh --only test_gtk_layout[,javascript,...]' >&2
+        exit 2
+    fi
+    IFS=',' read -r -a selected <<< "$1"
+    shift
+    for choice in "${selected[@]}"; do
+        case "$choice" in
+            gtk) choice=test_gtk_layout ;;
+            js) choice=javascript ;;
+        esac
+        if [ -z "$choice" ] || [[ "$VALID_SUITES" != *" $choice "* ]]; then
+            printf 'Unknown suite: %s (see --list)\n' "$choice" >&2
+            exit 2
+        fi
+        ONLY_SUITE="${ONLY_SUITE:+$ONLY_SUITE,}$choice"
+    done
+fi
+if [ "$#" -ne 0 ]; then
+    echo 'Usage: ./tests/run_all.sh [--changed [--dry-run|--base REV]] [--only SUITES] [--list]' >&2
+    exit 2
+fi
+
+suite_selected() {
+    [ -z "$ONLY_SUITE" ] && return 0
+    case ",$ONLY_SUITE," in
+        *",$1,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Built once and kept, rather than into a fresh temporary directory every
 # run. Each of these #includes a whole project source, so compiling all
 # four is several seconds of gcc -- and gcc taking cores is exactly what
@@ -30,9 +78,12 @@ fi
 
 failed=0
 
-# Explanatory controls must stay translated in all nine WOZT JSON languages.
-if ! python3 "$PROJECT_DIR/tools/check-wozt-tooltips.py"; then
-    failed=1
+# Only run these validators when selected (default full mode selects all).
+if suite_selected wozt-tooltips; then
+    if ! python3 "$PROJECT_DIR/tools/check-wozt-tooltips.py"; then failed=1; fi
+fi
+if suite_selected wozt-assets; then
+    if ! python3 "$PROJECT_DIR/tools/check-wozt-assets.py"; then failed=1; fi
 fi
 
 # How long each suite took, printed at the end. Worth having: "the tests
@@ -42,8 +93,10 @@ declare -a TIMINGS=()
 timed() {
     local label="$1"; shift
     local start=$SECONDS
-    "$@"
+    local exit_code=0
+    "$@" || exit_code=$?
     TIMINGS+=("$(printf '%4d s  %s' "$((SECONDS - start))" "$label")")
+    return "$exit_code"
 }
 
 # Whether `bin` has to be built again: missing, or older than any source
@@ -126,36 +179,73 @@ run_c_test() {
 
 # The C tests #include the .c file under test, so they see its static
 # functions; the pkg-config sets below are just that file's own deps.
-timed "C: gamepad bridge"  run_c_test test_gamepad_bridge "libusb-1.0 sdl2"
-timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
-timed "C: WUP touch"          run_c_test test_wup_touch ""
-timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
-timed "C: pcble protocol"   run_c_test test_pcble_protocol ""
+if suite_selected test_gamepad_bridge; then
+    timed "C: gamepad bridge"  run_c_test test_gamepad_bridge "libusb-1.0 sdl2"
+fi
+if suite_selected test_controller_shaping; then
+    timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
+fi
+if suite_selected test_wup_touch; then
+    timed "C: WUP touch"          run_c_test test_wup_touch ""
+fi
+if suite_selected test_output_pcble; then
+    timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
+fi
+if suite_selected test_pcble_protocol; then
+    timed "C: pcble protocol"   run_c_test test_pcble_protocol ""
+fi
 # Both sticks must remain independent in Joy-Con 2 pair/mixed upright mode.
 # This is a pure mapping test; no Bluetooth adapter or paired Switch needed.
-timed "C: Joy-Con 2 stick routing" run_c_test test_jc2_stick_routing "gio-2.0"
-timed "C: reset method"     run_c_test test_reset_method "sdl2 gio-2.0"
+if suite_selected test_jc2_stick_routing; then
+    timed "C: Joy-Con 2 stick routing" run_c_test test_jc2_stick_routing "gio-2.0"
+fi
+if suite_selected test_reset_method; then
+    timed "C: reset method"     run_c_test test_reset_method "sdl2 gio-2.0"
+fi
 # glib because server/web_stream.c now answers a WebSocket upgrade, whose
 # handshake is a SHA-1 and a base64 -- both GLib's.
-timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 glib-2.0"
-timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscale libavcodec libavutil"
-timed "C: websocket frame" run_c_test test_ws_frame "glib-2.0"
-timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
-timed "C: h264 encoders"   run_c_test test_h264_encoders "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
+if suite_selected test_web_stream_auth; then
+    timed "C: web stream auth"  run_c_test test_web_stream_auth "sdl2 gstreamer-1.0 glib-2.0"
+fi
+if suite_selected test_change_watch; then
+    timed "C: change watch"     run_c_test test_change_watch "libjpeg sdl2 libswscale libavcodec libavutil"
+fi
+if suite_selected test_ws_frame; then
+    timed "C: websocket frame" run_c_test test_ws_frame "glib-2.0"
+fi
+if suite_selected test_rtp_mtu; then
+    timed "C: rtp mtu"          run_c_test test_rtp_mtu "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
+fi
+if suite_selected test_h264_encoders; then
+    timed "C: h264 encoders"   run_c_test test_h264_encoders "sdl2 gstreamer-1.0 gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 libavcodec libavutil libswscale"
+fi
 # The settings window, opened for real on a virtual display: GTK reports
 # a broken layout at run time and never at compile time. Skipped rather
 # than failed where Xvfb is not installed.
-if command -v xvfb-run >/dev/null 2>&1; then
-    timed "C: gtk layout"      run_c_test_x11 test_gtk_layout "sdl2 gtk+-3.0 x11 glib-2.0 json-glib-1.0" "-lm"
-else
-    echo "═══ C: gtk layout ═══"; echo "  xvfb-run not installed; skipped"
+if suite_selected test_gtk_layout; then
+    if command -v xvfb-run >/dev/null 2>&1; then
+        timed "C: gtk layout" run_c_test_x11 test_gtk_layout "sdl2 gtk+-3.0 x11 glib-2.0 json-glib-1.0" "-lm"
+    else
+        echo "═══ C: gtk layout ═══"; echo "  xvfb-run not installed; skipped"
+        # A targeted GTK-only invocation cannot claim success without GTK.
+        if [ -n "$ONLY_SUITE" ]; then failed=1; fi
+    fi
 fi
 
 # The fourth encode. Linked against libavcodec on purpose: that is what
 # brings the distribution's x264 into the process, and the whole point of
 # this test is that drc-x264 lives beside it without either answering for
 # the other. Skips itself where drc-x264 is not installed.
-timed "C: wii u encode"     run_c_test test_drc_encoder "libavcodec libavutil" "-I$PROJECT_DIR/wiiu_gamepad/include -ldl"
+if suite_selected test_drc_encoder; then
+    timed "C: wii u encode"     run_c_test test_drc_encoder "libavcodec libavutil" "-I$PROJECT_DIR/wiiu_gamepad/include -ldl"
+fi
+
+if suite_selected smart; then
+    echo "═══ Python: smart test selector ═══"
+    if ! timed "python: smart test selector" $LOW python3 "$PROJECT_DIR/tests/test_smart_tests.py"; then
+        failed=1
+    fi
+fi
 
 # Before the security suite, and that order is not cosmetic: the security
 # suite deliberately trips the failed-login lockout, which lasts thirty
@@ -163,25 +253,31 @@ timed "C: wii u encode"     run_c_test test_drc_encoder "libavcodec libavutil" "
 # only correct thing and waits the lockout out -- turning a 35-second
 # suite into a 65-second one for no benefit at all.
 echo
-echo "═══ Native transport (needs the app running) ═══"
-if curl -fsS -m 2 "http://127.0.0.1:${WEB_PORT:-5080}/clients" >/dev/null 2>&1; then
-    timed "native transport" $LOW python3 "$SCRIPT_DIR/native/test_switch_stream.py" || failed=1
-else
-    echo "  skipped: nothing listening on 127.0.0.1:${WEB_PORT:-5080}"
+if suite_selected native; then
+    echo "═══ Native transport (needs the app running) ═══"
+    if curl -fsS -m 2 "http://127.0.0.1:${WEB_PORT:-5080}/clients" >/dev/null 2>&1; then
+        timed "native transport" $LOW python3 "$SCRIPT_DIR/native/test_switch_stream.py" || failed=1
+    else
+        echo "  skipped: nothing listening on 127.0.0.1:${WEB_PORT:-5080}"
+    fi
 fi
 echo
-echo "═══ Security (needs the app running) ═══"
-if curl -fsS -m 2 "http://127.0.0.1:${WEB_PORT:-5080}/clients" >/dev/null 2>&1; then
-    timed "security" $LOW node "$SCRIPT_DIR/security/attack.js" || failed=1
-else
-    echo "  skipped: nothing listening on 127.0.0.1:${WEB_PORT:-5080}"
+if suite_selected security; then
+    echo "═══ Security (needs the app running) ═══"
+    if curl -fsS -m 2 "http://127.0.0.1:${WEB_PORT:-5080}/clients" >/dev/null 2>&1; then
+        timed "security" $LOW node "$SCRIPT_DIR/security/attack.js" || failed=1
+    else
+        echo "  skipped: nothing listening on 127.0.0.1:${WEB_PORT:-5080}"
+    fi
 fi
 
 
 echo
-echo "═══ JavaScript ═══"
-if ! timed "javascript" $LOW node "$SCRIPT_DIR/run_tests.js"; then
-    failed=1
+if suite_selected javascript; then
+    echo "═══ JavaScript ═══"
+    if ! timed "javascript" $LOW node "$SCRIPT_DIR/run_tests.js"; then
+        failed=1
+    fi
 fi
 
 echo
