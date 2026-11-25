@@ -752,6 +752,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Input device selector is inline with its label",
          GTK_IS_BOX(device_inline) && g_list_length(device_children) == 2 &&
          GTK_IS_LABEL(device_children->data));
+    gint local_device_width = -1;
+    if (g_c.gamepad_device)
+        gtk_widget_get_size_request(g_c.gamepad_device, &local_device_width, NULL);
+    t_ok("Local device row is compact without touching input slider width",
+         GTK_IS_BOX(device_inline) && gtk_box_get_spacing(GTK_BOX(device_inline)) == 1 &&
+         local_device_width == 190 && input_slider_width == 116);
     g_list_free(device_children);
     GtkWidget *input_preview_frame = g_c.input_stick_preview[0]
         ? gtk_widget_get_parent(g_c.input_stick_preview[0]) : NULL;
@@ -888,12 +894,25 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                    "Input calibration and Input shaping") == 0);
     GtkWidget *input_outer = g_c.wozt_sections[3]
         ? gtk_bin_get_child(GTK_BIN(g_c.wozt_sections[3])) : NULL;
-    t_ok("Local input trims 5px without changing its slider widths",
+    t_ok("Local input trims its final right margin without changing sliders",
          GTK_IS_BOX(input_outer) &&
-         gtk_widget_get_margin_end(input_outer) == 2 &&
+         gtk_widget_get_margin_end(input_outer) == 0 &&
          GTK_IS_GRID(input_right_grid) &&
          gtk_grid_get_column_spacing(GTK_GRID(input_right_grid)) == 0 &&
          input_slider_width == 116);
+    GtkWidget *invert_text = GTK_IS_BIN(g_c.invert_ry)
+        ? gtk_bin_get_child(GTK_BIN(g_c.invert_ry)) : NULL;
+    PangoAttrList *invert_attrs = GTK_IS_LABEL(invert_text)
+        ? gtk_label_get_attributes(GTK_LABEL(invert_text)) : NULL;
+    gboolean input_invert_compact = FALSE;
+    if (invert_attrs) {
+        PangoAttrIterator *iter = pango_attr_list_get_iterator(invert_attrs);
+        PangoAttribute *attr = pango_attr_iterator_get(iter, PANGO_ATTR_LETTER_SPACING);
+        input_invert_compact = attr && ((PangoAttrInt *)attr)->value == -750;
+        pango_attr_iterator_destroy(iter);
+    }
+    t_ok("Input invert control does not widen the calibration slider column",
+         input_invert_compact && input_slider_width == 116);
     double px = -1.0, py = -1.0, radius = -1.0;
     wozt_stick_preview_geometry(70, 70, &px, &py, &radius);
     t_ok("70px preview has a centered visible 68px circle",

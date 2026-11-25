@@ -3368,9 +3368,16 @@ static void wozt_compact_controller_input(void)
     /* Recover 2px without shortening or clipping slider labels. */
     gtk_grid_set_column_spacing(GTK_GRID(grid), 0);
     wozt_unellipsize_tree(grid);
-    wozt_unellipsize_pcble_combo(g_c.gamepad_device, 210);
-    if (!wozt_inline_output_row(grid, "device"))
+    /* WOZT_0853_INPUT_NATURAL_WIDTH: GTK's combobox renderer can request
+     * more than its visible button. 190px still fits the standard local
+     * device name, while avoiding an oversized row requisition. */
+    wozt_unellipsize_pcble_combo(g_c.gamepad_device, 190);
+    if (!wozt_inline_output_row(grid, "device")) {
         g_warning("wozt-ui: cannot inline local device row");
+    } else {
+        GtkWidget *device_row = gtk_widget_get_parent(g_c.gamepad_device);
+        if (GTK_IS_BOX(device_row)) gtk_box_set_spacing(GTK_BOX(device_row), 1);
+    }
     if (!wozt_inline_output_row(grid, "visual preview"))
         g_warning("wozt-ui: cannot inline local input preview");
     else if (!wozt_remove_preview_caption(g_c.input_stick_preview[0]))
@@ -3390,6 +3397,25 @@ static void wozt_compact_controller_input(void)
     wozt_compact_calibration_scales(input_scales);
     wozt_tighten_local_diagonal_label(grid, "left diagonal saturation (%)");
     wozt_tighten_local_diagonal_label(grid, "right diagonal saturation (%)");
+
+    /* The native checkbox can be wider than a 116px GtkScale, leaving
+     * an invisible tail in column 1. Condense its LABEL, not the button
+     * or its original signal, to keep the calibrated sliders aligned. */
+    GtkWidget *invert_text = GTK_IS_BIN(g_c.invert_ry)
+        ? gtk_bin_get_child(GTK_BIN(g_c.invert_ry)) : NULL;
+    if (GTK_IS_LABEL(invert_text)) {
+        PangoAttrList *attrs = pango_attr_list_new();
+        pango_attr_list_insert(attrs, pango_attr_letter_spacing_new(-750));
+        gtk_label_set_attributes(GTK_LABEL(invert_text), attrs);
+        pango_attr_list_unref(attrs);
+    }
+
+    /* The rightmost dashboard section still expands responsively, but its
+     * compact natural size no longer carries a redundant 2px inner margin. */
+    GtkWidget *input_frame = g_c.wozt_sections[3];
+    GtkWidget *input_outer = GTK_IS_BIN(input_frame)
+        ? gtk_bin_get_child(GTK_BIN(input_frame)) : NULL;
+    if (GTK_IS_WIDGET(input_outer)) gtk_widget_set_margin_end(input_outer, 0);
 }
 
 /* WOZT_0831_COMPACT_BUTTONS
