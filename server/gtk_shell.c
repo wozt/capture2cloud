@@ -201,7 +201,7 @@ static const int wozt_group_size[3] = {2, 2, 4};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
     315, 435,   /* natural Overview + scrollable Clients at ~800px */
-    620, 560,   /* Output keeps two inner columns; input is one grid */
+    620, 350,   /* two output columns; compact one-column local input */
     /* Budgets MUST exceed the GTK minimum of each packed row. Otherwise
      * GTK blocks a resize before configure-event can reflow the row. */
     320, 455, 410, 340 /* Capture, Monitor, Reset, Maintenance */
@@ -3279,10 +3279,13 @@ static void wozt_compact_controller_output(void)
         wozt_unellipsize_pcble_combo(g_c.pcble_mouse_side, 170);
         wozt_compact_palette_rows(g_c.pcble_settings);
         wozt_compact_session_buttons(g_c.pcble_settings, "Bluetooth session");
-        /* Place the checkbox immediately after its label. */
-        if (!wozt_inline_output_row(g_c.pcble_settings, "logging"))
-            g_warning("wozt-ui: cannot inline output logging row");
     }
+    /* The PCBLE logging row now sits in Diagnostics, above Output shaping. */
+    GtkWidget *diagnostics_grid = g_c.pcble_verbose
+        ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
+    if (!GTK_IS_GRID(diagnostics_grid) ||
+        !wozt_inline_output_row(diagnostics_grid, "logging"))
+        g_warning("wozt-ui: cannot inline right-column diagnostics logging");
     wozt_pack_controller_columns_tightly(g_c.wozt_inner_output);
 
     if (g_c.output_stick_preview[0])
@@ -4695,11 +4698,9 @@ static void build_settings_window(GtkShell *shell) {
             "right grip",
             g_c.pcble_right_grip_color);
 
-        add_section_header(
-            g_c.pcble_settings,
-            pr++,
-            "Diagnostics");
-
+        /* The logging toggle must exist before pcble_load_config(), but
+         * Diagnostics now begins the SECOND output column. Its GtkGrid
+         * parent is assigned immediately after wozt_split_inner_section(). */
         g_c.pcble_verbose =
             gtk_check_button_new_with_label(
                 "detailed Bluetooth / HID logging");
@@ -4709,12 +4710,6 @@ static void build_settings_window(GtkShell *shell) {
             "toggled",
             G_CALLBACK(pcble_verbose_changed),
             shell);
-
-        add_row(
-            g_c.pcble_settings,
-            pr++,
-            "logging",
-            g_c.pcble_verbose);
     }
 
     /* Pair the four appearance controls into two compact rows. */
@@ -4723,9 +4718,25 @@ static void build_settings_window(GtkShell *shell) {
     pcble_load_config(shell);
 
 
-    /* --- final merged output calibration ----------------------- */
+    /* --- right output column: Diagnostics, then Output shaping ---- */
     grid = wozt_split_inner_section(grid, 1);
     row = 0;
+
+    /* WOZT_0845_RIGHT_DIAGNOSTICS
+     * Keep the PCBLE-only logging control and its original signal alive.
+     * Its compact group is the FIRST right-column row, above shaping.
+     * The visible property is bound to the backend's PCBLE panel so the
+     * Diagnostics block vanishes for Titan/other backends just as before.
+     * no-show-all prevents the main window's show_all from un-hiding it. */
+    GtkWidget *pcble_diagnostics = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(pcble_diagnostics), 2);
+    gtk_grid_set_column_spacing(GTK_GRID(pcble_diagnostics), 3);
+    add_section_header(pcble_diagnostics, 0, "Diagnostics");
+    add_row(pcble_diagnostics, 1, "logging", g_c.pcble_verbose);
+    gtk_widget_set_no_show_all(pcble_diagnostics, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), pcble_diagnostics, 0, row++, 2, 1);
+    g_object_bind_property(g_c.pcble_settings, "visible",
+                           pcble_diagnostics, "visible", G_BINDING_SYNC_CREATE);
 
     add_section_header(
         grid,

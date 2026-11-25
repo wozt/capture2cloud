@@ -519,9 +519,15 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          output_preview_h[0] == 70 && output_preview_h[1] == 70);
     GtkWidget *logging_row = g_c.pcble_verbose
         ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
+    GtkWidget *diagnostics_grid = GTK_IS_BOX(logging_row)
+        ? gtk_widget_get_parent(logging_row) : NULL;
+    t_ok("PCBLE Diagnostics starts the second Output column",
+         GTK_IS_GRID(diagnostics_grid) &&
+         gtk_widget_get_parent(diagnostics_grid) == sliders_grid &&
+         gtk_grid_get_child_at(GTK_GRID(sliders_grid), 0, 0) == diagnostics_grid &&
+         gtk_widget_get_parent(g_c.pcble_verbose) == logging_row);
     t_ok("Output logging toggle sits immediately after its label",
-         GTK_IS_BOX(logging_row) &&
-         gtk_widget_get_parent(logging_row) == g_c.pcble_settings);
+         GTK_IS_BOX(logging_row) && GTK_IS_GRID(diagnostics_grid));
     GtkWidget *preview_frame = g_c.output_stick_preview[0]
         ? gtk_widget_get_parent(g_c.output_stick_preview[0]) : NULL;
     GtkWidget *preview_pair = preview_frame
@@ -621,8 +627,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(780, 0), 1);
     t_eq_int("1144px: overview and clients fit on one line",
              wozt_dashboard_group_columns(1144, 0), 2);
-    t_eq_int("1144px: controller panels remain full width",
-             wozt_dashboard_group_columns(1144, 1), 1);
+    t_eq_int("1144px: compact input fits beside two-column Output",
+             wozt_dashboard_group_columns(1144, 1), 2);
+    t_eq_int("Compact local input has a 350px packing budget",
+             wozt_section_target_width[3], 350);
+    t_eq_int("960px: controller sections wrap before minimum widths collide",
+             wozt_dashboard_group_columns(960, 1), 1);
+    t_eq_int("1050px: controller sections share the row again",
+             wozt_dashboard_group_columns(1050, 1), 2);
     /* Controller budgets now match their compact two-column contents.
      * Derive the joining boundary from their targets and the 36px gutter
      * allowance, rather than relying on a stale fixed-width test. */
@@ -992,6 +1004,12 @@ static gboolean gtk_layout_probe_pcble(gpointer user_data)
          g_main_context_is_owner(g_main_context_default()));
     t_ok("pcble panel is visible when pcble2gamepad is selected",
          g_c.pcble_settings && gtk_widget_get_visible(g_c.pcble_settings));
+    GtkWidget *logging_inline = g_c.pcble_verbose
+        ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
+    GtkWidget *diagnostics_panel = logging_inline
+        ? gtk_widget_get_parent(logging_inline) : NULL;
+    t_ok("Right-column PCBLE diagnostics follows selected backend",
+         GTK_IS_GRID(diagnostics_panel) && gtk_widget_get_visible(diagnostics_panel));
     t_ok("pcble Pair / Sync button is visible",
          g_c.pcble_pair && gtk_widget_get_visible(g_c.pcble_pair));
     t_ok("Titan panel is hidden while pcble is selected",
@@ -1010,6 +1028,12 @@ static gboolean gtk_layout_probe_titan(gpointer user_data)
          g_main_context_is_owner(g_main_context_default()));
     t_ok("pcble panel hides again when Titan is selected",
          g_c.pcble_settings && !gtk_widget_get_visible(g_c.pcble_settings));
+    GtkWidget *logging_inline = g_c.pcble_verbose
+        ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
+    GtkWidget *diagnostics_panel = logging_inline
+        ? gtk_widget_get_parent(logging_inline) : NULL;
+    t_ok("PCBLE Diagnostics hides with the PCBLE backend",
+         GTK_IS_GRID(diagnostics_panel) && !gtk_widget_get_visible(diagnostics_panel));
 
     /* These callbacks drive real settings and must not race GTK redraw. */
     if (g_c.range[0]) gtk_range_set_value(GTK_RANGE(g_c.range[0]), 73);
