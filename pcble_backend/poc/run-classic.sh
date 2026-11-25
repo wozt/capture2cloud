@@ -122,6 +122,16 @@ if [[ -n $secondary ]]; then verify_adapter "$secondary" "$expected_secondary"; 
 printf '[ROUTE] profile=%s primary=%s mac=%s secondary=%s mac=%s\n' \
     "$profile" "$adapter" "${expected_primary:-unknown}" \
     "${secondary:-none}" "${expected_secondary:-none}"
+# No log directory is created unless the user explicitly enables Verbose.
+# Bash sends normal streaming diagnostics to stdout or /dev/null instead of
+# writing unbounded files on /tmp (tmpfs on many Linux installations).
+pcble_log_path() {
+    if [[ -n ${capture:-} ]]; then
+        printf '%s/%s\n' "$capture" "$1"
+    else
+        printf '/dev/null\n'
+    fi
+}
 if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
     # Joy-Con 2 runs its own BLE stack on an exclusive HCI user channel. It
     # does not touch the bluetoothd configuration; the kernel hands the
@@ -143,13 +153,18 @@ if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
         jc2_options+=(--desktop "$PKEXEC_UID")
     fi
     capture_owner=${PKEXEC_UID:-${SUDO_UID:-0}}
-    capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
-    chmod 700 "$capture"
+    capture=
+    if $verbose; then
+        capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
+        chmod 700 "$capture"
+    fi
     status=0
-    "$jc2" "$adapter" "${jc2_options[@]}" 2>&1 | tee "$capture/joycon2.log" || status=$?
-    chmod 600 "$capture/joycon2.log"
-    [[ $capture_owner == 0 ]] || chown -R "$capture_owner" "$capture"
-    echo "Adapter returned to BlueZ. Private log: $capture"
+    "$jc2" "$adapter" "${jc2_options[@]}" 2>&1 | tee "$(pcble_log_path joycon2.log)" || status=$?
+    if $verbose; then
+        chmod 600 "$(pcble_log_path "joycon2.log")"
+        [[ $capture_owner == 0 ]] || chown -R "$capture_owner" "$capture"
+        echo "Adapter returned to BlueZ. Private log: $capture"
+    fi
     exit $status
 fi
 if [[ $profile == joycon2-pair ]]; then
@@ -168,8 +183,11 @@ if [[ $profile == joycon2-pair ]]; then
     mkdir -p "/run/capture2cloud/pcble/$PKEXEC_UID"
     chown "$PKEXEC_UID" "/run/capture2cloud/pcble/$PKEXEC_UID"
     chmod 700 "/run/capture2cloud/pcble/$PKEXEC_UID"
-    capture=$(mktemp -d "/tmp/capture2cloud-pcble-${PKEXEC_UID}-XXXXXXXX")
-    chmod 700 "$capture"
+    capture=
+    if $verbose; then
+        capture=$(mktemp -d "/tmp/capture2cloud-pcble-${PKEXEC_UID}-XXXXXXXX")
+        chmod 700 "$capture"
+    fi
     left_pid=; right_pid=
     dual_cleanup() {
         trap - EXIT INT TERM
@@ -177,9 +195,11 @@ if [[ $profile == joycon2-pair ]]; then
         [[ -z $right_pid ]] || kill -TERM "$right_pid" 2>/dev/null || true
         [[ -z $left_pid ]] || wait "$left_pid" 2>/dev/null || true
         [[ -z $right_pid ]] || wait "$right_pid" 2>/dev/null || true
-        find "$capture" -type f -exec chmod 600 {} +
-        chown -R "$PKEXEC_UID" "$capture"
-        echo "BLE pair stopped. Private logs: $capture"
+        if $verbose; then
+            find "$capture" -type f -exec chmod 600 {} +
+            chown -R "$PKEXEC_UID" "$capture"
+            echo "BLE pair stopped. Private logs: $capture"
+        fi
     }
     trap dual_cleanup EXIT
     trap 'exit 130' INT
@@ -188,9 +208,9 @@ if [[ $profile == joycon2-pair ]]; then
     [[ -z $reconnect ]] || options+=(--reconnect)
     $ble_reconnect && options+=(--reconnect)
     $verbose && options+=(--verbose)
-    "$jc2" "$adapter" --side left --socket joycon-left.sock "${options[@]}" > "$capture/joycon2-left.log" 2>&1 &
+    "$jc2" "$adapter" --side left --socket joycon-left.sock "${options[@]}" > "$(pcble_log_path "joycon2-left.log")" 2>&1 &
     left_pid=$!
-    "$jc2" "$secondary" --side right --socket joycon-right.sock "${options[@]}" > "$capture/joycon2-right.log" 2>&1 &
+    "$jc2" "$secondary" --side right --socket joycon-right.sock "${options[@]}" > "$(pcble_log_path "joycon2-right.log")" 2>&1 &
     right_pid=$!
     left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
     right_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-right.sock"
@@ -320,11 +340,13 @@ capture_owner=${PKEXEC_UID:-${SUDO_UID:-0}}
 
 # Runtime diagnostics are temporary session artifacts, not persistent state.
 # Keep every capture in a private random directory under /tmp.
-capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
-chmod 700 "$capture"
-# Keep the launcher output with the session logs; the desktop app does not
-# show it.
-exec > >(tee -a "$capture/runner.log") 2>&1
+capture=
+if $verbose; then
+    capture=$(mktemp -d "/tmp/capture2cloud-pcble-${capture_owner}-XXXXXXXX")
+    chmod 700 "$capture"
+    # Debug logging is opt-in, including the launcher's own transcript.
+    exec > >(tee -a "$(pcble_log_path "runner.log")") 2>&1
+fi
 trap 'echo "runner: line $LINENO failed: $BASH_COMMAND"' ERR
 monitor_pids=()
 backend_pids=()
@@ -345,9 +367,11 @@ cleanup() {
         systemctl daemon-reload
         systemctl restart bluetooth
     fi
-    find "$capture" -type f -exec chmod 600 {} +
-    if [[ $capture_owner != 0 ]]; then chown -R "$capture_owner" "$capture"; fi
-    echo "Normal BlueZ restored. Private capture: $capture"
+    if $verbose; then
+        find "$capture" -type f -exec chmod 600 {} +
+        if [[ $capture_owner != 0 ]]; then chown -R "$capture_owner" "$capture"; fi
+        echo "Normal BlueZ restored. Private capture: $capture"
+    fi
 }
 trap cleanup EXIT
 # The foreground timeout forwards terminal signals to the POC, which restores adapter properties.
@@ -376,11 +400,14 @@ else
     echo 'Pairing mode: BlueZ restarted; starting controller backend.'
 fi
 
-btmon -i "$adapter" -w "$capture/hci.btsnoop" > "$capture/btmon.log" 2>&1 &
-monitor_pids+=("$!")
-if [[ -n $secondary ]]; then
-    btmon -i "$secondary" -w "$capture/hci-secondary.btsnoop" > "$capture/btmon-secondary.log" 2>&1 &
+# HCI traces can grow indefinitely: record them ONLY in Verbose mode.
+if $verbose; then
+    btmon -i "$adapter" -w "$capture/hci.btsnoop" > "$(pcble_log_path "btmon.log")" 2>&1 &
     monitor_pids+=("$!")
+    if [[ -n $secondary ]]; then
+        btmon -i "$secondary" -w "$capture/hci-secondary.btsnoop" > "$(pcble_log_path "btmon-secondary.log")" 2>&1 &
+        monitor_pids+=("$!")
+    fi
 fi
 if $desktop; then
     [[ -n ${PKEXEC_UID:-} ]] || { echo 'Desktop mode requires pkexec.' >&2; exit 1; }
@@ -388,14 +415,14 @@ if $desktop; then
     chown "$PKEXEC_UID" "/run/capture2cloud/pcble/$PKEXEC_UID"
     chmod 700 "/run/capture2cloud/pcble/$PKEXEC_UID"
     if [[ $profile == pro ]]; then
-        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type pro "${backend_options[@]}" | tee "$capture/daemon.log"
+        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type pro "${backend_options[@]}" | tee "$(pcble_log_path "daemon.log")"
     elif [[ $profile == joycon-mixed || $profile == joycon-mixed-reverse ]]; then
         jc2_side=right; classic_side=left
         if [[ $profile == joycon-mixed-reverse ]]; then jc2_side=left; classic_side=right; fi
         jc2_options=(--side "$jc2_side" --vertical --socket "joycon-$jc2_side.sock" --desktop "$PKEXEC_UID")
         [[ -n $reconnect ]] && jc2_options+=(--reconnect)
         $verbose && jc2_options+=(--verbose)
-        "$jc2" "$secondary" "${jc2_options[@]}" > "$capture/joycon2-$jc2_side.log" 2>&1 &
+        "$jc2" "$secondary" "${jc2_options[@]}" > "$(pcble_log_path "joycon2-$jc2_side.log")" 2>&1 &
         jc2_pid=$!; backend_pids+=("$jc2_pid")
         jc2_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-$jc2_side.sock"
         for _ in {1..100}; do
@@ -404,7 +431,7 @@ if $desktop; then
             sleep .05
         done
         [[ -S $jc2_socket ]] || { echo 'Joy-Con 2 backend did not open IPC socket' >&2; exit 1; }
-        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type "joycon-${classic_side:0:1}" "${backend_options[@]}" > "$capture/joycon-$classic_side.log" 2>&1 &
+        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type "joycon-${classic_side:0:1}" "${backend_options[@]}" > "$(pcble_log_path "joycon-$classic_side.log")" 2>&1 &
         classic_pid=$!; backend_pids+=("$classic_pid")
         set +e
         first_pid=
@@ -422,9 +449,9 @@ if $desktop; then
             # Launch BOTH outbound HID connections before waiting for IPC,
             # avoiding a deadlock if the Switch expects both at once.
             echo "[ROUTE] JC1 pair reconnect: left=$adapter right=$secondary peer=$reconnect"
-            "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
+            "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$(pcble_log_path "joycon-left.log")" 2>&1 &
             left_pid=$!; backend_pids+=("$left_pid")
-            "$app" "$secondary" "$sdp" --desktop "$PKEXEC_UID" --type joycon-r --allow-adapter "$adapter" --shared-profile "${backend_options[@]}" > "$capture/joycon-right.log" 2>&1 &
+            "$app" "$secondary" "$sdp" --desktop "$PKEXEC_UID" --type joycon-r --allow-adapter "$adapter" --shared-profile "${backend_options[@]}" > "$(pcble_log_path "joycon-right.log")" 2>&1 &
             right_pid=$!; backend_pids+=("$right_pid")
             left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
             right_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-right.sock"
@@ -448,12 +475,12 @@ if $desktop; then
             echo "[EXIT] Classic Joy-Con reconnect: first=${first_pid:-none} status=$first_status"
             exit "$first_status"
         fi
-        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
+        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$(pcble_log_path "joycon-left.log")" 2>&1 &
         left_pid=$!;backend_pids+=("$left_pid")
         left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
         for _ in {1..100}; do [[ -S $left_socket ]] && break; kill -0 "$left_pid" 2>/dev/null || break; sleep .05; done
         [[ -S $left_socket ]] || { echo 'Left Joy-Con backend failed to start' >&2; wait "$left_pid" || true; exit 1; }
-        "$app" "$secondary" "$sdp" --desktop "$PKEXEC_UID" --type joycon-r --allow-adapter "$adapter" --shared-profile "${backend_options[@]}" > "$capture/joycon-right.log" 2>&1 &
+        "$app" "$secondary" "$sdp" --desktop "$PKEXEC_UID" --type joycon-r --allow-adapter "$adapter" --shared-profile "${backend_options[@]}" > "$(pcble_log_path "joycon-right.log")" 2>&1 &
         right_pid=$!;backend_pids+=("$right_pid")
         set +e
         wait "$left_pid"; left_status=$?
@@ -465,5 +492,5 @@ if $desktop; then
 else
     echo 'Open Change Grip/Order. Commands: buttons HEX HEX HEX; sticks LX LY RX RY; release; status; quit.'
     echo 'The test ends after 10 minutes; no buttons are pressed automatically.'
-    timeout --foreground --signal=TERM --kill-after=10s 600 "$app" "$adapter" "$sdp" --type pro "${backend_options[@]}" | tee "$capture/daemon.log"
+    timeout --foreground --signal=TERM --kill-after=10s 600 "$app" "$adapter" "$sdp" --type pro "${backend_options[@]}" | tee "$(pcble_log_path "daemon.log")"
 fi
