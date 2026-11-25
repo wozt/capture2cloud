@@ -1024,11 +1024,20 @@ static int pcble_profile_is_pair(const char *profile)
            strcmp(profile, "joycon-mixed-reverse") == 0;
 }
 
+static int pcble_profile_is_ble_only(const char *profile)
+{
+    return strcmp(profile, "joycon2-left") == 0 ||
+           strcmp(profile, "joycon2-right") == 0 ||
+           strcmp(profile, "joycon2-pair") == 0;
+}
+
 static int pcble_profile_reconnect_supported(const char *profile)
 {
     return strcmp(profile, "pro") == 0 ||
            strcmp(profile, "joycon-mixed") == 0 ||
-           strcmp(profile, "joycon-mixed-reverse") == 0;
+           strcmp(profile, "joycon-mixed-reverse") == 0 ||
+           strcmp(profile, "joycon-pair") == 0 ||
+           pcble_profile_is_ble_only(profile);
 }
 
 static int pcble_selected_adapter(GtkWidget *combo)
@@ -1221,15 +1230,36 @@ static void pcble_update_controls(GtkShell *shell)
 
     int reconnect_ok = 0;
 
-    if (can_reconnect_profile &&
+    if (pcble_profile_is_ble_only(profile) && adapters_ok) {
+        /* A reconnect must use the adapters whose bonds were saved.
+         * Switching a combo without Pair / Sync must not target old bonds. */
+        char saved_primary[32];
+        char saved_secondary[32];
+        config_get_str("PCBLE_PRIMARY_ADAPTER", saved_primary,
+                       sizeof(saved_primary), "");
+        config_get_str("PCBLE_SECONDARY_ADAPTER", saved_secondary,
+                       sizeof(saved_secondary), "");
+        reconnect_ok = pcble_mac_valid(saved_primary) &&
+            g_ascii_strcasecmp(saved_primary,
+                               g_c.pcble_adapters[primary].address) == 0 &&
+            (!pair || (pcble_mac_valid(saved_secondary) &&
+                g_ascii_strcasecmp(saved_secondary,
+                                   g_c.pcble_adapters[secondary].address) == 0));
+    } else if (!pcble_profile_is_ble_only(profile) &&
+               can_reconnect_profile &&
         primary >= 0 &&
         g_c.pcble_paired_switch[0] &&
         g_c.pcble_paired_adapter[0]) {
         const int classic = strcmp(profile, "joycon-mixed-reverse") == 0
             ? secondary : primary;
+        char marker[32];
+        const char *saved_profile = config_get_str(
+            "PCBLE_PAIRED_PROFILE", marker, sizeof(marker), "");
         reconnect_ok = classic >= 0 &&
             g_ascii_strcasecmp(g_c.pcble_adapters[classic].address,
-                               g_c.pcble_paired_adapter) == 0;
+                               g_c.pcble_paired_adapter) == 0 &&
+            (!*saved_profile || strcmp(saved_profile, profile) == 0) &&
+            (strcmp(profile, "joycon-pair") != 0 || *saved_profile);
     }
 
     gtk_widget_set_sensitive(
@@ -1837,6 +1867,7 @@ static void pcble_refresh_status(GtkShell *shell)
          * later reconnect cannot accidentally use another dongle.
          */
         if (pcble_profile_reconnect_supported(profile) &&
+            !pcble_profile_is_ble_only(profile) &&
             pcble_mac_valid(peer)) {
             int primary = pcble_selected_adapter(g_c.pcble_primary);
             if (strcmp(profile, "joycon-mixed-reverse") == 0)
@@ -1876,6 +1907,14 @@ static void pcble_refresh_status(GtkShell *shell)
                         GTK_LABEL(g_c.pcble_paired),
                         peer);
                 }
+                /* Persist the Classic profile independently from its peer
+                 * and adapter addresses. A stale Pro bond is never reused
+                 * for a Joy-Con 1 pair after a profile change. */
+                char marker[32];
+                const char *saved_profile = config_get_str(
+                    "PCBLE_PAIRED_PROFILE", marker, sizeof(marker), "");
+                if (strcmp(saved_profile, profile) != 0)
+                    config_set_str("PCBLE_PAIRED_PROFILE", profile);
             }
         }
     } else if (reconnect_active) {

@@ -134,6 +134,21 @@ static int parse_profile(const char *profile, int *pair_mode, int *mixed)
     return 1;
 }
 
+/* These profiles use the stored BLE association, not a Classic Link Key. */
+static int pcble_profile_is_ble_only(const char *profile)
+{
+    return profile &&
+        (strcmp(profile, "joycon2-left") == 0 ||
+         strcmp(profile, "joycon2-right") == 0 ||
+         strcmp(profile, "joycon2-pair") == 0);
+}
+
+/* Classic Joy-Con 1 pairs retain a distinct BR/EDR Link Key on each adapter. */
+static int pcble_profile_is_classic_pair(const char *profile)
+{
+    return profile && strcmp(profile, "joycon-pair") == 0;
+}
+
 static int pcble_mouse_side(const char *profile)
 {
     if (!profile) return 0;
@@ -1460,7 +1475,7 @@ static gpointer launcher_wait_thread(gpointer data)
 }
 
 
-int output_pcble_start_session(
+static int output_pcble_start_session_internal(
     const char *primary_adapter,
     const char *secondary_adapter,
     const char *profile,
@@ -1470,6 +1485,7 @@ int output_pcble_start_session(
     const char *left_grip_color,
     const char *right_grip_color,
     int verbose,
+    int ble_reconnect,
     char *error,
     size_t error_size)
 {
@@ -1537,6 +1553,22 @@ int output_pcble_start_session(
         return 0;
     }
 
+    /* Source changes do NOT update the root-owned launcher. Refuse an old
+     * install before pkexec, rather than failing with 'Unknown option'. */
+    gchar *installed_script = NULL;
+    const int installed_current =
+        g_file_get_contents(PCBLE_RUNNER, &installed_script, NULL, NULL) &&
+        strstr(installed_script, "--expect-primary-address") != NULL &&
+        strstr(installed_script, "--reconnect-ble") != NULL;
+    g_free(installed_script);
+    if (!installed_current) {
+        if (error && error_size) {
+            snprintf(error, error_size,
+                     "Installed PCBLE runtime is outdated; run ./scripts/install_pcble_backend.sh");
+        }
+        return 0;
+    }
+
     g_mutex_lock(&g_session_lock);
 
     if (g_launcher) {
@@ -1588,7 +1620,9 @@ int output_pcble_start_session(
         args[n++] = secondary_mac;
     }
 
-    if (reconnect_address && *reconnect_address) {
+    if (ble_reconnect) {
+        args[n++] = "--reconnect-ble";
+    } else if (reconnect_address && *reconnect_address) {
         args[n++] = "--reconnect";
         args[n++] = reconnect_address;
     }
@@ -1626,8 +1660,7 @@ int output_pcble_start_session(
 
     SDL_AtomicSet(
         &g_reconnect_active,
-        reconnect_address &&
-        *reconnect_address);
+        ble_reconnect || (reconnect_address && *reconnect_address));
 
     /*
      * Do not attach process completion to GTK's GLib main context.
@@ -1653,7 +1686,7 @@ int output_pcble_start_session(
     if (g_lock) {
         SDL_LockMutex(g_lock);
         g_auto_validate =
-            pair_mode &&
+            pair_mode && !ble_reconnect &&
             !(reconnect_address && *reconnect_address);
         g_validate_at = 0;
         g_validate_attempts = 0;
@@ -1669,6 +1702,26 @@ int output_pcble_start_session(
         pair_mode ? secondary_adapter : "");
 
     return 1;
+}
+
+/* Public Pair / Sync API: starts in pairing mode unless given a Classic MAC. */
+int output_pcble_start_session(
+    const char *primary_adapter,
+    const char *secondary_adapter,
+    const char *profile,
+    const char *reconnect_address,
+    const char *body_color,
+    const char *button_color,
+    const char *left_grip_color,
+    const char *right_grip_color,
+    int verbose,
+    char *error,
+    size_t error_size)
+{
+    return output_pcble_start_session_internal(
+        primary_adapter, secondary_adapter, profile, reconnect_address,
+        body_color, button_color, left_grip_color, right_grip_color,
+        verbose, 0, error, error_size);
 }
 
 static int output_pcble_start_saved_reconnect(
@@ -1707,7 +1760,66 @@ static int output_pcble_start_saved_reconnect(
     const int reverse = strcmp(profile, "joycon-mixed-reverse") == 0;
     const int mixed = strcmp(profile, "joycon-mixed") == 0 || reverse;
 
-    if (strcmp(profile, "pro") != 0 && !mixed) {
+    if (pcble_profile_is_ble_only(profile)) {
+        /* Joy-Con 2 BLE bonds are stored by the BLE backend per radio and
+         * side in /var/lib/capture2cloud/pcble, not in PCBLE_SWITCH_ADDRESS.
+         * Use the stable adapter MACs selected in GTK to recover hciN. */
+        char primary_mac[32];
+        const char *saved_primary = config_get_str(
+            "PCBLE_PRIMARY_ADAPTER", primary_mac, sizeof(primary_mac), "");
+        char first_hci[16];
+        if (!valid_mac(saved_primary) ||
+            !resolve_hci_for_address(saved_primary, first_hci, sizeof(first_hci))) {
+            if (error && error_size) {
+                snprintf(error, error_size,
+                         "Joy-Con 2 primary adapter not configured or not present; Pair / Sync first");
+            }
+            return 0;
+        }
+
+        char second_hci[16];
+        const int pair = strcmp(profile, "joycon2-pair") == 0;
+        if (pair) {
+            char secondary_mac[32];
+            const char *saved_secondary = config_get_str(
+                "PCBLE_SECONDARY_ADAPTER", secondary_mac, sizeof(secondary_mac), "");
+            if (!valid_mac(saved_secondary) ||
+                g_ascii_strcasecmp(saved_primary, saved_secondary) == 0 ||
+                !resolve_hci_for_address(saved_secondary, second_hci, sizeof(second_hci))) {
+                if (error && error_size) {
+                    snprintf(error, error_size,
+                             "Joy-Con 2 secondary adapter not configured, duplicated or absent; Pair / Sync first");
+                }
+                return 0;
+            }
+        }
+        fprintf(stderr, "pcble: BLE reconnect profile=%s on %s%s%s\n",
+                profile, first_hci, pair ? " + " : "", pair ? second_hci : "");
+        return output_pcble_start_session_internal(
+            first_hci, pair ? second_hci : NULL, profile, NULL,
+            "828282", "0F0F0F", "828282", "828282",
+            (int)config_get_int("PCBLE_VERBOSE", 0, 0, 1), 1,
+            error, error_size);
+    }
+
+    /* A Classic pair must not reuse an old Pro/hybrid console association.
+     * Its first successful Pair / Sync records the paired profile. */
+    if (!pcble_profile_is_ble_only(profile)) {
+        char marker[32];
+        const char *paired_profile = config_get_str(
+            "PCBLE_PAIRED_PROFILE", marker, sizeof(marker), "");
+        if ((pcble_profile_is_classic_pair(profile) && !*paired_profile) ||
+            (*paired_profile && strcmp(paired_profile, profile) != 0)) {
+            if (error && error_size) {
+                snprintf(error, error_size,
+                         "Saved Classic pairing belongs to another profile; Pair / Sync first");
+            }
+            return 0;
+        }
+    }
+
+    if (strcmp(profile, "pro") != 0 && !mixed &&
+        !pcble_profile_is_classic_pair(profile)) {
         if (error && error_size) {
             snprintf(
                 error,
@@ -1760,7 +1872,7 @@ static int output_pcble_start_saved_reconnect(
     /* The Joy-Con 2 half needs its own LE adapter, stored by address. */
     char secondary_hci[16] = "";
 
-    if (mixed) {
+    if (mixed || pcble_profile_is_classic_pair(profile)) {
         char secondary_buf[32];
         const char *secondary =
             config_get_str(
@@ -1778,7 +1890,7 @@ static int output_pcble_start_saved_reconnect(
                 snprintf(
                     error,
                     error_size,
-                    "The Joy-Con 2 Bluetooth adapter is not present");
+                    "Secondary Joy-Con Bluetooth adapter is not saved or present");
             }
 
             return 0;
@@ -1841,7 +1953,8 @@ static int output_pcble_start_saved_reconnect(
 
     return output_pcble_start_session(
         reverse ? secondary_hci : hci,
-        mixed ? (reverse ? hci : secondary_hci) : NULL,
+        (mixed || pcble_profile_is_classic_pair(profile))
+            ? (reverse ? hci : secondary_hci) : NULL,
         profile,
         peer,
         body,
@@ -2040,6 +2153,17 @@ void output_pcble_suspend_for_wake(void)
 
 void output_pcble_stop_session(void)
 {
+    /* A user clicking Stop must cancel managed reconnect; otherwise the
+     * waiter treats this intentional stop as a failed automatic attempt
+     * and immediately starts another privileged backend. Service-driven
+     * replacement keeps g_reconnect_requested set, and is unaffected. */
+    if (!SDL_AtomicGet(&g_reconnect_requested)) {
+        SDL_AtomicSet(&g_reconnect_active, 0);
+        SDL_AtomicSet(&g_recovery_launch_owned, 0);
+        g_reconnect_attempt = 0;
+        g_reconnect_not_before = 0;
+    }
+
     int pair_mode = 0;
 
     if (g_lock) {

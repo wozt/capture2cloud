@@ -244,6 +244,20 @@ static void test_new_ble_profiles(void)
     t_ok("invalid profile rejected", !parse_profile("joycon2", &(int){0}, &(int){0}));
 }
 
+static void test_ble_reconnect_profiles(void)
+{
+    t_begin("pcble BLE reconnect profiles");
+    t_ok("single Joy-Con 2 left uses stored BLE key", pcble_profile_is_ble_only("joycon2-left"));
+    t_ok("single Joy-Con 2 right uses stored BLE key", pcble_profile_is_ble_only("joycon2-right"));
+    t_ok("Joy-Con 2 pair uses two stored BLE keys", pcble_profile_is_ble_only("joycon2-pair"));
+    t_ok("Classic Pro uses Classic Link Key", !pcble_profile_is_ble_only("pro"));
+    t_ok("mixed Joy-Con still uses Classic reconnect", !pcble_profile_is_ble_only("joycon-mixed"));
+    t_ok("reverse mixed still uses Classic reconnect", !pcble_profile_is_ble_only("joycon-mixed-reverse"));
+    t_ok("Classic pair uses two persistent Link Keys", pcble_profile_is_classic_pair("joycon-pair"));
+    t_ok("Pro Controller is not a Classic pair", !pcble_profile_is_classic_pair("pro"));
+    t_ok("BLE pair does not use Classic bonds", !pcble_profile_is_classic_pair("joycon2-pair"));
+}
+
 int main(void)
 {
     test_neutral();
@@ -254,6 +268,7 @@ int main(void)
     test_profiles();
     test_mouse();
     test_new_ble_profiles();
+    test_ble_reconnect_profiles();
 
     return t_report();
 }

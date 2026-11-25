@@ -12,6 +12,7 @@ secondary=
 expected_primary=
 expected_secondary=
 reconnect=
+ble_reconnect=false
 verbose=false
 wake_probe=false
 wake_capture=false
@@ -57,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --secondary) [[ $# -ge 2 && $2 =~ ^hci[0-9]+$ ]] || { echo 'Invalid secondary adapter' >&2; exit 2; }; secondary=$2; shift 2 ;;
         --expect-primary-address) [[ $# -ge 2 && $2 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { echo 'Invalid primary address' >&2; exit 2; }; expected_primary=${2^^}; shift 2 ;;
         --expect-secondary-address) [[ $# -ge 2 && $2 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { echo 'Invalid secondary address' >&2; exit 2; }; expected_secondary=${2^^}; shift 2 ;;
+        --reconnect-ble) ble_reconnect=true; shift ;;
         --reconnect)
             [[ $# -ge 2 && $2 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { echo 'Invalid reconnect MAC' >&2; exit 2; }
             reconnect=$2
@@ -86,6 +88,14 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
+# Classic reconnect needs a Switch MAC; BLE reconnect uses per-radio bonds.
+if $ble_reconnect; then
+    [[ -z $reconnect ]] || { echo 'Conflicting reconnect modes' >&2; exit 2; }
+    case $profile in
+        joycon2-left|joycon2-right|joycon2-pair) ;;
+        *) echo 'BLE reconnect is only for Joy-Con 2 BLE-only profiles' >&2; exit 2 ;;
+    esac
+fi
 # Verify stable MAC -> current hciN mapping while BlueZ is still running.
 # Never hijack a different dongle after a hotplug/reboot renumbering.
 verify_adapter() {
@@ -127,6 +137,7 @@ if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
     jc2_options=(--side "${profile#joycon2-}" --socket pro.sock)
     $verbose && jc2_options+=(--verbose)
     [[ -n $reconnect ]] && jc2_options+=(--reconnect)
+    $ble_reconnect && jc2_options+=(--reconnect)
     if $desktop; then
         [[ -n ${PKEXEC_UID:-} ]] || { echo 'Desktop mode requires pkexec.' >&2; exit 1; }
         jc2_options+=(--desktop "$PKEXEC_UID")
@@ -175,6 +186,7 @@ if [[ $profile == joycon2-pair ]]; then
     trap 'exit 143' TERM
     options=(--vertical --desktop "$PKEXEC_UID")
     [[ -z $reconnect ]] || options+=(--reconnect)
+    $ble_reconnect && options+=(--reconnect)
     $verbose && options+=(--verbose)
     "$jc2" "$adapter" --side left --socket joycon-left.sock "${options[@]}" > "$capture/joycon2-left.log" 2>&1 &
     left_pid=$!
@@ -215,7 +227,7 @@ fi
 if [[ $profile == joycon-mixed-reverse ]]; then
     original=$adapter; adapter=$secondary; secondary=$original
 fi
-[[ -z $reconnect || $profile == pro || $profile == joycon-mixed || $profile == joycon-mixed-reverse ]] || { echo 'Reconnect not implemented for this Classic profile' >&2; exit 2; }
+[[ -z $reconnect || $profile == pro || $profile == joycon-pair || $profile == joycon-mixed || $profile == joycon-mixed-reverse ]] || { echo 'Unsupported Classic reconnect profile' >&2; exit 2; }
 backend_options=()
 $verbose && backend_options+=(--verbose)
 [[ -n $reconnect ]] && backend_options+=(--reconnect "$reconnect")
@@ -405,6 +417,37 @@ if $desktop; then
         echo "[EXIT] profile=$profile first=${first_pid:-none} status=$first_status"
         exit "$first_status"
     else
+        if [[ -n $reconnect ]]; then
+            # The two Joy-Con 1 identities have their own BR/EDR Link Keys.
+            # Launch BOTH outbound HID connections before waiting for IPC,
+            # avoiding a deadlock if the Switch expects both at once.
+            echo "[ROUTE] JC1 pair reconnect: left=$adapter right=$secondary peer=$reconnect"
+            "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
+            left_pid=$!; backend_pids+=("$left_pid")
+            "$app" "$secondary" "$sdp" --desktop "$PKEXEC_UID" --type joycon-r --allow-adapter "$adapter" --shared-profile "${backend_options[@]}" > "$capture/joycon-right.log" 2>&1 &
+            right_pid=$!; backend_pids+=("$right_pid")
+            left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
+            right_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-right.sock"
+            for _ in {1..100}; do
+                [[ -S $left_socket && -S $right_socket ]] && break
+                kill -0 "$left_pid" 2>/dev/null && kill -0 "$right_pid" 2>/dev/null || break
+                sleep .05
+            done
+            [[ -S $left_socket && -S $right_socket ]] || {
+                echo 'Classic Joy-Con reconnect: one or both HID backends failed' >&2
+                exit 1
+            }
+            set +e
+            first_pid=
+            if wait -n -p first_pid "$left_pid" "$right_pid"; then
+                first_status=0
+            else
+                first_status=$?
+            fi
+            set -e
+            echo "[EXIT] Classic Joy-Con reconnect: first=${first_pid:-none} status=$first_status"
+            exit "$first_status"
+        fi
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
         left_pid=$!;backend_pids+=("$left_pid")
         left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
