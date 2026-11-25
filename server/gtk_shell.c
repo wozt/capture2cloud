@@ -271,19 +271,22 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
-                /* Overview always stays compact. When the controllers
-                 * share a row, Output absorbs the spare width while Local
-                 * input keeps its natural width and compact contents. Thus
-                 * no empty strip remains OUTSIDE both frames and none is
-                 * introduced INSIDE Local input. When stacked, each section
-                 * fills its own row, as before. */
-                const gboolean natural = section_index == 0 ||
-                    (section_index == 3 && n == 2);
+                /* WOZT_0848_RESPONSIVE_COMPACT_PAIR:
+                 * Both controller frames stay at natural width on a shared
+                 * row, so neither grows an empty, hard-to-shrink interior.
+                 * Output docks left, Local input docks right, and surplus
+                 * background space BETWEEN them shrinks as the window does.
+                 * Once the pair wraps, each frame fills its own row. */
+                const gboolean controller_pair = group == 1 && n == 2;
+                const gboolean natural = section_index == 0 || controller_pair;
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
-                gtk_box_pack_start(GTK_BOX(line), frame,
-                                   !natural, !natural, 0);
+                if (controller_pair && section_index == 3)
+                    gtk_box_pack_end(GTK_BOX(line), frame, FALSE, FALSE, 0);
+                else
+                    gtk_box_pack_start(GTK_BOX(line), frame,
+                                       !natural, !natural, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);

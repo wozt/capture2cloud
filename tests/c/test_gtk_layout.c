@@ -832,11 +832,11 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
          gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
-    /* The flexible Output frame fills the row; Local input retains
-     * its compact natural width instead of a wide empty interior. */
-    t_ok("Output fills shared controller row without widening Local input",
-         g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_FILL &&
+    /* Both controller frames stay compact on a shared row: surplus is
+     * outside their borders and therefore shrinks on window resize. */
+    t_ok("Both controller frames keep natural width on their shared row",
+         g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_START &&
          g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
          gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START &&
          gtk_widget_get_parent(g_c.wozt_sections[2]) ==
@@ -903,28 +903,30 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     wozt_dashboard_reflow(controller_join_width);
     GtkWidget *input_line = gtk_widget_get_parent(g_c.wozt_sections[3]);
     gboolean input_expand = TRUE, input_fill = TRUE;
+    GtkPackType input_pack_type = GTK_PACK_START;
     if (GTK_IS_BOX(input_line)) {
         guint input_padding = 0;
-        GtkPackType input_pack_type = GTK_PACK_START;
         gtk_box_query_child_packing(GTK_BOX(input_line), g_c.wozt_sections[3],
                                     &input_expand, &input_fill,
                                     &input_padding, &input_pack_type);
     }
-    t_ok("Local input uses natural width beside Output",
+    t_ok("Local input stays compact and docks to the right edge",
          GTK_IS_BOX(input_line) && !input_expand && !input_fill &&
+         input_pack_type == GTK_PACK_END &&
          !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
          gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START);
-    gboolean output_expand = FALSE, output_fill = FALSE;
+    gboolean output_expand = TRUE, output_fill = TRUE;
+    GtkPackType output_pack_type = GTK_PACK_END;
     if (GTK_IS_BOX(input_line)) {
         guint output_padding = 0;
-        GtkPackType output_pack_type = GTK_PACK_START;
         gtk_box_query_child_packing(GTK_BOX(input_line), g_c.wozt_sections[2],
                                     &output_expand, &output_fill,
                                     &output_padding, &output_pack_type);
     }
-    t_ok("Output receives spare width beside compact Local input",
-         GTK_IS_BOX(input_line) && output_expand && output_fill &&
-         gtk_widget_get_hexpand(g_c.wozt_sections[2]));
+    t_ok("Output docks left without absorbing spare row width",
+         GTK_IS_BOX(input_line) && !output_expand && !output_fill &&
+         output_pack_type == GTK_PACK_START &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[2]));
     t_ok("Overview server status wraps instead of widening the section",
          g_c.overview_status &&
          gtk_label_get_line_wrap(GTK_LABEL(g_c.overview_status)) &&
