@@ -322,6 +322,15 @@ int main(void) {
 
     t_eq_int("eight WOZT functional sections", g_c.wozt_section_count, 8);
     t_ok("sidebar replaced by dashboard", g_c.wozt_dashboard != NULL);
+    /* GtkWindow must contain the WOZT overlay, not an extra root box.
+     * Catch a structurally invalid migration before the UI is released. */
+    GtkWidget *window_child =
+        gtk_bin_get_child(GTK_BIN(sh->settings_window));
+    t_ok("WOZT overlay is the only direct window child",
+         window_child && GTK_IS_OVERLAY(window_child));
+    t_ok("WOZT overlay owns its root box",
+         window_child && GTK_IS_OVERLAY(window_child) &&
+         GTK_IS_BOX(gtk_bin_get_child(GTK_BIN(window_child))));
     t_ok("GTK title bar is borderless",
          !gtk_window_get_decorated(GTK_WINDOW(sh->settings_window)));
     t_ok("Clients retains its own notebook",

@@ -76,7 +76,7 @@ run_c_test_x11() {
     if needs_build "$BUILD_DIR/$name"; then
         if ! $LOW gcc -O1 -Wall -Wextra -I"$PROJECT_DIR" -I"$PROJECT_DIR/shared" -I"$PROJECT_DIR/server" \
             -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
-            $(pkg-config --cflags --libs $pkgs) $extra 2>&1; then
+            $(if [ -n "$pkgs" ]; then pkg-config --cflags --libs $pkgs; fi) $extra 2>&1; then
             echo "  COMPILE FAILED"
             failed=1
             return
@@ -100,7 +100,7 @@ run_c_test() {
     if needs_build "$BUILD_DIR/$name"; then
         if ! $LOW gcc -O1 -Wall -Wextra -I"$PROJECT_DIR" -I"$PROJECT_DIR/shared" -I"$PROJECT_DIR/server" \
             -o "$BUILD_DIR/$name" "$SCRIPT_DIR/c/$name.c" \
-            $(pkg-config --cflags --libs $pkgs) $extra 2>&1; then
+            $(if [ -n "$pkgs" ]; then pkg-config --cflags --libs $pkgs; fi) $extra 2>&1; then
             echo "  COMPILE FAILED"
             failed=1
             return

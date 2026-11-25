@@ -30,7 +30,7 @@ jobs:
             gstreamer1.0-libav gstreamer1.0-nice \
             libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev \
             libglib2.0-dev libjson-glib-dev libbluetooth-dev libssl-dev \
-            adwaita-icon-theme librsvg2-common libgdk-pixbuf-2.0-bin
+            adwaita-icon-theme librsvg2-common libgdk-pixbuf2.0-bin
       - name: Validate bundled themes and translations
         run: python3 tools/check-wozt-assets.py
       - name: Build server and PCBLE backends

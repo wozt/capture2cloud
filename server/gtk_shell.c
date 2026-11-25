@@ -3010,8 +3010,9 @@ static void build_settings_window(GtkShell *shell) {
         G_CALLBACK(on_settings_delete),
         shell);
 
-    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(win), root);
+    /* GtkWindow accepts one direct child: the GtkOverlay below.
+     * Do not add a second GtkBox here; the previous migration
+     * duplicated 'root' and would also violate GtkWindow parenting. */
 
     /* WOZT v1.2: borderless GTK window with a stable X11 taskbar identity. */
     gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
