@@ -151,7 +151,7 @@ typedef struct {
     GtkWidget *wozt_sections[8];
     GtkWidget *wozt_theme_combo, *wozt_language_combo;
     GtkWidget *wozt_clients_notebook;
-    int wozt_section_count, wozt_two_columns;
+    int wozt_section_count, wozt_layout_mode;
 
     /* The replug dialog. Changing what the adapter emulates is not done
      * when the write returns: the adapter has to be pulled out of the
@@ -187,10 +187,10 @@ static Controls g_c;
 
 /* WOZT GTK Standard: responsive sections, live themes/languages and custom
  * window chrome. Only this GTK thread touches the widget hierarchy. */
-static void wozt_dashboard_reflow(gboolean wide)
+static void wozt_dashboard_reflow(int layout)
 {
     if (!g_c.wozt_dashboard || g_c.wozt_section_count != 8 ||
-        g_c.wozt_two_columns == (int)wide) return;
+        g_c.wozt_layout_mode == layout) return;
     GtkWidget *grid = g_c.wozt_dashboard;
     for (int i = 0; i < 8; ++i) {
         g_object_ref(g_c.wozt_sections[i]);
@@ -198,15 +198,29 @@ static void wozt_dashboard_reflow(gboolean wide)
     }
     for (int i = 0; i < 8; ++i) {
         int column = 0, row = i, span = 1;
-        if (wide) {
-            if (i < 2) { row = i; span = 2; }
-            else { column = (i - 2) % 2; row = 2 + (i - 2) / 2; }
+        if (layout == 1) {
+            /* Medium desktop / laptop: compact two-column dashboard. */
+            column = i % 2;
+            row = i / 2;
+        } else if (layout >= 2) {
+            /* Very wide desktop: let Clients span two columns, and keep the
+             * remaining six sections in a 3-column compact matrix. */
+            switch (i) {
+            case 0: column = 0; row = 0; span = 1; break;
+            case 1: column = 1; row = 0; span = 2; break;
+            case 2: column = 0; row = 1; span = 1; break;
+            case 3: column = 1; row = 1; span = 1; break;
+            case 4: column = 2; row = 1; span = 1; break;
+            case 5: column = 0; row = 2; span = 1; break;
+            case 6: column = 1; row = 2; span = 1; break;
+            case 7: column = 2; row = 2; span = 1; break;
+            }
         }
         gtk_grid_attach(GTK_GRID(grid), g_c.wozt_sections[i], column, row, span, 1);
         gtk_widget_show(g_c.wozt_sections[i]);
         g_object_unref(g_c.wozt_sections[i]);
     }
-    g_c.wozt_two_columns = wide;
+    g_c.wozt_layout_mode = layout;
 }
 
 static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *event,
@@ -214,8 +228,12 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
 {
     (void)widget;
     (void)userdata;
-    /* Two columns only when each complex controller section gets >=850px. */
-    wozt_dashboard_reflow(event->width >= 1810);
+    /* Compact earlier: 2 columns on laptop/desktop widths, 3 columns on
+     * very wide displays where Clients can span two columns cleanly. */
+    int layout = 0;
+    if (event->width >= 2060) layout = 2;
+    else if (event->width >= 1260) layout = 1;
+    wozt_dashboard_reflow(layout);
     return FALSE;
 }
 
@@ -2711,7 +2729,7 @@ static GtkWidget *add_row(GtkWidget *grid, int row, const char *label, GtkWidget
 static GtkWidget *make_scale(GtkShell *shell, int lo, int hi, int step, const char *suffix) {
     GtkWidget *s = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, lo, hi, step);
     gtk_scale_set_value_pos(GTK_SCALE(s), GTK_POS_RIGHT);
-    gtk_widget_set_size_request(s, 170, -1);
+    gtk_widget_set_size_request(s, 136, -1);
     g_object_set_data(G_OBJECT(s), "suffix", (gpointer)suffix);
     g_signal_connect(s, "value-changed", G_CALLBACK(on_scale), shell);
     return s;
@@ -2795,24 +2813,24 @@ static GtkWidget *make_stack_page(
     gtk_box_pack_start(GTK_BOX(heading), text, FALSE, FALSE, 0);
     gtk_frame_set_label_widget(GTK_FRAME(frame), heading);
 
-    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_widget_set_margin_start(outer, 7);
-    gtk_widget_set_margin_end(outer, 7);
-    gtk_widget_set_margin_top(outer, 5);
-    gtk_widget_set_margin_bottom(outer, 7);
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    gtk_widget_set_margin_start(outer, 5);
+    gtk_widget_set_margin_end(outer, 5);
+    gtk_widget_set_margin_top(outer, 4);
+    gtk_widget_set_margin_bottom(outer, 5);
     gtk_container_add(GTK_CONTAINER(frame), outer);
     if (subtitle && *subtitle) {
         GtkWidget *sub = gtk_label_new(subtitle);
         gtk_widget_set_halign(sub, GTK_ALIGN_START);
         gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
-        gtk_label_set_max_width_chars(GTK_LABEL(sub), 100);
+        gtk_label_set_max_width_chars(GTK_LABEL(sub), 78);
         gtk_style_context_add_class(gtk_widget_get_style_context(sub), "wozt-muted");
         gtk_box_pack_start(GTK_BOX(outer), sub, FALSE, FALSE, 0);
     }
     GtkWidget *grid = gtk_grid_new();
     gtk_widget_set_hexpand(grid, TRUE);
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 3);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
     gtk_box_pack_start(GTK_BOX(outer), grid, FALSE, FALSE, 0);
     if (index < 8) g_c.wozt_sections[index] = frame;
     gtk_grid_attach(GTK_GRID(dashboard), frame, 0, index, 1, 1);
@@ -3023,7 +3041,7 @@ static void build_settings_window(GtkShell *shell) {
      * 1000x700 still fits comfortably on a 1280x720 display while
      * leaving enough room for meaningful labels and status lines.
      */
-    gtk_window_set_default_size(GTK_WINDOW(win), 1100, 760);
+    gtk_window_set_default_size(GTK_WINDOW(win), 1040, 700);
     GdkGeometry geometry = {0};
     geometry.min_width = 820;
     geometry.min_height = 540;
@@ -3057,23 +3075,23 @@ static void build_settings_window(GtkShell *shell) {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(overlay), root);
 
-    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
     gtk_style_context_add_class(gtk_widget_get_style_context(header), "wozt-titlebar");
-    gtk_widget_set_margin_start(header, 8);
-    gtk_widget_set_margin_end(header, 8);
-    gtk_widget_set_margin_top(header, 4);
-    gtk_widget_set_margin_bottom(header, 4);
+    gtk_widget_set_margin_start(header, 6);
+    gtk_widget_set_margin_end(header, 6);
+    gtk_widget_set_margin_top(header, 2);
+    gtk_widget_set_margin_bottom(header, 2);
 
     /* Dragging only the noninteractive title area moves the window. */
     GtkWidget *drag = gtk_event_box_new();
     gtk_event_box_set_visible_window(GTK_EVENT_BOX(drag), FALSE);
     gtk_widget_add_events(drag, GDK_BUTTON_PRESS_MASK);
     g_signal_connect(drag, "button-press-event", G_CALLBACK(wozt_title_drag), shell);
-    GtkWidget *brand = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    GtkWidget *brand = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     char icon_path[512];
     wozt_asset_path(icon_path, sizeof(icon_path), "assets/icon-64.png");
     GtkWidget *brand_icon = gtk_image_new_from_file(icon_path);
-    gtk_image_set_pixel_size(GTK_IMAGE(brand_icon), 20);
+    gtk_image_set_pixel_size(GTK_IMAGE(brand_icon), 16);
     gtk_box_pack_start(GTK_BOX(brand), brand_icon, FALSE, FALSE, 0);
     GtkWidget *brand_title = gtk_label_new("Capture2Cloud server");
     gtk_style_context_add_class(gtk_widget_get_style_context(brand_title), "wozt-title");
@@ -3083,13 +3101,13 @@ static void build_settings_window(GtkShell *shell) {
 
     g_c.wozt_theme_combo = wozt_ui_standard_theme_combo(shell->wozt);
     gtk_widget_set_tooltip_text(g_c.wozt_theme_combo, "Theme");
-    gtk_widget_set_size_request(g_c.wozt_theme_combo, 115, -1);
+    gtk_widget_set_size_request(g_c.wozt_theme_combo, 98, -1);
     gtk_box_pack_start(GTK_BOX(header), g_c.wozt_theme_combo, FALSE, FALSE, 0);
     g_signal_connect(g_c.wozt_theme_combo, "changed", G_CALLBACK(wozt_theme_changed), shell);
 
     g_c.wozt_language_combo = wozt_ui_standard_language_combo(shell->wozt);
     gtk_widget_set_tooltip_text(g_c.wozt_language_combo, "Language");
-    gtk_widget_set_size_request(g_c.wozt_language_combo, 104, -1);
+    gtk_widget_set_size_request(g_c.wozt_language_combo, 88, -1);
     gtk_box_pack_start(GTK_BOX(header), g_c.wozt_language_combo, FALSE, FALSE, 0);
     g_signal_connect(g_c.wozt_language_combo, "changed", G_CALLBACK(wozt_language_changed), shell);
 
@@ -3119,16 +3137,16 @@ static void build_settings_window(GtkShell *shell) {
     gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
     GtkWidget *dashboard = gtk_grid_new();
     gtk_widget_set_hexpand(dashboard, TRUE);
-    gtk_grid_set_row_spacing(GTK_GRID(dashboard), 7);
-    gtk_grid_set_column_spacing(GTK_GRID(dashboard), 7);
-    gtk_widget_set_margin_start(dashboard, 8);
-    gtk_widget_set_margin_end(dashboard, 8);
-    gtk_widget_set_margin_top(dashboard, 7);
-    gtk_widget_set_margin_bottom(dashboard, 7);
+    gtk_grid_set_row_spacing(GTK_GRID(dashboard), 5);
+    gtk_grid_set_column_spacing(GTK_GRID(dashboard), 5);
+    gtk_widget_set_margin_start(dashboard, 6);
+    gtk_widget_set_margin_end(dashboard, 6);
+    gtk_widget_set_margin_top(dashboard, 5);
+    gtk_widget_set_margin_bottom(dashboard, 5);
     gtk_container_add(GTK_CONTAINER(body), dashboard);
     g_c.wozt_dashboard = dashboard;
     g_c.wozt_section_count = 0;
-    g_c.wozt_two_columns = 0;
+    g_c.wozt_layout_mode = -1;
     wozt_add_resize_zones(overlay, win);
     /* Existing make_stack_page calls now append visible functional frames. */
     GtkWidget *stack = dashboard;
