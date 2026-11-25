@@ -252,6 +252,18 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
     return FALSE;
 }
 
+/* Cairo previews do not restyle automatically when a CSS provider changes.
+ * Queue a redraw for all four currently created views on live theme events. */
+static void wozt_redraw_stick_previews(void)
+{
+    for (int side = 0; side < 2; ++side) {
+        if (g_c.input_stick_preview[side])
+            gtk_widget_queue_draw(g_c.input_stick_preview[side]);
+        if (g_c.output_stick_preview[side])
+            gtk_widget_queue_draw(g_c.output_stick_preview[side]);
+    }
+}
+
 static void wozt_theme_changed(GtkComboBox *combo, gpointer user_data)
 {
     GtkShell *shell = user_data;
@@ -259,6 +271,7 @@ static void wozt_theme_changed(GtkComboBox *combo, gpointer user_data)
     const char *id = gtk_combo_box_get_active_id(combo);
     if (!id) return;
     wozt_ui_standard_apply_theme(shell->wozt, id);
+    wozt_redraw_stick_previews();
     config_set_str("WOZT_UI_THEME", wozt_ui_standard_theme_id(shell->wozt));
 }
 
@@ -281,6 +294,7 @@ static void wozt_reload_clicked(GtkButton *button, gpointer user_data)
     if (!shell->wozt) return;
     shell->loading = 1;
     wozt_ui_standard_reload(shell->wozt, shell->settings_window);
+    wozt_redraw_stick_previews();
     shell->loading = 0;
 }
 
@@ -2291,6 +2305,24 @@ static gboolean stick_preview_draw(
 {
     (void)user_data;
 
+    /* Read the active WOZT JSON palette on each draw: this also works if
+     * a new theme was selected while the window was already visible. */
+    GtkShell *preview_shell = g_object_get_data(G_OBJECT(area), "c2c-preview-shell");
+    WoztUiStandard *theme = preview_shell ? preview_shell->wozt : NULL;
+    GdkRGBA preview_bg = {0.10, 0.10, 0.10, 1.0};
+    GdkRGBA preview_border = {0.65, 0.65, 0.65, 1.0};
+    GdkRGBA preview_muted = {0.60, 0.60, 0.60, 1.0};
+    GdkRGBA preview_accent = {0.22, 0.56, 0.98, 1.0};
+    GdkRGBA preview_negative = {0.95, 0.25, 0.25, 1.0};
+    GdkRGBA preview_text = {0.92, 0.92, 0.92, 1.0};
+    wozt_ui_standard_get_color(theme, "entry", &preview_bg);
+    wozt_ui_standard_get_color(theme, "border", &preview_border);
+    wozt_ui_standard_get_color(theme, "muted", &preview_muted);
+    wozt_ui_standard_get_color(theme, "accent", &preview_accent);
+    wozt_ui_standard_get_color(theme, "negative", &preview_negative);
+    wozt_ui_standard_get_color(theme, "text", &preview_text);
+    GdkRGBA translucent = preview_muted;
+
     int dz = 0;
     int range = 100;
     int diagonal = 100;
@@ -2312,17 +2344,19 @@ static gboolean stick_preview_draw(
     const double radius =
         MIN(w, h) * 0.33;
 
-    cairo_set_source_rgb(cr, 0.10, 0.10, 0.10);
+    gdk_cairo_set_source_rgba(cr, &preview_bg);
     cairo_paint(cr);
 
     /* outer guide */
     cairo_set_line_width(cr, 1.2);
-    cairo_set_source_rgb(cr, 0.65, 0.65, 0.65);
+    gdk_cairo_set_source_rgba(cr, &preview_border);
     cairo_arc(cr, cx, cy, radius, 0.0, 2.0 * G_PI);
     cairo_stroke(cr);
 
     /* axes */
-    cairo_set_source_rgba(cr, 0.6, 0.6, 0.6, 0.45);
+    translucent = preview_muted;
+    translucent.alpha = 0.45;
+    gdk_cairo_set_source_rgba(cr, &translucent);
     cairo_move_to(cr, cx - radius, cy);
     cairo_line_to(cr, cx + radius, cy);
     cairo_move_to(cr, cx, cy - radius);
@@ -2377,9 +2411,11 @@ static gboolean stick_preview_draw(
     }
 
     cairo_close_path(cr);
-    cairo_set_source_rgba(cr, 0.22, 0.56, 0.98, 0.18);
+    translucent = preview_accent;
+    translucent.alpha = 0.18;
+    gdk_cairo_set_source_rgba(cr, &translucent);
     cairo_fill_preserve(cr);
-    cairo_set_source_rgb(cr, 0.22, 0.56, 0.98);
+    gdk_cairo_set_source_rgba(cr, &preview_accent);
     cairo_set_line_width(cr, 2.0);
     cairo_stroke(cr);
 
@@ -2387,15 +2423,17 @@ static gboolean stick_preview_draw(
     const double dzr =
         radius * dz / 100.0;
 
-    cairo_set_source_rgba(cr, 0.95, 0.25, 0.25, 0.20);
+    translucent = preview_negative;
+    translucent.alpha = 0.20;
+    gdk_cairo_set_source_rgba(cr, &translucent);
     cairo_arc(cr, cx, cy, dzr, 0.0, 2.0 * G_PI);
     cairo_fill_preserve(cr);
-    cairo_set_source_rgb(cr, 0.95, 0.25, 0.25);
+    gdk_cairo_set_source_rgba(cr, &preview_negative);
     cairo_set_line_width(cr, 1.4);
     cairo_stroke(cr);
 
     /* center dot */
-    cairo_set_source_rgb(cr, 0.95, 0.95, 0.95);
+    gdk_cairo_set_source_rgba(cr, &preview_text);
     cairo_arc(cr, cx, cy, 2.2, 0.0, 2.0 * G_PI);
     cairo_fill(cr);
 
@@ -2870,14 +2908,6 @@ static void wozt_pair_named_rows(GtkWidget *grid, const char *left, const char *
     gtk_grid_attach(GTK_GRID(grid), c1, 3, row0, 1, 1);
     g_object_unref(l1);
     g_object_unref(c1);
-}
-
-static void wozt_compact_calibration(GtkWidget *grid)
-{
-    wozt_pair_named_rows(grid, "LT threshold (%)", "RT threshold (%)");
-    wozt_pair_named_rows(grid, "left stick deadzone (%)", "right stick deadzone (%)");
-    wozt_pair_named_rows(grid, "left axis saturation (%)", "right axis saturation (%)");
-    wozt_pair_named_rows(grid, "left diagonal saturation (%)", "right diagonal saturation (%)");
 }
 
 static GtkWidget *make_scale(GtkShell *shell, int lo, int hi, int step, const char *suffix) {

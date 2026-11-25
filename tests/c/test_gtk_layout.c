@@ -342,6 +342,20 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 5);
     t_ok("Theme and language selectors exist",
          g_c.wozt_theme_combo && g_c.wozt_language_combo);
+    /* The native Cairo stick preview reads the same palette as the CSS
+     * provider. Validate a loaded color, not a hard-coded blue preview. */
+    GdkRGBA preview_accent;
+    GdkRGBA preview_background;
+    t_ok("Stick preview receives a live WOZT accent color",
+         sh->wozt && wozt_ui_standard_get_color(sh->wozt, "accent", &preview_accent));
+    t_ok("Stick preview receives a live WOZT background color",
+         sh->wozt && wozt_ui_standard_get_color(sh->wozt, "entry", &preview_background));
+    char *slider_rules = sh->wozt ? gtk_css_provider_to_string(sh->wozt->css) : NULL;
+    t_ok("Slider track, highlight and thumb have palette-driven CSS",
+         slider_rules && strstr(slider_rules, "scale trough") &&
+         strstr(slider_rules, "scale highlight") &&
+         strstr(slider_rules, "scale slider"));
+    g_free(slider_rules);
     t_ok("Controller output has two genuine internal columns",
          g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output));
     t_ok("Local input has two genuine internal columns",
@@ -381,13 +395,35 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.input_stick_preview[0] && preview_width == 116 && preview_height == 116);
     t_ok("Stick sliders no longer request entire panel widths",
          g_c.range[0] && !gtk_widget_get_hexpand(g_c.range[0]));
+    /* Each calibration group lives in a DISTINCT GtkGrid: both grids have
+     * their own label=0/control=1 columns. Checking global column 3 was an
+     * obsolete assertion from the earlier single-grid (four-column) UI. */
+    GtkWidget *output_right_grid = g_c.output_deadzone[1]
+        ? gtk_widget_get_parent(g_c.output_deadzone[1]) : NULL;
+    GtkWidget *output_left_grid = g_c.pcble_controller
+        ? gtk_widget_get_parent(g_c.pcble_controller) : NULL;
     gint right_axis_col = -1;
-    if (g_c.output_deadzone[1] &&
-        GTK_IS_GRID(gtk_widget_get_parent(g_c.output_deadzone[1])))
-        gtk_container_child_get(GTK_CONTAINER(gtk_widget_get_parent(g_c.output_deadzone[1])),
+    if (output_right_grid && GTK_IS_GRID(output_right_grid))
+        gtk_container_child_get(GTK_CONTAINER(output_right_grid),
                                 g_c.output_deadzone[1], "left-attach", &right_axis_col, NULL);
-    t_eq_int("Right output calibration is in the second inner column",
-             right_axis_col, 3);
+    t_eq_int("Right output calibration uses its own grid control column",
+             right_axis_col, 1);
+    t_ok("Output calibration and backend are in independent inner grids",
+         output_right_grid && GTK_IS_GRID(output_right_grid) &&
+         output_left_grid && GTK_IS_GRID(output_left_grid) &&
+         output_right_grid != output_left_grid);
+    GtkWidget *input_right_grid = g_c.deadzone[1]
+        ? gtk_widget_get_parent(g_c.deadzone[1]) : NULL;
+    gint input_axis_col = -1;
+    if (input_right_grid && GTK_IS_GRID(input_right_grid))
+        gtk_container_child_get(GTK_CONTAINER(input_right_grid),
+                                g_c.deadzone[1], "left-attach", &input_axis_col, NULL);
+    t_eq_int("Local input calibration uses its own grid control column",
+             input_axis_col, 1);
+    t_ok("Input calibration and source controller live in separate grids",
+         input_right_grid && GTK_IS_GRID(input_right_grid) &&
+         g_c.gamepad_device &&
+         input_right_grid != gtk_widget_get_parent(g_c.gamepad_device));
     wozt_dashboard_reflow(1);
     if (g_c.wozt_dashboard && g_c.wozt_sections[1]) {
         gint clients_col = -1, output_span = 0;

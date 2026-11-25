@@ -25,6 +25,8 @@ struct WoztUiStandard {
     char *language_id;
     GHashTable *translations;
     GtkCssProvider *css;
+    GdkRGBA colors[WOZT_COLORS];
+    gboolean colors_ready;
     GtkWidget *theme_combo, *language_combo; /* owned by the GTK window */
 };
 
@@ -83,6 +85,21 @@ static const char *wozt_string(JsonObject *obj, const char *key)
     return node && JSON_NODE_HOLDS_VALUE(node) &&
            json_node_get_value_type(node) == G_TYPE_STRING
         ? json_node_get_string(node) : NULL;
+}
+
+/* Expose the validated, active JSON palette to Cairo-drawn widgets.
+ * Called only from the GTK thread (like the CSS/theme API). */
+gboolean wozt_ui_standard_get_color(WoztUiStandard *ui, const char *key,
+                                    GdkRGBA *out)
+{
+    if (!ui || !ui->colors_ready || !key || !out) return FALSE;
+    for (int i = 0; i < WOZT_COLORS; ++i) {
+        if (g_strcmp0(key, wozt_color_keys[i]) == 0) {
+            *out = ui->colors[i];
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 static void wozt_scan_resources(WoztUiStandard *ui, const char *folder, GPtrArray *list)
@@ -334,13 +351,30 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
         , v[0],v[4],v[1],v[3],v[3],v[6],v[6],v[1],v[4],v[3],v[6],
           v[7],v[4],v[3],v[8],v[9],v[6],v[2],v[4],v[3],v[10],v[5],
           v[9],v[4],v[1],v[4],v[1],v[4]);
+    /* Recomputed for EVERY theme, just like the rest of the CSS.
+     * Keep the native scale value and callback behavior intact. */
+    char *slider_css = g_strdup_printf(
+        "window.wozt-window scale trough {background-color:%s;"
+        "border:1px solid %s;border-radius:0;min-height:5px;}"
+        "window.wozt-window scale highlight {background-color:%s;"
+        "border-radius:0;}"
+        "window.wozt-window scale slider {background-color:%s;"
+        "border:1px solid %s;border-radius:0;}",
+        v[2], v[3], v[6], v[6], v[3]);
+    char *complete_css = g_strconcat(css, slider_css, NULL);
+    g_free(slider_css);
     GError *error = NULL;
-    gtk_css_provider_load_from_data(ui->css, css, -1, &error);
+    gtk_css_provider_load_from_data(ui->css, complete_css, -1, &error);
     if (error) {
         g_warning("wozt-ui: invalid generated CSS: %s", error->message);
         g_clear_error(&error);
     }
+    g_free(complete_css);
     g_free(css);
+    /* Colors are already validated as #RRGGBB; parsing is deterministic. */
+    for (int i = 0; i < WOZT_COLORS; ++i)
+        gdk_rgba_parse(&ui->colors[i], v[i]);
+    ui->colors_ready = TRUE;
     g_free(ui->theme_id);
     ui->theme_id = g_strdup(r->id);
     g_object_unref(parser);

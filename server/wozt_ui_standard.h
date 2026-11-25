@@ -14,6 +14,8 @@ GtkWidget *wozt_ui_standard_language_combo(WoztUiStandard *ui);
 const char *wozt_ui_standard_theme_id(WoztUiStandard *ui);
 const char *wozt_ui_standard_language_id(WoztUiStandard *ui);
 void wozt_ui_standard_apply_theme(WoztUiStandard *ui, const char *id);
+gboolean wozt_ui_standard_get_color(WoztUiStandard *ui, const char *key,
+                                    GdkRGBA *out);
 void wozt_ui_standard_apply_language(WoztUiStandard *ui, const char *id,
                                       GtkWidget *root);
 void wozt_ui_standard_reload(WoztUiStandard *ui, GtkWidget *root);

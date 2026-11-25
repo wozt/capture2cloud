@@ -325,7 +325,15 @@ DrcEncoder *drc_encoder_open(const char *so_path, const char *preset,
         free(e);
         return NULL;
     }
-    snprintf(e->lib_path, sizeof(e->lib_path), "%s", tried ? tried : "?");
+    /* The loaded path is only used for human-readable diagnostics;
+     * copy at most the destination's capacity minus its NUL terminator.
+     * Avoid a compile-time -Wformat-truncation on long exe-relative paths. */
+    const char *loaded_path = tried ? tried : "?";
+    size_t path_length = strlen(loaded_path);
+    if (path_length >= sizeof(e->lib_path))
+        path_length = sizeof(e->lib_path) - 1;
+    memcpy(e->lib_path, loaded_path, path_length);
+    e->lib_path[path_length] = '\0';
 
     /*
      * Through the handle, every one of them. dlsym(RTLD_DEFAULT, ...)
