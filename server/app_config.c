@@ -65,6 +65,15 @@ void app_path(char *out, size_t out_size, const char *relative) {
 }
 
 void app_config_path(char *out, size_t out_size) {
+    /* AppImage: persistent configuration is not stored in its read-only AppDir. */
+    const char *override = getenv("C2C_CONFIG_PATH");
+    if (override && *override) {
+        if (!out_size) return;
+        size_t n = strlen(override);
+        if (n + 1 > out_size) { out[0] = '\0'; return; }
+        memcpy(out, override, n + 1);
+        return;
+    }
     app_path(out, out_size, CONFIG_RELATIVE_PATH);
 }
 

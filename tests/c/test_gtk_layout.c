@@ -156,6 +156,7 @@ int reset_method_test_bluetooth_beacon(
 
 
 
+#include "../../server/wozt_ui_standard.c"
 #include "../../server/gtk_shell.c"
 
 #include "test_util.h"
@@ -319,6 +320,15 @@ int main(void) {
     gtk_shell_debug_show_settings(sh);
     sleep(2);
 
+    t_eq_int("eight WOZT functional sections", g_c.wozt_section_count, 8);
+    t_ok("sidebar replaced by dashboard", g_c.wozt_dashboard != NULL);
+    t_ok("GTK title bar is borderless",
+         !gtk_window_get_decorated(GTK_WINDOW(sh->settings_window)));
+    t_ok("Clients retains its own notebook",
+         g_c.wozt_clients_notebook != NULL &&
+         gtk_notebook_get_n_pages(GTK_NOTEBOOK(g_c.wozt_clients_notebook)) == 5);
+    t_ok("Theme and language selectors exist",
+         g_c.wozt_theme_combo != NULL && g_c.wozt_language_combo != NULL);
     t_ok(
         "Reset method selector exists",
         g_c.reset_method != NULL);

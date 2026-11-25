@@ -103,6 +103,10 @@ patch.sh
 .mcp.json
 release*/
 
+# WOZT Standard AppImage build products, not source assets.
+/dist/
+/tools/linuxdeploy-x86_64.AppImage
+
 # Old 3DS homebrew build outputs and locally built open-source host tool.
 /3ds/build/
 /3ds/build-tools/makerom

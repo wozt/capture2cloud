@@ -186,6 +186,28 @@ The same recovery path is used by:
 
 ---
 
+## WOZT GTK Standard v1.2 dashboard and CI/CD
+
+The eight former sidebar pages (Overview, Clients, Controller output,
+Local controller input, Capture, Local monitor, Reset method, Maintenance)
+are now WUP Stream-style framed sections on one vertical dashboard.
+**Clients retains all five client tabs**, unchanged in purpose. The UI has
+a custom borderless title bar, eight resize zones, seven JSON themes,
+and live-selectable JSON translations. Settings stay persistent.
+
+For layout, themes, localization, AppImage and CI/CD details see
+[docs/WOZT_UI_STANDARD.md](docs/WOZT_UI_STANDARD.md).
+The GitHub Actions pipeline builds/tests and publishes four-part
+versioned AppImages only after all gates pass. Locally run:
+
+```sh
+python3 tools/check-wozt-assets.py
+source scripts/lib_toggle.sh
+c2c_build_if_needed
+./tests/run_all.sh
+./tools/build-appimage.sh
+```
+
 ## WUP Stream: third Wii U GamePad route
 
 The **Client · Wii U GamePad** GTK page can start a third independent route,

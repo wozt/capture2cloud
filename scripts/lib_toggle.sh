@@ -13,6 +13,7 @@ C2C_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 C2C_SOURCES=(
     "$C2C_DIR/server/capture2cloud.c"
     "$C2C_DIR/server/gtk_shell.c"
+    "$C2C_DIR/server/wozt_ui_standard.c"
     "$C2C_DIR/server/web_stream.c"
     "$C2C_DIR/server/reset_method.c"
     "$C2C_DIR/server/gst_webrtc.c"
@@ -36,6 +37,7 @@ C2C_HEADERS=(
     "$C2C_DIR/shared/version.h"
     "$C2C_DIR/server/ws_frame.h"
     "$C2C_DIR/server/gtk_shell.h"
+    "$C2C_DIR/server/wozt_ui_standard.h"
     "$C2C_DIR/server/web_stream.h"
     "$C2C_DIR/server/reset_method.h"
     "$C2C_DIR/server/gst_webrtc.h"
@@ -60,7 +62,7 @@ C2C_HEADERS=(
     "$C2C_DIR/server/local_pad.h"
 )
 C2C_BIN="$C2C_DIR/capture2cloud"
-C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libavcodec libavutil libswscale libusb-1.0 glib-2.0 gio-2.0"
+C2C_PKGCONFIG_DEPS="sdl2 libpulse libpulse-simple libjpeg gtk+-3.0 x11 gstreamer-1.0 gstreamer-app-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-video-1.0 libavcodec libavutil libswscale libusb-1.0 glib-2.0 gio-2.0 json-glib-1.0"
 
 # Vendored Classic Bluetooth controller backend.
 #

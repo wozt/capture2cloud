@@ -5,6 +5,7 @@
 #include "output_pcble.h"
 #include "reset_method.h"
 #include "version.h"
+#include "wozt_ui_standard.h"
 
 #include <SDL2/SDL.h>
 #include <gtk/gtk.h>
@@ -36,6 +37,7 @@ struct GtkShell {
     SDL_Thread *thread;
     GtkStatusIcon *icon;
     GtkWidget *settings_window;
+    WoztUiStandard *wozt;
     GtkShellCallbacks callbacks;
 
     /* The settings, and the lock around them. The GTK thread writes them
@@ -145,6 +147,11 @@ typedef struct {
     GtkWidget *muted, *volume, *direct_sink, *brightness, *contrast, *vsync;
     GtkWidget *status_label;
     GtkWidget *wiiu_status;
+    GtkWidget *wozt_dashboard;
+    GtkWidget *wozt_sections[8];
+    GtkWidget *wozt_theme_combo, *wozt_language_combo;
+    GtkWidget *wozt_clients_notebook;
+    int wozt_section_count, wozt_two_columns;
 
     /* The replug dialog. Changing what the adapter emulates is not done
      * when the write returns: the adapter has to be pulled out of the
@@ -177,6 +184,202 @@ typedef enum {
 #define REPLUG_DOWN_TICKS 8
 
 static Controls g_c;
+
+/* WOZT GTK Standard: responsive sections, live themes/languages and custom
+ * window chrome. Only this GTK thread touches the widget hierarchy. */
+static void wozt_dashboard_reflow(gboolean wide)
+{
+    if (!g_c.wozt_dashboard || g_c.wozt_section_count != 8 ||
+        g_c.wozt_two_columns == (int)wide) return;
+    GtkWidget *grid = g_c.wozt_dashboard;
+    for (int i = 0; i < 8; ++i) {
+        g_object_ref(g_c.wozt_sections[i]);
+        gtk_container_remove(GTK_CONTAINER(grid), g_c.wozt_sections[i]);
+    }
+    for (int i = 0; i < 8; ++i) {
+        int column = 0, row = i, span = 1;
+        if (wide) {
+            if (i < 2) { row = i; span = 2; }
+            else { column = (i - 2) % 2; row = 2 + (i - 2) / 2; }
+        }
+        gtk_grid_attach(GTK_GRID(grid), g_c.wozt_sections[i], column, row, span, 1);
+        gtk_widget_show(g_c.wozt_sections[i]);
+        g_object_unref(g_c.wozt_sections[i]);
+    }
+    g_c.wozt_two_columns = wide;
+}
+
+static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *event,
+                                        gpointer userdata)
+{
+    (void)widget;
+    (void)userdata;
+    /* Two columns only when each complex controller section gets >=850px. */
+    wozt_dashboard_reflow(event->width >= 1810);
+    return FALSE;
+}
+
+static void wozt_theme_changed(GtkComboBox *combo, gpointer user_data)
+{
+    GtkShell *shell = user_data;
+    if (!shell->wozt || shell->loading) return;
+    const char *id = gtk_combo_box_get_active_id(combo);
+    if (!id) return;
+    wozt_ui_standard_apply_theme(shell->wozt, id);
+    config_set_str("WOZT_UI_THEME", wozt_ui_standard_theme_id(shell->wozt));
+}
+
+static void wozt_language_changed(GtkComboBox *combo, gpointer user_data)
+{
+    GtkShell *shell = user_data;
+    if (!shell->wozt || shell->loading) return;
+    const char *id = gtk_combo_box_get_active_id(combo);
+    if (!id) return;
+    shell->loading = 1;
+    wozt_ui_standard_apply_language(shell->wozt, id, shell->settings_window);
+    shell->loading = 0;
+    config_set_str("WOZT_UI_LANGUAGE", wozt_ui_standard_language_id(shell->wozt));
+}
+
+static void wozt_reload_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GtkShell *shell = user_data;
+    if (!shell->wozt) return;
+    shell->loading = 1;
+    wozt_ui_standard_reload(shell->wozt, shell->settings_window);
+    shell->loading = 0;
+}
+
+static void wozt_window_minimize(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GtkShell *shell = user_data;
+    gtk_window_iconify(GTK_WINDOW(shell->settings_window));
+}
+
+static void wozt_window_maximize(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GtkShell *shell = user_data;
+    if (gtk_window_is_maximized(GTK_WINDOW(shell->settings_window)))
+        gtk_window_unmaximize(GTK_WINDOW(shell->settings_window));
+    else gtk_window_maximize(GTK_WINDOW(shell->settings_window));
+}
+
+static void wozt_window_hide(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GtkShell *shell = user_data;
+    /* Capture2Cloud lives in the tray; never kill the stream here. */
+    gtk_widget_hide(shell->settings_window);
+}
+
+static gboolean wozt_title_drag(GtkWidget *widget, GdkEventButton *event,
+                                 gpointer user_data)
+{
+    (void)widget;
+    GtkShell *shell = user_data;
+    if (event->button != 1) return FALSE;
+    if (event->type == GDK_2BUTTON_PRESS) {
+        if (gtk_window_is_maximized(GTK_WINDOW(shell->settings_window)))
+            gtk_window_unmaximize(GTK_WINDOW(shell->settings_window));
+        else gtk_window_maximize(GTK_WINDOW(shell->settings_window));
+        return TRUE;
+    }
+    if (event->type == GDK_BUTTON_PRESS) {
+        gtk_window_begin_move_drag(GTK_WINDOW(shell->settings_window),
+                                   (gint)event->button,
+                                   (gint)event->x_root, (gint)event->y_root,
+                                   event->time);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean wozt_resize_drag(GtkWidget *widget, GdkEventButton *event,
+                                  gpointer user_data)
+{
+    (void)widget;
+    if (event->button != 1 || event->type != GDK_BUTTON_PRESS) return FALSE;
+    GtkWidget *win = g_object_get_data(G_OBJECT(widget), "wozt-window");
+    if (!win || gtk_window_is_maximized(GTK_WINDOW(win))) return FALSE;
+    gtk_window_begin_resize_drag(GTK_WINDOW(win), (GdkWindowEdge)GPOINTER_TO_INT(user_data),
+                                 (gint)event->button,
+                                 (gint)event->x_root, (gint)event->y_root,
+                                 event->time);
+    return TRUE;
+}
+
+static void wozt_resize_realized(GtkWidget *widget, gpointer user_data)
+{
+    static const char *const CURSORS[8] = {
+        "nw-resize", "n-resize", "ne-resize", "w-resize",
+        "e-resize", "sw-resize", "s-resize", "se-resize"
+    };
+    int index = GPOINTER_TO_INT(user_data);
+    if (index < 0 || index >= 8) return;
+    GdkDisplay *display = gtk_widget_get_display(widget);
+    GdkCursor *cursor = gdk_cursor_new_from_name(display, CURSORS[index]);
+    if (cursor) {
+        GdkWindow *window = gtk_widget_get_window(widget);
+        if (window) gdk_window_set_cursor(window, cursor);
+        g_object_unref(cursor);
+    }
+}
+
+static void wozt_add_resize_zones(GtkWidget *overlay, GtkWidget *window)
+{
+    static const GdkWindowEdge EDGES[8] = {
+        GDK_WINDOW_EDGE_NORTH_WEST, GDK_WINDOW_EDGE_NORTH,
+        GDK_WINDOW_EDGE_NORTH_EAST, GDK_WINDOW_EDGE_WEST,
+        GDK_WINDOW_EDGE_EAST, GDK_WINDOW_EDGE_SOUTH_WEST,
+        GDK_WINDOW_EDGE_SOUTH, GDK_WINDOW_EDGE_SOUTH_EAST
+    };
+    for (int i = 0; i < 8; ++i) {
+        GtkWidget *zone = gtk_event_box_new();
+        gtk_event_box_set_visible_window(GTK_EVENT_BOX(zone), TRUE);
+        gtk_widget_add_events(zone, GDK_BUTTON_PRESS_MASK);
+        gtk_style_context_add_class(gtk_widget_get_style_context(zone), "wozt-resize");
+        const gboolean left = i == 0 || i == 3 || i == 5;
+        const gboolean right = i == 2 || i == 4 || i == 7;
+        const gboolean top = i <= 2;
+        const gboolean bottom = i >= 5;
+        const gboolean corner = i == 0 || i == 2 || i == 5 || i == 7;
+        gtk_widget_set_halign(zone, left ? GTK_ALIGN_START :
+                                   right ? GTK_ALIGN_END : GTK_ALIGN_FILL);
+        gtk_widget_set_valign(zone, top ? GTK_ALIGN_START :
+                                   bottom ? GTK_ALIGN_END : GTK_ALIGN_FILL);
+        gtk_widget_set_size_request(zone, corner ? 12 : (left || right ? 5 : -1),
+                                          corner ? 12 : (top || bottom ? 5 : -1));
+        g_object_set_data(G_OBJECT(zone), "wozt-window", window);
+        g_signal_connect(zone, "realize", G_CALLBACK(wozt_resize_realized),
+                         GINT_TO_POINTER(i));
+        g_signal_connect(zone, "button-press-event", G_CALLBACK(wozt_resize_drag),
+                         GINT_TO_POINTER(EDGES[i]));
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), zone);
+    }
+}
+
+static GtkWidget *wozt_window_control(const char *label, const char *tooltip,
+                                       GCallback callback, GtkShell *shell)
+{
+    const char *icon_name = NULL;
+    if (!strcmp(tooltip, "Minimize")) icon_name = "window-minimize-symbolic";
+    else if (!strcmp(tooltip, "Maximize / restore")) icon_name = "window-maximize-symbolic";
+    else if (!strcmp(tooltip, "Hide to tray")) icon_name = "window-close-symbolic";
+    else if (!strcmp(tooltip, "Reload themes and languages")) icon_name = "view-refresh-symbolic";
+    GtkIconTheme *icons = gtk_icon_theme_get_default();
+    GtkWidget *button = icon_name && gtk_icon_theme_has_icon(icons, icon_name)
+        ? gtk_button_new_from_icon_name(icon_name, GTK_ICON_SIZE_MENU)
+        : gtk_button_new_with_label(label);
+    gtk_widget_set_tooltip_text(button, tooltip);
+    gtk_style_context_add_class(gtk_widget_get_style_context(button),
+                                "wozt-window-button");
+    g_signal_connect(button, "clicked", callback, shell);
+    return button;
+}
+
 
 /* --- talking to the program ----------------------------------------- */
 
@@ -2508,7 +2711,7 @@ static GtkWidget *add_row(GtkWidget *grid, int row, const char *label, GtkWidget
 static GtkWidget *make_scale(GtkShell *shell, int lo, int hi, int step, const char *suffix) {
     GtkWidget *s = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, lo, hi, step);
     gtk_scale_set_value_pos(GTK_SCALE(s), GTK_POS_RIGHT);
-    gtk_widget_set_size_request(s, 240, -1);
+    gtk_widget_set_size_request(s, 170, -1);
     g_object_set_data(G_OBJECT(s), "suffix", (gpointer)suffix);
     g_signal_connect(s, "value-changed", G_CALLBACK(on_scale), shell);
     return s;
@@ -2543,84 +2746,78 @@ static GtkWidget *add_client_status(GtkWidget *grid, int row, const char *label)
 }
 
 static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **grid_out) {
+    /* Clients keeps its own notebook; only padding is made WUP-compact. */
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 14);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 14);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 5);
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), grid, gtk_label_new(title));
     *grid_out = grid;
     return grid;
 }
 
-
 static void add_section_header(GtkWidget *grid, int row, const char *title) {
-    char *markup = g_markup_printf_escaped(
-        "<b><span size=\"large\">%s</span></b>", title);
-    GtkWidget *label = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(label), markup);
-    g_free(markup);
-
+    GtkWidget *label = gtk_label_new(title);
+    gtk_style_context_add_class(gtk_widget_get_style_context(label),
+                                "wozt-subsection");
     gtk_widget_set_halign(label, GTK_ALIGN_START);
-    gtk_widget_set_margin_top(label, row == 0 ? 0 : 14);
-    gtk_widget_set_margin_bottom(label, 4);
+    gtk_widget_set_margin_top(label, row == 0 ? 0 : 6);
+    gtk_widget_set_margin_bottom(label, 2);
     gtk_grid_attach(GTK_GRID(grid), label, 0, row, 2, 1);
 }
 
 static GtkWidget *make_stack_page(
-    GtkWidget *stack,
+    GtkWidget *dashboard,
     const char *name,
     const char *title,
     const char *subtitle,
     GtkWidget **grid_out)
 {
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(
-        GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_NEVER,
-        GTK_POLICY_AUTOMATIC);
+    /* A former navigation page is now one framed functional section.
+     * Clients retains its separate GtkNotebook below this frame. */
+    static const char *const SECTION_ICONS[8] = {
+        "view-dashboard-symbolic", "computer-symbolic", "input-gaming-symbolic",
+        "input-gaming-symbolic", "camera-video-symbolic", "video-display-symbolic",
+        "system-reboot-symbolic", "emblem-system-symbolic"
+    };
+    const int index = g_c.wozt_section_count++;
+    GtkWidget *frame = gtk_frame_new(NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(frame), "wozt-section");
+    gtk_widget_set_hexpand(frame, TRUE);
+    g_object_set_data_full(G_OBJECT(frame), "wozt-section-id", g_strdup(name), g_free);
 
-    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_set_margin_start(outer, 24);
-    gtk_widget_set_margin_end(outer, 24);
-    gtk_widget_set_margin_top(outer, 20);
-    gtk_widget_set_margin_bottom(outer, 20);
-    gtk_container_add(GTK_CONTAINER(scroll), outer);
+    GtkWidget *heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkWidget *icon = gtk_image_new_from_icon_name(
+        SECTION_ICONS[index < 8 ? index : 0], GTK_ICON_SIZE_MENU);
+    gtk_box_pack_start(GTK_BOX(heading), icon, FALSE, FALSE, 0);
+    GtkWidget *text = gtk_label_new(title);
+    gtk_style_context_add_class(gtk_widget_get_style_context(text), "wozt-section-title");
+    gtk_box_pack_start(GTK_BOX(heading), text, FALSE, FALSE, 0);
+    gtk_frame_set_label_widget(GTK_FRAME(frame), heading);
 
-    char *markup = g_markup_printf_escaped(
-        "<span size=\"xx-large\"><b>%s</b></span>", title);
-
-    GtkWidget *heading = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(heading), markup);
-    g_free(markup);
-
-    gtk_widget_set_halign(heading, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(outer), heading, FALSE, FALSE, 0);
-
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_widget_set_margin_start(outer, 7);
+    gtk_widget_set_margin_end(outer, 7);
+    gtk_widget_set_margin_top(outer, 5);
+    gtk_widget_set_margin_bottom(outer, 7);
+    gtk_container_add(GTK_CONTAINER(frame), outer);
     if (subtitle && *subtitle) {
         GtkWidget *sub = gtk_label_new(subtitle);
         gtk_widget_set_halign(sub, GTK_ALIGN_START);
         gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
-        gtk_label_set_max_width_chars(GTK_LABEL(sub), 88);
-        gtk_style_context_add_class(
-            gtk_widget_get_style_context(sub),
-            "dim-label");
+        gtk_label_set_max_width_chars(GTK_LABEL(sub), 100);
+        gtk_style_context_add_class(gtk_widget_get_style_context(sub), "wozt-muted");
         gtk_box_pack_start(GTK_BOX(outer), sub, FALSE, FALSE, 0);
     }
-
-    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_widget_set_margin_top(sep, 4);
-    gtk_widget_set_margin_bottom(sep, 8);
-    gtk_box_pack_start(GTK_BOX(outer), sep, FALSE, FALSE, 0);
-
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 10);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 18);
+    gtk_widget_set_hexpand(grid, TRUE);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
     gtk_box_pack_start(GTK_BOX(outer), grid, FALSE, FALSE, 0);
-
-    gtk_stack_add_titled(GTK_STACK(stack), scroll, name, title);
-
+    if (index < 8) g_c.wozt_sections[index] = frame;
+    gtk_grid_attach(GTK_GRID(dashboard), frame, 0, index, 1, 1);
     *grid_out = grid;
-    return scroll;
+    return frame;
 }
 
 enum {
@@ -2802,7 +2999,11 @@ static void build_settings_window(GtkShell *shell) {
      * 1000x700 still fits comfortably on a 1280x720 display while
      * leaving enough room for meaningful labels and status lines.
      */
-    gtk_window_set_default_size(GTK_WINDOW(win), 1000, 700);
+    gtk_window_set_default_size(GTK_WINDOW(win), 1100, 760);
+    GdkGeometry geometry = {0};
+    geometry.min_width = 820;
+    geometry.min_height = 540;
+    gtk_window_set_geometry_hints(GTK_WINDOW(win), win, &geometry, GDK_HINT_MIN_SIZE);
     g_signal_connect(
         win,
         "delete-event",
@@ -2812,59 +3013,100 @@ static void build_settings_window(GtkShell *shell) {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(win), root);
 
-    /* ---------------------------------------------------------------
-     * Header
-     * --------------------------------------------------------------- */
-    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_widget_set_margin_start(header, 18);
-    gtk_widget_set_margin_end(header, 18);
-    gtk_widget_set_margin_top(header, 14);
-    gtk_widget_set_margin_bottom(header, 12);
+    /* WOZT v1.2: borderless GTK window with a stable X11 taskbar identity. */
+    gtk_window_set_decorated(GTK_WINDOW(win), FALSE);
+    gtk_window_set_resizable(GTK_WINDOW(win), TRUE);
+    gtk_window_set_wmclass(GTK_WINDOW(win), "capture2cloud", "capture2cloud");
+    gtk_style_context_add_class(gtk_widget_get_style_context(win), "wozt-window");
+    g_signal_connect(win, "configure-event", G_CALLBACK(wozt_window_configured), shell);
 
-    GtkWidget *header_title = gtk_label_new(NULL);
-    gtk_label_set_markup(
-        GTK_LABEL(header_title),
-        "<span size=\"x-large\"><b>Capture2Cloud server</b></span>");
-    gtk_widget_set_halign(header_title, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(header), header_title, FALSE, FALSE, 0);
+    char ui_path[512], theme_id[48], language_id[48];
+    app_path(ui_path, sizeof(ui_path), "data");
+    shell->wozt = wozt_ui_standard_new(
+        ui_path,
+        config_get_str("WOZT_UI_THEME", theme_id, sizeof(theme_id), "graphite"),
+        config_get_str("WOZT_UI_LANGUAGE", language_id, sizeof(language_id), "en"));
 
-    GtkWidget *header_sub = gtk_label_new(
-        "Streaming clients, capture hardware and controller output.");
-    gtk_widget_set_halign(header_sub, GTK_ALIGN_START);
-    gtk_style_context_add_class(
-        gtk_widget_get_style_context(header_sub),
-        "dim-label");
-    gtk_box_pack_start(GTK_BOX(header), header_sub, FALSE, FALSE, 0);
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_container_add(GTK_CONTAINER(win), overlay);
+    GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(overlay), root);
 
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_style_context_add_class(gtk_widget_get_style_context(header), "wozt-titlebar");
+    gtk_widget_set_margin_start(header, 8);
+    gtk_widget_set_margin_end(header, 8);
+    gtk_widget_set_margin_top(header, 4);
+    gtk_widget_set_margin_bottom(header, 4);
+
+    /* Dragging only the noninteractive title area moves the window. */
+    GtkWidget *drag = gtk_event_box_new();
+    gtk_event_box_set_visible_window(GTK_EVENT_BOX(drag), FALSE);
+    gtk_widget_add_events(drag, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(drag, "button-press-event", G_CALLBACK(wozt_title_drag), shell);
+    GtkWidget *brand = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    char icon_path[512];
+    app_path(icon_path, sizeof(icon_path), "assets/icon-64.png");
+    GtkWidget *brand_icon = gtk_image_new_from_file(icon_path);
+    gtk_image_set_pixel_size(GTK_IMAGE(brand_icon), 20);
+    gtk_box_pack_start(GTK_BOX(brand), brand_icon, FALSE, FALSE, 0);
+    GtkWidget *brand_title = gtk_label_new("Capture2Cloud server");
+    gtk_style_context_add_class(gtk_widget_get_style_context(brand_title), "wozt-title");
+    gtk_box_pack_start(GTK_BOX(brand), brand_title, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(drag), brand);
+    gtk_box_pack_start(GTK_BOX(header), drag, TRUE, TRUE, 0);
+
+    g_c.wozt_theme_combo = wozt_ui_standard_theme_combo(shell->wozt);
+    gtk_widget_set_tooltip_text(g_c.wozt_theme_combo, "Theme");
+    gtk_widget_set_size_request(g_c.wozt_theme_combo, 115, -1);
+    gtk_box_pack_start(GTK_BOX(header), g_c.wozt_theme_combo, FALSE, FALSE, 0);
+    g_signal_connect(g_c.wozt_theme_combo, "changed", G_CALLBACK(wozt_theme_changed), shell);
+
+    g_c.wozt_language_combo = wozt_ui_standard_language_combo(shell->wozt);
+    gtk_widget_set_tooltip_text(g_c.wozt_language_combo, "Language");
+    gtk_widget_set_size_request(g_c.wozt_language_combo, 104, -1);
+    gtk_box_pack_start(GTK_BOX(header), g_c.wozt_language_combo, FALSE, FALSE, 0);
+    g_signal_connect(g_c.wozt_language_combo, "changed", G_CALLBACK(wozt_language_changed), shell);
+
+    GtkWidget *reload = wozt_window_control("↻", "Reload themes and languages",
+                                            G_CALLBACK(wozt_reload_clicked), shell);
+    gtk_box_pack_start(GTK_BOX(header), reload, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(header),
+                       wozt_window_control("−", "Minimize",
+                                           G_CALLBACK(wozt_window_minimize), shell),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(header),
+                       wozt_window_control("□", "Maximize / restore",
+                                           G_CALLBACK(wozt_window_maximize), shell),
+                       FALSE, FALSE, 0);
+    GtkWidget *close_button = wozt_window_control("×", "Hide to tray",
+                                                   G_CALLBACK(wozt_window_hide), shell);
+    gtk_style_context_add_class(gtk_widget_get_style_context(close_button), "wozt-danger");
+    gtk_box_pack_start(GTK_BOX(header), close_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), header, FALSE, FALSE, 0);
-    gtk_box_pack_start(
-        GTK_BOX(root),
-        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-        FALSE,
-        FALSE,
-        0);
 
-    /* ---------------------------------------------------------------
-     * Sidebar + pages
-     * --------------------------------------------------------------- */
-    GtkWidget *body = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    /* One vertically scrollable dashboard. No left navigation and no
+     * horizontal scroll; only the Clients section has an inner notebook. */
+    GtkWidget *body = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(body),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_style_context_add_class(gtk_widget_get_style_context(body), "wozt-dashboard");
     gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
-
-    GtkWidget *stack = gtk_stack_new();
-    gtk_stack_set_transition_type(
-        GTK_STACK(stack),
-        GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_stack_set_transition_duration(GTK_STACK(stack), 120);
-
-    GtkWidget *sidebar = gtk_stack_sidebar_new();
-    gtk_stack_sidebar_set_stack(
-        GTK_STACK_SIDEBAR(sidebar),
-        GTK_STACK(stack));
-    gtk_widget_set_size_request(sidebar, 205, -1);
-
-    gtk_paned_pack1(GTK_PANED(body), sidebar, FALSE, FALSE);
-    gtk_paned_pack2(GTK_PANED(body), stack, TRUE, FALSE);
-    gtk_paned_set_position(GTK_PANED(body), 205);
+    GtkWidget *dashboard = gtk_grid_new();
+    gtk_widget_set_hexpand(dashboard, TRUE);
+    gtk_grid_set_row_spacing(GTK_GRID(dashboard), 7);
+    gtk_grid_set_column_spacing(GTK_GRID(dashboard), 7);
+    gtk_widget_set_margin_start(dashboard, 8);
+    gtk_widget_set_margin_end(dashboard, 8);
+    gtk_widget_set_margin_top(dashboard, 7);
+    gtk_widget_set_margin_bottom(dashboard, 7);
+    gtk_container_add(GTK_CONTAINER(body), dashboard);
+    g_c.wozt_dashboard = dashboard;
+    g_c.wozt_section_count = 0;
+    g_c.wozt_two_columns = 0;
+    wozt_add_resize_zones(overlay, win);
+    /* Existing make_stack_page calls now append visible functional frames. */
+    GtkWidget *stack = dashboard;
 
     GtkWidget *grid;
     int row;
@@ -2951,6 +3193,7 @@ static void build_settings_window(GtkShell *shell) {
         &grid);
 
     GtkWidget *clients = gtk_notebook_new();
+    g_c.wozt_clients_notebook = clients;
     gtk_notebook_set_scrollable(GTK_NOTEBOOK(clients), TRUE);
     gtk_widget_set_hexpand(clients, TRUE);
     gtk_widget_set_vexpand(clients, TRUE);
@@ -4643,6 +4886,10 @@ static void build_settings_window(GtkShell *shell) {
     shell->settings_window = win;
 
     load_controls(shell);
+    shell->loading = 1;
+    wozt_ui_standard_apply_language(shell->wozt,
+        wozt_ui_standard_language_id(shell->wozt), shell->settings_window);
+    shell->loading = 0;
 }
 
 /* Opens the settings window from outside, for the layout probe in the
@@ -5098,6 +5345,8 @@ static int gtk_thread_main(void *arg) {
 
     g_timeout_add(200, on_tick, shell);
     gtk_main();
+    wozt_ui_standard_free(shell->wozt);
+    shell->wozt = NULL;
 
     /* On this thread, because it is this thread's widget: the shell is
      * torn down from the main one, which must not destroy something the
