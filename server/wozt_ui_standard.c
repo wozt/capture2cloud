@@ -186,10 +186,32 @@ static const char *wozt_tr(WoztUiStandard *ui, const char *english)
 }
 
 /* Translate a stable English source, never a previously translated value. */
+static WoztUiStandard *wozt_live_ui;
+
+void wozt_ui_label_set_text(GtkLabel *label, const char *english)
+{
+    if (!english) english = "";
+    char *source = g_strdup(english);
+    g_object_set_data_full(G_OBJECT(label), "wozt-source-label", source, g_free);
+    g_object_set_data(G_OBJECT(label), "wozt-source-markup", NULL);
+    gtk_label_set_text(label, wozt_live_ui ? wozt_tr(wozt_live_ui, source) : source);
+}
+
+void wozt_ui_button_set_label(GtkButton *button, const char *english)
+{
+    gtk_button_set_label(button, english);
+    GtkWidget *child = gtk_bin_get_child(GTK_BIN(button));
+    if (GTK_IS_LABEL(child)) wozt_ui_label_set_text(GTK_LABEL(child), english);
+}
+
 static void wozt_translate_label(WoztUiStandard *ui, GtkWidget *widget)
 {
     GtkLabel *label = GTK_LABEL(widget);
-    if (gtk_label_get_selectable(label)) return; /* live status/diagnostics */
+    if (gtk_label_get_selectable(label) &&
+        !g_object_get_data(G_OBJECT(widget), "wozt-source-label")) {
+        const char *shown = gtk_label_get_text(label);
+        if (!shown || !g_hash_table_contains(ui->translations, shown)) return;
+    }
     const char *english = g_object_get_data(G_OBJECT(widget), "wozt-source-label");
     if (!english) {
         const char *shown = gtk_label_get_text(label);
@@ -280,6 +302,17 @@ static void wozt_translate_tree(WoztUiStandard *ui, GtkWidget *widget)
 {
     if (GTK_IS_LABEL(widget)) wozt_translate_label(ui, widget);
     if (GTK_IS_COMBO_BOX(widget)) wozt_translate_combo(ui, widget);
+    if (GTK_IS_ENTRY(widget)) {
+        const char *source = g_object_get_data(G_OBJECT(widget), "wozt-source-placeholder");
+        if (!source) {
+            const char *shown = gtk_entry_get_placeholder_text(GTK_ENTRY(widget));
+            if (shown && *shown) {
+                source = g_strdup(shown);
+                g_object_set_data_full(G_OBJECT(widget), "wozt-source-placeholder", (gpointer)source, g_free);
+            }
+        }
+        if (source) gtk_entry_set_placeholder_text(GTK_ENTRY(widget), wozt_tr(ui, source));
+    }
     const char *tooltip = g_object_get_data(G_OBJECT(widget), "wozt-source-tooltip");
     if (!tooltip) {
         const char *shown = gtk_widget_get_tooltip_text(widget);
@@ -450,6 +483,7 @@ WoztUiStandard *wozt_ui_standard_new(const char *data_dir,
 void wozt_ui_standard_free(WoztUiStandard *ui)
 {
     if (!ui) return;
+    if (wozt_live_ui == ui) wozt_live_ui = NULL;
     GdkScreen *screen = gdk_screen_get_default();
     if (screen) gtk_style_context_remove_provider_for_screen(screen, GTK_STYLE_PROVIDER(ui->css));
     g_object_unref(ui->css);
@@ -504,6 +538,7 @@ void wozt_ui_standard_apply_language(WoztUiStandard *ui, const char *id,
 {
     if (!ui) return;
     wozt_load_language(ui, id);
+    wozt_live_ui = ui;
     if (root) wozt_translate_tree(ui, root);
 }
 

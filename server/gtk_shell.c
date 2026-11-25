@@ -854,7 +854,7 @@ static void reset_script_changed(
     }
 
     if (reset_method_set_script(value) != 0) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Script path contains unsupported characters.");
     }
@@ -925,7 +925,7 @@ static void reset_refresh_adapters(
             sizeof(error));
 
     if (count < 0) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             error[0]
                 ? error
@@ -978,7 +978,7 @@ static void reset_refresh_adapters(
             GTK_COMBO_BOX(g_c.reset_bt_adapter),
             0);
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "No Bluetooth adapter detected.");
     } else {
@@ -999,7 +999,7 @@ static void reset_refresh_adapters(
                 g_c.reset_bt_adapters[selected].address);
         }
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Bluetooth adapter ready for configuration.");
     }
@@ -1021,7 +1021,7 @@ static gboolean reset_probe_finished(
         user_data;
 
     if (g_c.reset_bt_status) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             job->message[0]
                 ? job->message
@@ -1072,7 +1072,7 @@ static void reset_test_adapter_clicked(
         reset_selected_adapter();
 
     if (index < 0) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Select a Bluetooth adapter first.");
         return;
@@ -1085,7 +1085,7 @@ static void reset_test_adapter_clicked(
      */
     if (output_pcble_session_running() ||
         output_pcble_ipc_up()) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Controller Bluetooth session is active. Stop it before testing the wake adapter.");
         return;
@@ -1097,7 +1097,7 @@ static void reset_test_adapter_clicked(
             sizeof(*job));
 
     if (!job) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Could not allocate Bluetooth test job.");
         return;
@@ -1117,7 +1117,7 @@ static void reset_test_adapter_clicked(
     reset_method_set_bluetooth_adapter(
         g_c.reset_bt_adapters[index].address);
 
-    gtk_label_set_text(
+    wozt_ui_label_set_text(
         GTK_LABEL(g_c.reset_bt_status),
         "Testing LE scan and advertising support...");
 
@@ -1136,7 +1136,7 @@ static void reset_test_adapter_clicked(
             g_c.reset_bt_test_adapter,
             TRUE);
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Could not start Bluetooth compatibility test.");
 
@@ -1160,7 +1160,7 @@ static gboolean reset_capture_finished(
         user_data;
 
     if (g_c.reset_bt_status) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             job->message[0]
                 ? job->message
@@ -1215,7 +1215,7 @@ static void reset_capture_clicked(
         reset_selected_adapter();
 
     if (index < 0) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Select a Bluetooth adapter first.");
         return;
@@ -1223,7 +1223,7 @@ static void reset_capture_clicked(
 
     if (output_pcble_session_running() ||
         output_pcble_ipc_up()) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Controller Bluetooth session is active. Wait for it to stop before capturing the wake beacon.");
         return;
@@ -1235,7 +1235,7 @@ static void reset_capture_clicked(
             sizeof(*job));
 
     if (!job) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Could not allocate wake capture job.");
         return;
@@ -1250,7 +1250,7 @@ static void reset_capture_clicked(
     reset_method_set_bluetooth_adapter(
         g_c.reset_bt_adapters[index].address);
 
-    gtk_label_set_text(
+    wozt_ui_label_set_text(
         GTK_LABEL(g_c.reset_bt_status),
         "Listening for 20 seconds. Put the Switch 2 to sleep, then press HOME on a real paired controller.");
 
@@ -1277,7 +1277,7 @@ static void reset_capture_clicked(
             g_c.reset_bt_test_adapter,
             TRUE);
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Could not start wake beacon capture.");
 
@@ -1301,7 +1301,7 @@ static gboolean reset_beacon_test_finished(
         user_data;
 
     if (g_c.reset_bt_status) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             job->message[0]
                 ? job->message
@@ -1362,7 +1362,7 @@ static void reset_test_beacon_clicked(
         reset_selected_adapter();
 
     if (index < 0) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Select a Bluetooth adapter first.");
         return;
@@ -1370,7 +1370,7 @@ static void reset_test_beacon_clicked(
 
     if (output_pcble_session_running() ||
         output_pcble_ipc_up()) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Controller Bluetooth session is active. Wait for it to stop before transmitting the wake beacon.");
         return;
@@ -1382,7 +1382,7 @@ static void reset_test_beacon_clicked(
             sizeof(*job));
 
     if (!job) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Could not allocate wake beacon test job.");
         return;
@@ -1397,7 +1397,7 @@ static void reset_test_beacon_clicked(
     reset_method_set_bluetooth_adapter(
         g_c.reset_bt_adapters[index].address);
 
-    gtk_label_set_text(
+    wozt_ui_label_set_text(
         GTK_LABEL(g_c.reset_bt_status),
         "Transmitting saved Switch 2 wake beacon for 3 seconds...");
 
@@ -1432,7 +1432,7 @@ static void reset_test_beacon_clicked(
             g_c.reset_bt_test_adapter,
             TRUE);
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Could not start wake beacon transmission.");
 
@@ -1502,7 +1502,7 @@ static void reset_load_config(GtkShell *shell)
             GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter),
             label);
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Saved Bluetooth adapter loaded. Press Refresh adapters to enumerate controllers.");
     } else {
@@ -1510,7 +1510,7 @@ static void reset_load_config(GtkShell *shell)
             GTK_COMBO_BOX_TEXT(g_c.reset_bt_adapter),
             "press Refresh adapters");
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.reset_bt_status),
             "Press Refresh adapters to enumerate Bluetooth controllers.");
     }
@@ -1825,14 +1825,14 @@ static void pcble_update_controls(GtkShell *shell)
      * A GtkButton is not a toggle, so the clearest persistent feedback is
      * a changed label plus disabled state while the operation is active.
      */
-    gtk_button_set_label(
+    wozt_ui_button_set_label(
         GTK_BUTTON(g_c.pcble_reconnect),
         recovery_busy
             ? "Reconnecting paired Switch..."
             : "Reconnect paired Switch");
 
     if (g_c.backend_recovery) {
-        gtk_button_set_label(
+        wozt_ui_button_set_label(
             GTK_BUTTON(g_c.backend_recovery),
             recovery_busy
                 ? "reconnecting paired Switch..."
@@ -1861,7 +1861,7 @@ static void pcble_refresh_adapters(
             sizeof(error));
 
     if (count < 0) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             error);
 
@@ -2194,7 +2194,7 @@ static void pcble_start_pair(
             sizeof(error));
 
     if (!ok) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             error);
 
@@ -2205,7 +2205,7 @@ static void pcble_start_pair(
         return;
     }
 
-    gtk_label_set_text(
+    wozt_ui_label_set_text(
         GTK_LABEL(g_c.pcble_status),
         "waiting for pairing — open Controllers → Change Grip/Order on the Switch");
 
@@ -2237,7 +2237,7 @@ static void pcble_reconnect_clicked(
      */
     gamepad_bridge_reset();
 
-    gtk_label_set_text(
+    wozt_ui_label_set_text(
         GTK_LABEL(g_c.pcble_status),
         "reconnect requested...");
 
@@ -2254,7 +2254,7 @@ static void pcble_stop_clicked(
 
     output_pcble_stop_session();
 
-    gtk_label_set_text(
+    wozt_ui_label_set_text(
         GTK_LABEL(g_c.pcble_status),
         "stopping Bluetooth session...");
 
@@ -2383,13 +2383,13 @@ static void pcble_refresh_status(GtkShell *shell)
         pcble_profile();
 
     if (recovery_pending && running) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             stopping
                 ? "reconnect requested — stopping current Bluetooth session..."
                 : "reconnect requested...");
     } else if (recovery_pending) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             "reconnect queued...");
     } else if (ipc && connected) {
@@ -2403,7 +2403,7 @@ static void pcble_refresh_status(GtkShell *shell)
                 : "connected",
             peer);
 
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             text);
 
@@ -2464,19 +2464,19 @@ static void pcble_refresh_status(GtkShell *shell)
             }
         }
     } else if (reconnect_active) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             "reconnecting to paired Switch...");
     } else if (ipc) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             "Bluetooth session active — waiting for Switch");
     } else if (running) {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             "starting Bluetooth session / waiting for authorization...");
     } else {
-        gtk_label_set_text(
+        wozt_ui_label_set_text(
             GTK_LABEL(g_c.pcble_status),
             "offline");
     }
@@ -6626,12 +6626,12 @@ static gboolean on_tick(gpointer user_data) {
         SDL_UnlockMutex(shell->lock);
         for (int i = 0; i < GTK_SHELL_CLIENT_COUNT; i++) {
             if (g_c.client_status[i]) {
-                gtk_label_set_text(
+                wozt_ui_label_set_text(
                     GTK_LABEL(g_c.client_status[i]),
                     text[i]);
             }
             if (g_c.overview_client_status[i]) {
-                gtk_label_set_text(
+                wozt_ui_label_set_text(
                     GTK_LABEL(g_c.overview_client_status[i]),
                     wozt_overview_client_summary(text[i]));
                 /* Full message remains accessible on hover. */
@@ -6647,7 +6647,7 @@ static gboolean on_tick(gpointer user_data) {
         snprintf(snapshot, sizeof(snapshot), "%s", shell->wup_metrics_text);
         SDL_UnlockMutex(shell->lock);
         if (g_c.wup_metrics_label)
-            gtk_label_set_text(GTK_LABEL(g_c.wup_metrics_label), snapshot);
+            wozt_ui_label_set_text(GTK_LABEL(g_c.wup_metrics_label), snapshot);
     }
     if (shell->wiiu_status_dirty) {
         shell->wiiu_status_dirty = 0;
@@ -6656,7 +6656,7 @@ static gboolean on_tick(gpointer user_data) {
         snprintf(text, sizeof(text), "%s", shell->wiiu_status_text);
         SDL_UnlockMutex(shell->lock);
         if (g_c.wiiu_status) {
-            gtk_label_set_text(GTK_LABEL(g_c.wiiu_status), text);
+            wozt_ui_label_set_text(GTK_LABEL(g_c.wiiu_status), text);
         }
     }
     if (shell->status_dirty) {

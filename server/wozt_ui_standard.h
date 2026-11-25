@@ -19,5 +19,7 @@ gboolean wozt_ui_standard_get_color(WoztUiStandard *ui, const char *key,
 void wozt_ui_standard_apply_language(WoztUiStandard *ui, const char *id,
                                       GtkWidget *root);
 void wozt_ui_standard_reload(WoztUiStandard *ui, GtkWidget *root);
+void wozt_ui_label_set_text(GtkLabel *label, const char *english);
+void wozt_ui_button_set_label(GtkButton *button, const char *english);
 
 #endif
