@@ -369,7 +369,20 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
         "window.wozt-window scale trough slider,"
         "window.wozt-window scale slider {"
         "background-image:none;background-color:%s;"
-        "border:1px solid %s;border-radius:0;box-shadow:none;}",
+        "border:1px solid %s;border-radius:0;box-shadow:none;}"
+        /* Only 16 controller-calibration scales are styled this tightly.
+         * 3px tracks stay thin; the 12px thumb + borders stays square. */
+        "window.wozt-window scale.wozt-calibration-scale {"
+        "margin:0;padding:0;min-height:0;}"
+        "window.wozt-window scale.wozt-calibration-scale contents {"
+        "margin:0;padding:0;min-height:0;}"
+        "window.wozt-window scale.wozt-calibration-scale trough {"
+        "min-height:3px;margin:0;padding:0;border-width:0;}"
+        "window.wozt-window scale.wozt-calibration-scale trough slider,"
+        "window.wozt-window scale.wozt-calibration-scale slider {"
+        "min-height:12px;min-width:12px;margin:0;padding:0;border-width:1px;}"
+        "window.wozt-window scale.wozt-calibration-scale value {"
+        "margin:0;padding:0;}",
         v[2], v[3], v[6], v[6], v[3]);
     char *complete_css = g_strconcat(css, slider_css, NULL);
     g_free(slider_css);

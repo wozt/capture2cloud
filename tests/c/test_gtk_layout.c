@@ -366,12 +366,15 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          strstr(slider_css, "scaleslider") &&
          strstr(slider_css, "background-image:none") &&
          strstr(slider_css, "background-color:"));
+    t_ok("Controller slider CSS defines a 3px track and 12px thumb core",
+         slider_css && strstr(slider_css, "scale.wozt-calibration-scale") &&
+         strstr(slider_css, "min-height:3px") &&
+         strstr(slider_css, "min-height:12px") &&
+         strstr(slider_css, "border-width:0"));
     if (slider_tokens) g_string_free(slider_tokens, TRUE);
     g_free(slider_rules);
     GList *output_children = g_c.wozt_inner_output
         ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output)) : NULL;
-    GList *input_children = g_c.wozt_inner_input
-        ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_input)) : NULL;
     GtkWidget *reconnect_text = g_c.pcble_reconnect && GTK_IS_BIN(g_c.pcble_reconnect)
         ? gtk_bin_get_child(GTK_BIN(g_c.pcble_reconnect)) : NULL;
     t_ok("PCBLE buttons show the complete text without ellipses or wrapping",
@@ -381,11 +384,11 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Controller output has two genuine internal columns",
          g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output) &&
          g_list_length(output_children) == 2);
-    t_ok("Local input has two genuine internal columns",
-         g_c.wozt_inner_input && GTK_IS_BOX(g_c.wozt_inner_input) &&
-         g_list_length(input_children) == 2);
+    t_ok("Local input uses one shared vertical grid",
+         g_c.wozt_inner_input && GTK_IS_GRID(g_c.wozt_inner_input) &&
+         gtk_widget_get_parent(g_c.gamepad_enabled) == g_c.wozt_inner_input &&
+         gtk_widget_get_parent(g_c.lt_threshold) == g_c.wozt_inner_input);
     g_list_free(output_children);
-    g_list_free(input_children);
     t_ok("Output left and right stick controls share one compact grid",
          g_c.output_deadzone[0] && g_c.output_deadzone[1] &&
          gtk_widget_get_parent(g_c.output_deadzone[0]) ==
@@ -466,16 +469,18 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Output frame expands to the available row width",
          g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]));
     gint output_preview_w[2] = {-1, -1};
+    gint output_preview_h[2] = {-1, -1};
     gint output_slider_width = -1;
     for (int side = 0; side < 2; ++side)
         if (g_c.output_stick_preview[side])
             gtk_widget_get_size_request(g_c.output_stick_preview[side],
-                                        &output_preview_w[side], NULL);
+                                        &output_preview_w[side], &output_preview_h[side]);
     if (g_c.output_deadzone[0])
         gtk_widget_get_size_request(g_c.output_deadzone[0],
                                     &output_slider_width, NULL);
-    t_ok("Output stick previews use 38px drawing surfaces",
-         output_preview_w[0] == 38 && output_preview_w[1] == 38);
+    t_ok("Output stick previews are 70 by 70px",
+         output_preview_w[0] == 70 && output_preview_w[1] == 70 &&
+         output_preview_h[0] == 70 && output_preview_h[1] == 70);
     GtkWidget *logging_row = g_c.pcble_verbose
         ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
     t_ok("Output logging toggle sits immediately after its label",
@@ -511,6 +516,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          output_children_natural);
     t_ok("Output sliders request a compact 116px width",
          output_slider_width == 116);
+    t_ok("Output calibration rows have zero spacing",
+         GTK_IS_GRID(sliders_grid) &&
+         gtk_grid_get_row_spacing(GTK_GRID(sliders_grid)) == 0);
     GtkWidget *color_grid = g_c.pcble_body_color
         ? gtk_widget_get_parent(g_c.pcble_body_color) : NULL;
     t_ok("PCBLE appearance swatches are in a compact nested grid",
@@ -604,8 +612,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (g_c.input_stick_preview[0])
         gtk_widget_get_size_request(g_c.input_stick_preview[0],
                                     &preview_width, &preview_height);
-    t_ok("Input stick previews use 38px drawing surfaces",
-         g_c.input_stick_preview[0] && preview_width == 38 && preview_height == 38);
+    gint preview_right_width = -1, preview_right_height = -1;
+    if (g_c.input_stick_preview[1])
+        gtk_widget_get_size_request(g_c.input_stick_preview[1],
+                                    &preview_right_width, &preview_right_height);
+    t_ok("Input stick previews are 70 by 70px",
+         g_c.input_stick_preview[0] && preview_width == 70 && preview_height == 70 &&
+         g_c.input_stick_preview[1] &&
+         preview_right_width == 70 && preview_right_height == 70);
     t_ok("Stick sliders no longer request entire panel widths",
          g_c.range[0] && !gtk_widget_get_hexpand(g_c.range[0]));
     gint input_slider_width = -1;
@@ -640,18 +654,33 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_grid_get_row_spacing(GTK_GRID(input_scale_grid)) == 0);
     GtkStyleContext *input_scale_style = g_c.deadzone[0]
         ? gtk_widget_get_style_context(g_c.deadzone[0]) : NULL;
-    gint input_scale_height = -2, output_scale_height = -3;
-    if (g_c.deadzone[0] && g_c.output_deadzone[0]) {
-        gtk_widget_get_size_request(g_c.deadzone[0], NULL, &input_scale_height);
-        gtk_widget_get_size_request(g_c.output_deadzone[0], NULL, &output_scale_height);
+    GtkWidget *input_scales[8] = {
+        g_c.lt_threshold, g_c.deadzone[0], g_c.range[0], g_c.diagonal[0],
+        g_c.rt_threshold, g_c.deadzone[1], g_c.range[1], g_c.diagonal[1]
+    };
+    GtkWidget *output_scales[8] = {
+        g_c.output_lt_threshold, g_c.output_deadzone[0],
+        g_c.output_range[0], g_c.output_diagonal[0],
+        g_c.output_rt_threshold, g_c.output_deadzone[1],
+        g_c.output_range[1], g_c.output_diagonal[1]
+    };
+    gboolean compact_scales = TRUE;
+    for (int side = 0; side < 2; ++side) {
+        GtkWidget **scales = side ? output_scales : input_scales;
+        for (int i = 0; i < 8; ++i) {
+            gint sw = -1, sh = -1;
+            if (!GTK_IS_SCALE(scales[i])) { compact_scales = FALSE; continue; }
+            gtk_widget_get_size_request(scales[i], &sw, &sh);
+            compact_scales = compact_scales && sw == 116 && sh == 15 &&
+                gtk_style_context_has_class(gtk_widget_get_style_context(scales[i]),
+                                            "wozt-calibration-scale") &&
+                gtk_widget_get_margin_top(scales[i]) == 0 &&
+                gtk_widget_get_margin_bottom(scales[i]) == 0;
+        }
     }
-    t_ok("Input sliders use Output's normal CSS and natural height",
-         input_scale_style &&
-         !gtk_style_context_has_class(input_scale_style, "wozt-input-tight-scale") &&
-         input_scale_height == -1 && output_scale_height == -1 &&
-         gtk_widget_get_valign(g_c.deadzone[0]) == GTK_ALIGN_FILL &&
-         gtk_widget_get_margin_top(g_c.deadzone[0]) == 0 &&
-         gtk_widget_get_margin_bottom(g_c.deadzone[0]) == 0);
+    t_ok("All sixteen sliders have compact height and scoped thin-track CSS",
+         compact_scales && input_scale_style &&
+         gtk_style_context_has_class(input_scale_style, "wozt-calibration-scale"));
 
     GtkWidget *input_sliders_grid = g_c.lt_threshold
         ? gtk_widget_get_parent(g_c.lt_threshold) : NULL;
@@ -702,10 +731,16 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                 g_c.deadzone[1], "left-attach", &input_axis_col, NULL);
     t_eq_int("Local input calibration uses its own grid control column",
              input_axis_col, 1);
-    t_ok("Input calibration and source controller live in separate grids",
-         input_right_grid && GTK_IS_GRID(input_right_grid) &&
-         g_c.gamepad_device &&
-         input_right_grid != gtk_widget_get_parent(g_c.gamepad_device));
+    gint input_preview_row = -1;
+    if (GTK_IS_GRID(input_right_grid) && input_preview_inline)
+        gtk_container_child_get(GTK_CONTAINER(input_right_grid), input_preview_inline,
+                                "top-attach", &input_preview_row, NULL);
+    t_ok("Input previews and calibration form one uninterrupted column",
+         GTK_IS_GRID(input_right_grid) &&
+         input_right_grid == g_c.wozt_inner_input &&
+         gtk_widget_get_parent(device_inline) == input_right_grid &&
+         gtk_widget_get_parent(input_preview_inline) == input_right_grid &&
+         input_preview_row >= 0 && input_lt_row > input_preview_row);
     wozt_dashboard_reflow(1650);
     /* Output stays naturally narrow; input consumes the remaining
      * horizontal space. Both frames still share the controller row. */
