@@ -153,7 +153,7 @@ static uint8_t spi(const ProState *s, uint32_t a) {
      * Right:
      *   center, -X/-Y excursion, +X/+Y excursion
      *
-     * These are the same values used by output_pcble.c:
+     * These are the same values used by server/output_pcble.c:
      *
      *   LX center 2159, +1466, -1517
      *   LY center 1916, +1583, -1465

@@ -27,7 +27,7 @@
 
 /* Bumped when the MEANING of a stored value changes, so the old one can
  * be converted rather than misread. */
-#define CONFIG_VERSION 3
+#define CONFIG_VERSION 4
 
 #define CONFIG_PATH "sdmc:/switch/capture2switch.cfg"
 
@@ -237,14 +237,15 @@ static const struct { int w, h, fps, kbps; const char *label; } PROFILES[] = {
 static int g_profile = 1;   /* 480p30: what certainly works, including in applet mode */
 static int g_adapt_enabled = 1;
 
-/* Bitrate, chosen separately from the size and rate. They interact --
- * more pixels need more bits -- but which one to give up first is a
- * judgement about the picture, not something to be decided here: a
- * sharp 30 fps and a soft 60 are both reasonable answers. 0 means "use
- * whatever the profile suggests". */
-static const int BITRATES[] = {0, 1000, 2000, 4000, 6000, 10000};
-#define BITRATE_COUNT ((int)(sizeof(BITRATES) / sizeof(BITRATES[0])))
-static int g_bitrate_index = 0;
+/* Bitrate is independent from resolution and frame rate: a slow remote
+ * link may need a very soft 720p60 stream, while a local link can afford
+ * much more. It is a real slider rather than six presets, with 250 kbps
+ * steps fine enough to find the limit of a link without a wall of menu
+ * entries. */
+#define BITRATE_MIN_KBPS 1500
+#define BITRATE_MAX_KBPS 20000
+#define BITRATE_STEP_KBPS 250
+static int g_bitrate_kbps = 2500;
 
 /* No codec setting: this client is H.264 and only H.264.
  *
@@ -254,10 +255,6 @@ static int g_bitrate_index = 0;
  * here. The host runs both chains on demand now, so asking for H.264
  * takes nothing from anyone else. */
 
-/* The values the two stick settings step through. Cycling a short list
- * beats a slider on a screen driven by the very stick being adjusted. */
-static const int DEADZONES[] = {0, 2, 5, 8, 12, 16, 20, 25};
-#define DEADZONE_COUNT ((int)(sizeof(DEADZONES) / sizeof(DEADZONES[0])))
 /* Down to 45, because a stick that no longer reaches far -- especially
  * into a corner, where it reaches least -- needs an outer limit set to
  * what it actually does reach. */
@@ -291,6 +288,7 @@ static void load_config(void) {
     int cfg_rdead = 2, cfg_rsat = 100, cfg_rdiag = 100;
     int cfg_touchpad = 0, cfg_colour = 0, cfg_opacity = 100;
     int cfg_version = 1;
+    int cfg_bitrate = 0;
     int cfg_bright = 100, cfg_contrast = 100, cfg_sat = 100, cfg_hue = 0;
     FILE *f = fopen(CONFIG_PATH, "r");
     if (!f) {
@@ -327,7 +325,7 @@ static void load_config(void) {
         else if (strcmp(key, "lstick_diagonal") == 0) cfg_ldiag = atoi(value);
         else if (strcmp(key, "rstick_diagonal") == 0) cfg_rdiag = atoi(value);
         else if (strcmp(key, "profile") == 0) g_profile = atoi(value);
-        else if (strcmp(key, "bitrate") == 0) g_bitrate_index = atoi(value);
+        else if (strcmp(key, "bitrate") == 0) cfg_bitrate = atoi(value);
         else if (strcmp(key, "adapt") == 0) g_adapt_enabled = atoi(value) != 0;
         else if (strcmp(key, "version") == 0) cfg_version = atoi(value);
         else if (strcmp(key, "volume") == 0) g_saved_volume = atoi(value);
@@ -338,7 +336,25 @@ static void load_config(void) {
     /* Clamped, not trusted: this file is hand-edited on an SD card, and
      * an index out of range would read past the end of a table. */
     if (g_profile < 0 || g_profile >= (int)(sizeof(PROFILES) / sizeof(*PROFILES))) g_profile = 1;
-    if (g_bitrate_index < 0 || g_bitrate_index >= (int)(sizeof(BITRATES) / sizeof(*BITRATES))) g_bitrate_index = 0;
+    /* Before version 4, bitrate was an index into
+     * {auto, 1, 2, 4, 6, 10 Mbit/s}. Convert it once; "auto" becomes
+     * the selected profile's suggested bitrate. */
+    if (cfg_version < 4) {
+        static const int legacy_bitrates[] = {0, 1000, 2000, 4000, 6000, 10000};
+        if (cfg_bitrate >= 0 && cfg_bitrate < (int)(sizeof(legacy_bitrates) / sizeof(*legacy_bitrates))) {
+            g_bitrate_kbps = legacy_bitrates[cfg_bitrate];
+        } else {
+            g_bitrate_kbps = 0;
+        }
+        if (g_bitrate_kbps == 0) g_bitrate_kbps = PROFILES[g_profile].kbps;
+    } else {
+        g_bitrate_kbps = cfg_bitrate;
+    }
+    if (g_bitrate_kbps < BITRATE_MIN_KBPS) g_bitrate_kbps = BITRATE_MIN_KBPS;
+    if (g_bitrate_kbps > BITRATE_MAX_KBPS) g_bitrate_kbps = BITRATE_MAX_KBPS;
+    g_bitrate_kbps = BITRATE_MIN_KBPS +
+        ((g_bitrate_kbps - BITRATE_MIN_KBPS + BITRATE_STEP_KBPS / 2) / BITRATE_STEP_KBPS) *
+        BITRATE_STEP_KBPS;
     /* Version 1 wrote the volume on a 0-200 scale where 100 was the
      * stream's own level; it now runs 0-100 with that level at 25, for
      * the same range of loudness. Left alone, everyone's sound would
@@ -441,7 +457,7 @@ static void save_config(void) {
         fprintf(f, "rstick_deadzone=%d\nrstick_range=%d\nrstick_diagonal=%d\n", d, sat, diag);
     }
     fprintf(f, "profile=%d\n", g_profile);
-    fprintf(f, "bitrate=%d\n", g_bitrate_index);
+    fprintf(f, "bitrate=%d\n", g_bitrate_kbps);
     fprintf(f, "adapt=%d\n", g_adapt_enabled);
     fprintf(f, "volume=%d\n", audio_volume());
     fprintf(f, "muted=%d\n", audio_is_muted());
@@ -460,7 +476,7 @@ static void save_config_if_needed(void) {
 
 
 static int current_bitrate(void) {
-    return BITRATES[g_bitrate_index] ? BITRATES[g_bitrate_index] : PROFILES[g_profile].kbps;
+    return g_bitrate_kbps;
 }
 static double g_measured_fps = 0;
 
@@ -530,11 +546,7 @@ static void menu_label(int index, char *out, size_t out_size, char *detail, size
             break;
         case MENU_BITRATE:
             snprintf(out, out_size, "Bitrate");
-            if (BITRATES[g_bitrate_index]) {
-                snprintf(detail, detail_size, "%d kbps", BITRATES[g_bitrate_index]);
-            } else {
-                snprintf(detail, detail_size, "auto (%d kbps)", PROFILES[g_profile].kbps);
-            }
+            snprintf(detail, detail_size, "%.2f Mbit/s", g_bitrate_kbps / 1000.0);
             break;
         case MENU_LSTICK_DIAG:
         case MENU_RSTICK_DIAG: {
@@ -791,11 +803,6 @@ static void adapt_profile(void) {
 /* Moves this console's menu to the settings the host says everyone is
  * sharing.
  *
- * The entries here are indices into fixed tables rather than free
- * numbers, so "adopt" means picking the closest one -- which is honest:
- * the menu then shows the nearest thing it can express to what is
- * actually being received, instead of a value nobody is watching.
- *
  * Applied to the variables directly and never by way of the menu's own
  * actions, which send the value back to the host: a value echoed back
  * is one two clients can bounce between them indefinitely. */
@@ -819,14 +826,88 @@ static void adopt_shared(const C2sShared *sh) {
     }
 
     if (sh->bitrate_kbps > 0) {
-        int best = 0, best_cost = -1;
-        for (int i = 0; i < BITRATE_COUNT; i++) {
-            if (BITRATES[i] == 0) continue; /* "whatever the profile says" */
-            int cost = abs(BITRATES[i] - (int)sh->bitrate_kbps);
-            if (best_cost < 0 || cost < best_cost) { best = i; best_cost = cost; }
-        }
-        g_bitrate_index = best;
+        int bitrate = (int)sh->bitrate_kbps;
+        if (bitrate < BITRATE_MIN_KBPS) bitrate = BITRATE_MIN_KBPS;
+        if (bitrate > BITRATE_MAX_KBPS) bitrate = BITRATE_MAX_KBPS;
+        g_bitrate_kbps = BITRATE_MIN_KBPS +
+            ((bitrate - BITRATE_MIN_KBPS + BITRATE_STEP_KBPS / 2) / BITRATE_STEP_KBPS) *
+            BITRATE_STEP_KBPS;
     }
+}
+
+typedef struct {
+    int min, max, step, value;
+} MenuSlider;
+
+/* Numeric settings that can be changed with left/right or directly on
+ * the touchscreen. Keeping the ranges here makes drawing, controller
+ * input and touch input describe exactly the same control. */
+static int menu_slider_get(int action, MenuSlider *slider) {
+    MenuSlider s = {0, 0, 1, 0};
+    int b = 0, c = 0, sat = 0, hue = 0;
+    int dead = 0;
+
+    switch (action) {
+        case MENU_BITRATE:
+            s = (MenuSlider){BITRATE_MIN_KBPS, BITRATE_MAX_KBPS,
+                             BITRATE_STEP_KBPS, g_bitrate_kbps};
+            break;
+        case MENU_BRIGHTNESS:
+        case MENU_CONTRAST:
+        case MENU_SATURATION:
+        case MENU_HUE:
+            video_get_adjust(&b, &c, &sat, &hue);
+            if (action == MENU_BRIGHTNESS) s = (MenuSlider){50, 150, 5, b};
+            else if (action == MENU_CONTRAST) s = (MenuSlider){50, 150, 5, c};
+            else if (action == MENU_SATURATION) s = (MenuSlider){0, 200, 5, sat};
+            else s = (MenuSlider){-180, 180, 5, hue};
+            break;
+        case MENU_LSTICK_DEAD:
+        case MENU_RSTICK_DEAD:
+            input_get_stick_limits(action == MENU_LSTICK_DEAD ? 0 : 1,
+                                   &dead, NULL, NULL);
+            s = (MenuSlider){0, 40, 1, dead};
+            break;
+        default:
+            return 0;
+    }
+    if (slider) *slider = s;
+    return 1;
+}
+
+static void menu_slider_set(int action, int value) {
+    MenuSlider s;
+    if (!menu_slider_get(action, &s)) return;
+    if (value < s.min) value = s.min;
+    if (value > s.max) value = s.max;
+    value = s.min + ((value - s.min + s.step / 2) / s.step) * s.step;
+    if (value == s.value) return;
+
+    if (action == MENU_BITRATE) {
+        g_bitrate_kbps = value;
+        net_send_profile(PROFILES[g_profile].w, PROFILES[g_profile].h,
+                         PROFILES[g_profile].fps, current_bitrate());
+    } else if (action == MENU_LSTICK_DEAD || action == MENU_RSTICK_DEAD) {
+        const int stick = action == MENU_LSTICK_DEAD ? 0 : 1;
+        int dead = 0, sat = 0, diag = 0;
+        input_get_stick_limits(stick, &dead, &sat, &diag);
+        input_set_stick_limits(stick, value, sat, diag);
+    } else {
+        int b = 0, c = 0, sat = 0, hue = 0;
+        video_get_adjust(&b, &c, &sat, &hue);
+        if (action == MENU_BRIGHTNESS) b = value;
+        else if (action == MENU_CONTRAST) c = value;
+        else if (action == MENU_SATURATION) sat = value;
+        else hue = value;
+        video_set_adjust(b, c, sat, hue);
+    }
+    settings_changed();
+}
+
+static void menu_slider_adjust(int action, int direction) {
+    MenuSlider s;
+    if (!menu_slider_get(action, &s)) return;
+    menu_slider_set(action, s.value + direction * s.step);
 }
 
 static void stop_decoders(void) {
@@ -984,19 +1065,12 @@ static void menu_activate(int index) {
                              PROFILES[g_profile].fps, current_bitrate());
             break;
         case MENU_BITRATE:
-            g_bitrate_index = (g_bitrate_index + 1) % BITRATE_COUNT;
-            net_send_profile(PROFILES[g_profile].w, PROFILES[g_profile].h,
-                             PROFILES[g_profile].fps, current_bitrate());
+            menu_slider_adjust(index, 1);
             break;
         case MENU_LSTICK_DEAD:
-        case MENU_RSTICK_DEAD: {
-            const int stick = (index == MENU_LSTICK_DEAD) ? 0 : 1;
-            int dead = 0, sat = 0, diag = 0;
-            input_get_stick_limits(stick, &dead, &sat, &diag);
-            dead = next_in(DEADZONES, DEADZONE_COUNT, dead);
-            input_set_stick_limits(stick, dead, sat, diag);
+        case MENU_RSTICK_DEAD:
+            menu_slider_adjust(index, 1);
             break;
-        }
         case MENU_LSTICK_RANGE:
         case MENU_RSTICK_RANGE: {
             const int stick = (index == MENU_LSTICK_RANGE) ? 0 : 1;
@@ -1072,19 +1146,7 @@ static void menu_activate(int index) {
         case MENU_CONTRAST:
         case MENU_SATURATION:
         case MENU_HUE: {
-            int b = 0, c = 0, sat = 0, hue = 0;
-            video_get_adjust(&b, &c, &sat, &hue);
-            /* Cycled in steps, wrapping at the end of the range: there
-             * is no slider to drag on a screen driven by a d-pad, and
-             * wrapping is one press away from the other end. */
-            if (index == MENU_BRIGHTNESS)      b = (b >= 150) ? 50 : b + 10;
-            else if (index == MENU_CONTRAST)   c = (c >= 150) ? 50 : c + 10;
-            else if (index == MENU_SATURATION) sat = (sat >= 200) ? 0 : sat + 20;
-            else                               hue = (hue >= 150) ? -180 : hue + 30;
-            video_set_adjust(b, c, sat, hue);
-            /* Out of the way, since the point is to look at the
-             * picture. */
-            g_screen = SCREEN_STREAM;
+            menu_slider_adjust(index, 1);
             break;
         }
         case MENU_PICTURE_RESET:
@@ -1301,6 +1363,20 @@ static SDL_Rect menu_row_rect(int row) {
     return rect;
 }
 
+static int menu_row_action(int index) {
+    if (g_category < 0 || index < 0 || index >= CATEGORIES[g_category].count) {
+        return -1;
+    }
+    return CATEGORIES[g_category].items[index];
+}
+
+/* The value and its text live above this thin track. It deliberately
+ * owns the right half of the row so long labels remain readable. */
+static SDL_Rect menu_slider_rect(SDL_Rect row) {
+    SDL_Rect track = {row.x + 270, row.y + row.h - 9, row.w - 290, 4};
+    return track;
+}
+
 /* The button beside the title. Inside a category it goes back to the
  * category list; at the root it closes the menu and returns to the
  * stream -- which by finger there was otherwise no way to do at all,
@@ -1413,12 +1489,28 @@ static void draw_menu(int over_stream) {
             ui_outline(g_renderer, rect.x, rect.y, rect.w, rect.h, 2,
                        offers_control ? COL_GOOD : COL_DIM);
         }
-        ui_text(g_renderer, UI_FONT_BODY, rect.x + 18, rect.y + 9,
+        MenuSlider slider;
+        const int action = menu_row_action(i);
+        const int has_slider = menu_slider_get(action, &slider);
+        ui_text(g_renderer, has_slider ? UI_FONT_SMALL : UI_FONT_BODY,
+                rect.x + 18, rect.y + (has_slider ? 4 : 9),
                 offers_control ? COL_GOOD : COL_TEXT, label);
         if (detail[0]) {
             const int w = ui_text_width(UI_FONT_SMALL, detail);
-            ui_text(g_renderer, UI_FONT_SMALL, rect.x + rect.w - 18 - w, rect.y + 13,
+            ui_text(g_renderer, UI_FONT_SMALL, rect.x + rect.w - 18 - w,
+                    rect.y + (has_slider ? 4 : 13),
                     selected ? COL_TEXT : COL_DIM, detail);
+        }
+        if (has_slider) {
+            const SDL_Rect track = menu_slider_rect(rect);
+            const int fill = (slider.value - slider.min) * track.w /
+                             (slider.max - slider.min);
+            ui_fill(g_renderer, track.x, track.y, track.w, track.h,
+                    (SDL_Color){85, 88, 100, 230});
+            ui_fill(g_renderer, track.x, track.y, fill, track.h,
+                    selected ? COL_ACCENT : COL_DIM);
+            ui_fill_circle(g_renderer, track.x + fill, track.y + track.h / 2, 7,
+                           selected ? COL_ACCENT : COL_TEXT);
         }
     }
 
@@ -1442,8 +1534,21 @@ static void draw_menu(int over_stream) {
  * The same rectangles the drawing uses, so what is aimed at is what is
  * hit -- and the console is a tablet, which makes reaching for the glass
  * the obvious thing to do long before reaching for a stick. */
+static int g_slider_drag_action = -1;
+
+static void menu_slider_touch(int action, int x, SDL_Rect row) {
+    MenuSlider s;
+    if (!menu_slider_get(action, &s)) return;
+    const SDL_Rect track = menu_slider_rect(row);
+    if (x < track.x) x = track.x;
+    if (x > track.x + track.w) x = track.x + track.w;
+    const int value = s.min + (x - track.x) * (s.max - s.min) / track.w;
+    menu_slider_set(action, value);
+}
+
 static int menu_touch(float nx, float ny) {
     const int x = (int)(nx * SCREEN_W), y = (int)(ny * SCREEN_H);
+    g_slider_drag_action = -1;
 
     {
         const SDL_Rect back = menu_back_rect();
@@ -1466,6 +1571,15 @@ static int menu_touch(float nx, float ny) {
             continue;
         }
         const int i = offset + row;
+        const int action = menu_row_action(i);
+        MenuSlider slider;
+        const SDL_Rect track = menu_slider_rect(rect);
+        if (menu_slider_get(action, &slider) && x >= track.x - 16) {
+            g_menu_index = i;
+            g_slider_drag_action = action;
+            menu_slider_touch(action, x, rect);
+            return 1;
+        }
         /* Tapping a row selects it and acts on it in one go: a
          * touchscreen has no separate "confirm". */
         g_menu_index = i;
@@ -1473,6 +1587,14 @@ static int menu_touch(float nx, float ny) {
         return 1;
     }
     return 0;
+}
+
+static void menu_touch_drag(float nx) {
+    if (g_slider_drag_action < 0) return;
+    const int offset = menu_scroll_offset();
+    const int row = g_menu_index - offset;
+    if (row < 0 || row >= menu_visible_rows()) return;
+    menu_slider_touch(g_slider_drag_action, (int)(nx * SCREEN_W), menu_row_rect(row));
 }
 
 static void draw_stream(void) {
@@ -1667,6 +1789,10 @@ int main(int argc, char **argv) {
                      * which is a poor thing to get mid-game. */
                     input_feed_touch(event.tfinger.y, 1);
                 }
+            } else if (event.type == SDL_FINGERMOTION && g_screen == SCREEN_MENU) {
+                menu_touch_drag(event.tfinger.x);
+            } else if (event.type == SDL_FINGERUP) {
+                g_slider_drag_action = -1;
             }
         }
 
@@ -1836,11 +1962,16 @@ int main(int argc, char **argv) {
         const int cancel_presses = input_take_press(PAD_A);
         const int up_presses = input_take_press(PAD_UP);
         const int down_presses = input_take_press(PAD_DOWN);
+        const int left_presses = input_take_press(PAD_LEFT);
+        const int right_presses = input_take_press(PAD_RIGHT);
 
         if (g_screen == SCREEN_MENU) {
             const int count = menu_length();
             for (int i = 0; i < down_presses; i++) g_menu_index = (g_menu_index + 1) % count;
             for (int i = 0; i < up_presses; i++) g_menu_index = (g_menu_index + count - 1) % count;
+            const int action = menu_row_action(g_menu_index);
+            for (int i = 0; i < left_presses; i++) menu_slider_adjust(action, -1);
+            for (int i = 0; i < right_presses; i++) menu_slider_adjust(action, 1);
             if (confirm_presses) {
                 menu_enter(g_menu_index);
             }
