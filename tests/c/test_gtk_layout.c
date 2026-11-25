@@ -695,6 +695,50 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         ? gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_c.wozt_clients_notebook), 0) : NULL;
     t_ok("Client tab contents scroll instead of reserving tallest tab height",
          browser_page && GTK_IS_SCROLLED_WINDOW(browser_page));
+    gboolean client_tabs_are_icons = TRUE;
+    gboolean pages_are_dense = TRUE;
+    for (int ci = 0; ci < 5; ++ci) {
+        GtkWidget *page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(g_c.wozt_clients_notebook), ci);
+        GtkWidget *tab = gtk_notebook_get_tab_label(GTK_NOTEBOOK(g_c.wozt_clients_notebook), page);
+        GtkWidget *vp = GTK_IS_SCROLLED_WINDOW(page) ? gtk_bin_get_child(GTK_BIN(page)) : NULL;
+        GtkWidget *inner = GTK_IS_VIEWPORT(vp) ? gtk_bin_get_child(GTK_BIN(vp)) : vp;
+        client_tabs_are_icons = client_tabs_are_icons && GTK_IS_BOX(tab) &&
+            gtk_widget_get_tooltip_text(tab) != NULL;
+        pages_are_dense = pages_are_dense && GTK_IS_GRID(inner) &&
+            gtk_grid_get_row_spacing(GTK_GRID(inner)) == 1 &&
+            gtk_grid_get_column_spacing(GTK_GRID(inner)) == 3;
+    }
+    t_ok("Five Client tabs show small SVG icons with accessible names", client_tabs_are_icons);
+    t_ok("All Client pages use compact one-pixel row spacing", pages_are_dense);
+    t_ok("Client ports use one-frame GTK style and compact requisitions",
+         g_c.port && g_c.switch_port && g_c.wiiu_pad_port &&
+         g_c.wiiu_console_port && g_c.old3ds_port &&
+         gtk_style_context_has_class(gtk_widget_get_style_context(g_c.port),
+                                     "wozt-client-port") &&
+         gtk_style_context_has_class(gtk_widget_get_style_context(g_c.old3ds_port),
+                                     "wozt-client-port"));
+    GtkWidget *wiiu_page = gtk_notebook_get_nth_page(
+        GTK_NOTEBOOK(g_c.wozt_clients_notebook), 2);
+    GtkWidget *wiiu_viewport = GTK_IS_SCROLLED_WINDOW(wiiu_page)
+        ? gtk_bin_get_child(GTK_BIN(wiiu_page)) : NULL;
+    GtkWidget *wiiu_root = GTK_IS_VIEWPORT(wiiu_viewport)
+        ? gtk_bin_get_child(GTK_BIN(wiiu_viewport)) : wiiu_viewport;
+    GtkWidget *wiiu_modes = GTK_IS_GRID(wiiu_root)
+        ? gtk_grid_get_child_at(GTK_GRID(wiiu_root), 0, 0) : NULL;
+    GList *wiiu_columns = GTK_IS_FLOW_BOX(wiiu_modes)
+        ? gtk_container_get_children(GTK_CONTAINER(wiiu_modes)) : NULL;
+    GtkWidget *direct = wiiu_columns && GTK_IS_BIN(wiiu_columns->data)
+        ? gtk_bin_get_child(GTK_BIN(wiiu_columns->data)) : NULL;
+    GtkWidget *wup = wiiu_columns && wiiu_columns->next &&
+                     GTK_IS_BIN(wiiu_columns->next->data)
+        ? gtk_bin_get_child(GTK_BIN(wiiu_columns->next->data)) : NULL;
+    t_ok("GamePad page automatically flows between two mode columns",
+         GTK_IS_FLOW_BOX(wiiu_modes) && g_list_length(wiiu_columns) == 2 &&
+         GTK_IS_GRID(direct) && GTK_IS_GRID(wup) &&
+         gtk_widget_get_parent(g_c.wiiu_pad_port) == direct &&
+         gtk_widget_get_parent(g_c.wup_touch_mode) == wup &&
+         gtk_flow_box_get_max_children_per_line(GTK_FLOW_BOX(wiiu_modes)) == 2);
+    g_list_free(wiiu_columns);
     gint preview_width = 0, preview_height = 0;
     if (g_c.input_stick_preview[0])
         gtk_widget_get_size_request(g_c.input_stick_preview[0],

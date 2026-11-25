@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "битрейт (Мбит/с)",
     "watching now": "смотрят сейчас",
     "backend": "бэкенд",
+    "Direct radio bridge": "Прямой радиомост",
     "Source controller": "Исходный контроллер",
     "Source controller and Input shaping": "Исходный контроллер и формирование входа",
     "local controller": "локальный контроллер",

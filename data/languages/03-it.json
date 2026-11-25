@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "bitrate (Mbps)",
     "watching now": "in visione ora",
     "backend": "backend",
+    "Direct radio bridge": "Bridge radio diretto",
     "Source controller": "Controller sorgente",
     "Source controller and Input shaping": "Controller sorgente ed elaborazione input",
     "local controller": "controller locale",

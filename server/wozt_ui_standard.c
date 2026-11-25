@@ -349,6 +349,13 @@ static void wozt_apply_palette(WoztUiStandard *ui, const char *id)
         "window.wozt-window notebook tab {padding:1px 4px;}"
         "window.wozt-window notebook header {margin-bottom:2px;}"
         "window.wozt-window scale slider {min-width:10px;min-height:10px;}"
+        /* Keep one visible spinbutton outline; no nested GTK text frame. */
+        "window.wozt-window spinbutton.wozt-client-port {padding:0;}"
+        "window.wozt-window spinbutton.wozt-client-port text,"
+        "window.wozt-window spinbutton.wozt-client-port entry {"
+        "border:0;box-shadow:none;outline:0;background:transparent;padding:0 2px;}"
+        "window.wozt-window spinbutton.wozt-client-port button {"
+        "min-width:13px;min-height:16px;padding:0 2px;}"
         "window.wozt-window notebook tab:checked {background:%s;color:%s;}"
         "menu,tooltip,dialog {border-radius:0;} menu,dialog {background:%s;color:%s;}"
         "tooltip {background:%s;color:%s;}"

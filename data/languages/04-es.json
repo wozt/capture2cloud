@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "bitrate (Mbps)",
     "watching now": "viendo ahora",
     "backend": "backend",
+    "Direct radio bridge": "Puente de radio directo",
     "Source controller": "Mando de origen",
     "Source controller and Input shaping": "Mando de origen y ajuste de entrada",
     "local controller": "mando local",

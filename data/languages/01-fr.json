@@ -178,6 +178,7 @@
     "bitrate (Mbps)": "débit (Mbps)",
     "watching now": "visionnage actuel",
     "backend": "backend",
+    "Direct radio bridge": "Pont radio direct",
     "Source controller": "Manette source",
     "Source controller and Input shaping": "Manette source et façonnage en entrée",
     "local controller": "manette locale",

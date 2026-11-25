@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "비트레이트 (Mbps)",
     "watching now": "현재 시청",
     "backend": "백엔드",
+    "Direct radio bridge": "직접 무선 브리지",
     "Source controller": "입력 컨트롤러",
     "Source controller and Input shaping": "입력 컨트롤러 및 입력 보정",
     "local controller": "로컬 컨트롤러",

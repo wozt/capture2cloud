@@ -3487,20 +3487,103 @@ static GtkWidget *add_client_status(GtkWidget *grid, int row, const char *label)
     return w;
 }
 
+/* WOZT_0854_CLIENT_SVG: locally bundled open SVGs; no online UI dependency.
+ * Keep icon size equal to the 11px WOZT font. Accessible full names and
+ * tooltips survive replacing both status labels and notebook tab captions. */
+static void wozt_asset_path(char *out, size_t out_size, const char *relative);
+
+static GtkWidget *wozt_client_icon(const char *name)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "assets/client-icons/%s.svg", name);
+    char absolute[512];
+    wozt_asset_path(absolute, sizeof(absolute), path);
+    GError *err = NULL;
+    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(
+        absolute, 11, 11, TRUE, &err);
+    GtkWidget *image = pixbuf
+        ? gtk_image_new_from_pixbuf(pixbuf)
+        : gtk_image_new_from_icon_name("applications-multimedia-symbolic",
+                                       GTK_ICON_SIZE_MENU);
+    if (pixbuf) g_object_unref(pixbuf);
+    if (err) g_clear_error(&err);
+    gtk_widget_set_size_request(image, 11, 11);
+    return image;
+}
+
+static GtkWidget *wozt_client_icon_label(const char *title)
+{
+    const char *first = NULL, *second = NULL;
+    if (strstr(title, "Browser")) first = "browser";
+    else if (strstr(title, "Switch / Android")) {
+        first = "switch";
+        second = "android";
+    } else if (strstr(title, "GamePad")) first = "gamepad";
+    else if (strstr(title, "Wii U Console")) first = "wiiu";
+    else if (strstr(title, "Old 3DS")) first = "3ds";
+    if (!first) return gtk_label_new(title);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_widget_set_halign(box, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), wozt_client_icon(first), FALSE, FALSE, 0);
+    if (second)
+        gtk_box_pack_start(GTK_BOX(box), wozt_client_icon(second), FALSE, FALSE, 0);
+    gtk_widget_set_tooltip_text(box, title);
+    AtkObject *accessible = gtk_widget_get_accessible(box);
+    if (accessible) atk_object_set_name(accessible, title);
+    gtk_widget_show_all(box);
+    return box;
+}
+
+static void wozt_compact_client_widgets(GtkWidget *widget)
+{
+    if (!widget) return;
+    if (GTK_IS_SPIN_BUTTON(widget)) {
+        gtk_widget_set_size_request(widget, 93, -1);
+        gtk_style_context_add_class(gtk_widget_get_style_context(widget),
+                                    "wozt-client-port");
+    } else if (GTK_IS_SCALE(widget)) {
+        gtk_widget_set_size_request(widget, 116, -1);
+        gtk_widget_set_hexpand(widget, FALSE);
+    } else if (GTK_IS_COMBO_BOX(widget)) {
+        gtk_widget_set_size_request(widget, 164, -1);
+    }
+    if (GTK_IS_CONTAINER(widget)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
+        for (GList *it = children; it; it = it->next)
+            wozt_compact_client_widgets(GTK_WIDGET(it->data));
+        g_list_free(children);
+    }
+}
+
+/* A client status keeps its original GtkLabel for live updates; replace only
+ * the old, fixed-width left label with one small icon or icon pair. */
+static GtkWidget *add_client_icon_status(GtkWidget *grid, int row, const char *name)
+{
+    GtkWidget *status = add_client_status(grid, row, name);
+    GtkWidget *old = gtk_grid_get_child_at(GTK_GRID(grid), 0, row);
+    if (old) gtk_widget_destroy(old);
+    GtkWidget *icon = wozt_client_icon_label(name);
+    gtk_grid_attach(GTK_GRID(grid), icon, 0, row, 1, 1);
+    gtk_widget_show_all(icon);
+    return status;
+}
+
 static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **grid_out) {
     /* GtkNotebook otherwise reserves the height of the largest client tab
      * even when Browser (five small rows) is selected. Bound that height;
      * the contents of longer client tabs remain accessible by scrolling. */
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 4);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 1);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 3);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 2);
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(scroll, -1, 198);
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(scroll), 0);
+    gtk_widget_set_size_request(scroll, 1, 198);
     gtk_container_add(GTK_CONTAINER(scroll), grid);
-    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), scroll, gtk_label_new(title));
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), scroll,
+                             wozt_client_icon_label(title));
     *grid_out = grid;
     return grid;
 }
@@ -3940,21 +4023,22 @@ static void build_settings_window(GtkShell *shell) {
     gtk_label_set_max_width_chars(GTK_LABEL(g_c.backend_status), 34);
 
     add_section_header(grid, row++, "Connected clients");
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 0);
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] =
-        add_client_status(grid, row++, "Browser");
+        add_client_icon_status(grid, row++, "Browser");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_NATIVE] =
-        add_client_status(grid, row++, "Switch / Android");
+        add_client_icon_status(grid, row++, "Switch / Android");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_PAD] =
-        add_client_status(grid, row++, "Wii U GamePad");
+        add_client_icon_status(grid, row++, "Wii U GamePad");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_WIIU_CONSOLE] =
-        add_client_status(grid, row++, "Wii U Console");
+        add_client_icon_status(grid, row++, "Wii U Console");
 
     g_c.overview_client_status[GTK_SHELL_CLIENT_OLD3DS] =
-        add_client_status(grid, row++, "Old 3DS / Old 2DS");
+        add_client_icon_status(grid, row++, "Old 3DS / Old 2DS");
 
     /* Other Clients tabs retain their previous width. Overview alone uses
      * shorter natural widths for its five selectable/wrapping status lines. */
@@ -4101,7 +4185,26 @@ static void build_settings_window(GtkShell *shell) {
 
     /* --- Client · Wii U GamePad ----------------------------------- */
     make_page("Client · Wii U GamePad", clients, &grid);
+    GtkWidget *wiiu_pad_page = grid;
+    GtkWidget *wiiu_pad_columns = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(wiiu_pad_columns), GTK_SELECTION_NONE);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(wiiu_pad_columns), 1);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(wiiu_pad_columns), 2);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(wiiu_pad_columns), 6);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(wiiu_pad_columns), 2);
+    gtk_widget_set_halign(wiiu_pad_columns, GTK_ALIGN_START);
+    GtkWidget *wiiu_pad_direct = gtk_grid_new();
+    GtkWidget *wiiu_pad_wup = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(wiiu_pad_direct), 1);
+    gtk_grid_set_row_spacing(GTK_GRID(wiiu_pad_wup), 1);
+    gtk_grid_set_column_spacing(GTK_GRID(wiiu_pad_direct), 3);
+    gtk_grid_set_column_spacing(GTK_GRID(wiiu_pad_wup), 3);
+    gtk_flow_box_insert(GTK_FLOW_BOX(wiiu_pad_columns), wiiu_pad_direct, -1);
+    gtk_flow_box_insert(GTK_FLOW_BOX(wiiu_pad_columns), wiiu_pad_wup, -1);
+    gtk_grid_attach(GTK_GRID(wiiu_pad_page), wiiu_pad_columns, 0, 0, 2, 1);
+    grid = wiiu_pad_direct;
     row = 0;
+    add_section_header(grid, row++, "Direct radio bridge");
 
     g_c.wiiu_pad_enabled = add_row(
         grid,
@@ -4141,58 +4244,32 @@ static void build_settings_window(GtkShell *shell) {
         add_client_status(grid, row++, "stream");
 
     {
-        GtkWidget *pad_buttons =
-            gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *pad_buttons = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(pad_buttons), 1);
+        gtk_grid_set_column_spacing(GTK_GRID(pad_buttons), 3);
 
-        gtk_box_pack_start(
-            GTK_BOX(pad_buttons),
-            make_button(
-                shell,
-                "start stream",
-                GTK_SHELL_ACTION_WIIU_START,
-                "Starts the Wii U GamePad bridge."),
-            FALSE, FALSE, 0);
-
-        gtk_box_pack_start(
-            GTK_BOX(pad_buttons),
-            make_button(
-                shell,
-                "stop stream",
-                GTK_SHELL_ACTION_WIIU_STOP,
-                "Stops the Wii U GamePad bridge."),
-            FALSE, FALSE, 0);
+        gtk_grid_attach(GTK_GRID(pad_buttons),
+            make_button(shell, "start stream", GTK_SHELL_ACTION_WIIU_START,
+                        "Starts the Wii U GamePad bridge."), 0, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(pad_buttons),
+            make_button(shell, "stop stream", GTK_SHELL_ACTION_WIIU_STOP,
+                        "Stops the Wii U GamePad bridge."), 1, 0, 1, 1);
 
         add_row(grid, row++, "stream control", pad_buttons);
 
-        GtkWidget *ap_buttons =
-            gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *ap_buttons = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(ap_buttons), 1);
+        gtk_grid_set_column_spacing(GTK_GRID(ap_buttons), 3);
 
-        gtk_box_pack_start(
-            GTK_BOX(ap_buttons),
-            make_button(
-                shell,
-                "start AP",
-                GTK_SHELL_ACTION_WIIU_AP_START,
-                "Starts the Wii U GamePad access point."),
-            FALSE, FALSE, 0);
-
-        gtk_box_pack_start(
-            GTK_BOX(ap_buttons),
-            make_button(
-                shell,
-                "stop AP",
-                GTK_SHELL_ACTION_WIIU_AP_STOP,
-                "Stops the Wii U GamePad access point."),
-            FALSE, FALSE, 0);
-
-        gtk_box_pack_start(
-            GTK_BOX(ap_buttons),
-            make_button(
-                shell,
-                "deauth pad",
-                GTK_SHELL_ACTION_WIIU_DEAUTH,
-                "Forces the GamePad to associate again."),
-            FALSE, FALSE, 0);
+        gtk_grid_attach(GTK_GRID(ap_buttons),
+            make_button(shell, "start AP", GTK_SHELL_ACTION_WIIU_AP_START,
+                        "Starts the Wii U GamePad access point."), 0, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(ap_buttons),
+            make_button(shell, "stop AP", GTK_SHELL_ACTION_WIIU_AP_STOP,
+                        "Stops the Wii U GamePad access point."), 1, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(ap_buttons),
+            make_button(shell, "deauth pad", GTK_SHELL_ACTION_WIIU_DEAUTH,
+                        "Forces the GamePad to associate again."), 0, 1, 1, 1);
 
         GtkWidget *pair = gtk_button_new_with_label("pair GamePad...");
         g_signal_connect(
@@ -4201,16 +4278,15 @@ static void build_settings_window(GtkShell *shell) {
             G_CALLBACK(on_pair_clicked),
             shell);
 
-        gtk_box_pack_start(
-            GTK_BOX(ap_buttons),
-            pair,
-            FALSE, FALSE, 0);
+        gtk_grid_attach(GTK_GRID(ap_buttons), pair, 1, 1, 1, 1);
 
         add_row(grid, row++, "radio", ap_buttons);
     }
 
 
     /* WUP Stream: independent LAN protocol on the same GamePad. */
+    grid = wiiu_pad_wup;
+    row = 0;
     add_section_header(grid, row++, "WUP Stream (Wi-Fi homebrew)");
     g_c.wup_stream_enabled = add_row(
         grid, row++, "WUP Stream via Wi-Fi", make_check(shell, "on"));
@@ -4235,6 +4311,7 @@ static void build_settings_window(GtkShell *shell) {
     gtk_label_set_line_wrap(GTK_LABEL(wup_note), TRUE);
     gtk_widget_set_halign(wup_note, GTK_ALIGN_START);
     add_row(grid, row++, "", wup_note);
+    gtk_label_set_max_width_chars(GTK_LABEL(wup_note), 40);
 
     /* --- Client · Wii U Console ----------------------------------- */
     make_page("Client · Wii U Console", clients, &grid);
@@ -4345,6 +4422,17 @@ static void build_settings_window(GtkShell *shell) {
         add_row(grid, row++, "", note);
     }
 
+
+    /* All five notebook pages inherit the same compact control density.
+     * Keep the WUP touch options usable without a very wide combo. */
+    for (int page_i = 0; page_i < 5; ++page_i)
+        wozt_compact_client_widgets(gtk_notebook_get_nth_page(
+            GTK_NOTEBOOK(clients), page_i));
+    if (g_c.wup_touch_mode) {
+        gtk_widget_set_size_request(g_c.wup_touch_mode, 195, -1);
+        gtk_widget_set_tooltip_text(g_c.wup_touch_mode,
+                                    "WUP touch: Off / Relative / Absolute");
+    }
 
     /* ===============================================================
      * CONTROLLER OUTPUT

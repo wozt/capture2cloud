@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "ビットレート (Mbps)",
     "watching now": "現在の視聴",
     "backend": "バックエンド",
+    "Direct radio bridge": "ダイレクト無線ブリッジ",
     "Source controller": "入力元コントローラー",
     "Source controller and Input shaping": "入力元コントローラーと入力補正",
     "local controller": "ローカルコントローラー",

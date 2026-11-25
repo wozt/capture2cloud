@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "Bitrate (Mbps)",
     "watching now": "derzeit verbunden",
     "backend": "Backend",
+    "Direct radio bridge": "Direkte Funkbrücke",
     "Source controller": "Quell-Controller",
     "Source controller and Input shaping": "Quell-Controller und Eingabeformung",
     "local controller": "lokaler Controller",

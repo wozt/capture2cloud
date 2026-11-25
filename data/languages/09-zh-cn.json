@@ -170,6 +170,7 @@
     "bitrate (Mbps)": "码率 (Mbps)",
     "watching now": "当前观看",
     "backend": "后端",
+    "Direct radio bridge": "直连无线桥接",
     "Source controller": "源控制器",
     "Source controller and Input shaping": "源控制器与输入整形",
     "local controller": "本地控制器",
