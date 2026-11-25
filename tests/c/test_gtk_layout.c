@@ -417,8 +417,32 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     gint combo_width = -1;
     if (g_c.pcble_controller)
         gtk_widget_get_size_request(g_c.pcble_controller, &combo_width, NULL);
-    t_eq_int("Controller profile combo matches other adapter selectors",
-             combo_width, 210);
+    t_eq_int("Controller profile selector aligns to Backend right edge",
+             combo_width, 170);
+    gint primary_combo_width = -1, secondary_combo_width = -1;
+    if (g_c.pcble_primary)
+        gtk_widget_get_size_request(g_c.pcble_primary, &primary_combo_width, NULL);
+    if (g_c.pcble_secondary)
+        gtk_widget_get_size_request(g_c.pcble_secondary, &secondary_combo_width, NULL);
+    t_ok("PCBLE selectors use one common compact width",
+         primary_combo_width == 170 && secondary_combo_width == 170);
+    GList *profile_renderers = g_c.pcble_controller
+        ? gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(g_c.pcble_controller)) : NULL;
+    gboolean profile_single_line = FALSE;
+    for (GList *it = profile_renderers; it; it = it->next) {
+        if (GTK_IS_CELL_RENDERER_TEXT(it->data)) {
+            gboolean single_paragraph = FALSE;
+            gint fixed_height = -1;
+            g_object_get(it->data, "single-paragraph-mode", &single_paragraph, NULL);
+            gtk_cell_renderer_get_fixed_size(GTK_CELL_RENDERER(it->data),
+                                             NULL, &fixed_height);
+            if (single_paragraph && fixed_height == 18)
+                profile_single_line = TRUE;
+        }
+    }
+    g_list_free(profile_renderers);
+    t_ok("Emulated controller combo uses one text line", profile_single_line);
+
     GtkWidget *sliders_grid = g_c.output_lt_threshold
         ? gtk_widget_get_parent(g_c.output_lt_threshold) : NULL;
     gint lt_row = -1, left_final_row = -1, rt_row = -1, right_final_row = -1;
@@ -452,6 +476,35 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                     &output_slider_width, NULL);
     t_ok("Output stick previews use 76px drawing surfaces",
          output_preview_w[0] == 76 && output_preview_w[1] == 76);
+    GtkWidget *logging_row = g_c.pcble_verbose
+        ? gtk_widget_get_parent(g_c.pcble_verbose) : NULL;
+    t_ok("Output logging toggle sits immediately after its label",
+         GTK_IS_BOX(logging_row) &&
+         gtk_widget_get_parent(logging_row) == g_c.pcble_settings);
+    GtkWidget *preview_frame = g_c.output_stick_preview[0]
+        ? gtk_widget_get_parent(g_c.output_stick_preview[0]) : NULL;
+    GtkWidget *preview_pair = preview_frame
+        ? gtk_widget_get_parent(preview_frame) : NULL;
+    GtkWidget *preview_inline = preview_pair
+        ? gtk_widget_get_parent(preview_pair) : NULL;
+    t_ok("Output visual preview is next to its label, not slider labels",
+         GTK_IS_BOX(preview_inline) &&
+         gtk_widget_get_parent(preview_inline) == sliders_grid);
+    GList *packed_output = g_c.wozt_inner_output
+        ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output)) : NULL;
+    gboolean output_children_natural = g_list_length(packed_output) == 2;
+    for (GList *it = packed_output; it; it = it->next) {
+        gboolean expand = TRUE, fill = TRUE;
+        guint padding = 0;
+        GtkPackType pack_type = GTK_PACK_START;
+        gtk_box_query_child_packing(GTK_BOX(g_c.wozt_inner_output),
+                                    GTK_WIDGET(it->data), &expand, &fill,
+                                    &padding, &pack_type);
+        if (expand || fill) output_children_natural = FALSE;
+    }
+    g_list_free(packed_output);
+    t_ok("Controller output columns no longer spread into unused width",
+         output_children_natural);
     t_ok("Output sliders request a compact 116px width",
          output_slider_width == 116);
     GtkWidget *color_grid = g_c.pcble_body_color

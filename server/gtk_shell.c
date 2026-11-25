@@ -3137,8 +3137,10 @@ static void wozt_unellipsize_pcble_combo(GtkWidget *combo, int width)
     for (GList *it = cells; it; it = it->next) {
         if (GTK_IS_CELL_RENDERER_TEXT(it->data)) {
             gtk_cell_renderer_set_fixed_size(GTK_CELL_RENDERER(it->data),
-                                             MAX(48, width - 30), -1);
-            g_object_set(it->data, "ellipsize", PANGO_ELLIPSIZE_NONE, NULL);
+                                             MAX(48, width - 30), 18);
+            g_object_set(it->data, "ellipsize", PANGO_ELLIPSIZE_NONE,
+                         "single-paragraph-mode", TRUE,
+                         "wrap-width", -1, NULL);
         }
     }
     g_list_free(cells);
@@ -3187,21 +3189,73 @@ static void wozt_stack_output_sliders(GtkWidget *grid)
     }
 }
 
+/* WOZT_0839_INLINE_OUTPUT_LAYOUT */
+/* A short row with two widgets must not inherit the left grid's widest label
+ * column (which is sized by "right Joy-Con adapter"). Keep both widgets,
+ * their GTK signals, accessibility labels and live translations intact. */
+static gboolean wozt_inline_output_row(GtkWidget *grid, const char *name)
+{
+    if (!GTK_IS_GRID(grid)) return FALSE;
+    GtkWidget *label = NULL, *control = NULL;
+    int row = -1;
+    if (!wozt_find_grid_row(grid, name, &label, &control, &row))
+        return FALSE;
+    GtkWidget *inline_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    gtk_widget_set_halign(inline_box, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(inline_box, FALSE);
+    g_object_ref(label);
+    g_object_ref(control);
+    gtk_container_remove(GTK_CONTAINER(grid), label);
+    gtk_container_remove(GTK_CONTAINER(grid), control);
+    gtk_box_pack_start(GTK_BOX(inline_box), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(inline_box), control, FALSE, FALSE, 0);
+    gtk_grid_attach(GTK_GRID(grid), inline_box, 0, row, 2, 1);
+    g_object_unref(label);
+    g_object_unref(control);
+    gtk_widget_show_all(inline_box);
+    return TRUE;
+}
+
+/* Use natural widths instead of TRUE/TRUE GtkBox packing, which left a large
+ * empty strip between backend and calibration. The section FRAME still grows
+ * with the responsive dashboard, and narrow views still stack vertically. */
+static void wozt_pack_output_columns_tightly(void)
+{
+    GtkWidget *columns = g_c.wozt_inner_output;
+    if (!GTK_IS_BOX(columns)) return;
+    GList *children = gtk_container_get_children(GTK_CONTAINER(columns));
+    if (g_list_length(children) == 2) {
+        for (GList *it = children; it; it = it->next) {
+            GtkWidget *child = GTK_WIDGET(it->data);
+            gtk_widget_set_hexpand(child, FALSE);
+            gtk_widget_set_halign(child, GTK_ALIGN_START);
+            gtk_box_set_child_packing(GTK_BOX(columns), child,
+                                      FALSE, FALSE, 0, GTK_PACK_START);
+        }
+        gtk_box_set_spacing(GTK_BOX(columns), 2);
+    }
+    g_list_free(children);
+}
+
 static void wozt_compact_controller_output(void)
 {
     if (GTK_IS_GRID(g_c.pcble_settings)) {
         gtk_grid_set_row_spacing(GTK_GRID(g_c.pcble_settings), 2);
         gtk_grid_set_column_spacing(GTK_GRID(g_c.pcble_settings), 4);
         wozt_unellipsize_tree(g_c.pcble_settings);
-        wozt_unellipsize_pcble_combo(g_c.pcble_controller, 210);
-        wozt_unellipsize_pcble_combo(g_c.pcble_primary, 210);
-        wozt_unellipsize_pcble_combo(g_c.pcble_secondary, 210);
-        wozt_unellipsize_pcble_combo(g_c.pcble_mouse_side, 210);
+        /* PCBLE controls share Backend's right edge; full values remain in
+         * their model and tooltips, with no ellipses or multiline rows. */
+        wozt_unellipsize_pcble_combo(g_c.pcble_controller, 170);
+        wozt_unellipsize_pcble_combo(g_c.pcble_primary, 170);
+        wozt_unellipsize_pcble_combo(g_c.pcble_secondary, 170);
+        wozt_unellipsize_pcble_combo(g_c.pcble_mouse_side, 170);
         wozt_compact_palette_rows(g_c.pcble_settings);
         wozt_compact_session_buttons(g_c.pcble_settings, "Bluetooth session");
+        /* Place the checkbox immediately after its label. */
+        if (!wozt_inline_output_row(g_c.pcble_settings, "logging"))
+            g_warning("wozt-ui: cannot inline output logging row");
     }
-    if (g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output))
-        gtk_box_set_spacing(GTK_BOX(g_c.wozt_inner_output), 4);
+    wozt_pack_output_columns_tightly();
 
     if (g_c.output_stick_preview[0])
         gtk_widget_set_size_request(g_c.output_stick_preview[0], 76, 76);
@@ -3220,6 +3274,9 @@ static void wozt_compact_controller_output(void)
         wozt_stack_output_sliders(shaping);
         wozt_unellipsize_tree(shaping);
         wozt_limit_scale_tree(shaping, 116);
+        /* The preview must not inherit the long slider-label column width. */
+        if (!wozt_inline_output_row(shaping, "visual preview"))
+            g_warning("wozt-ui: cannot inline output visual preview");
     }
 }
 static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output)
