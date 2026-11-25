@@ -3336,6 +3336,27 @@ static void wozt_compact_controller_output(void)
  * One shared grid: source/device, two previews and all calibration rows,
  * in that order. No inner two-column wrapper or separating panel. Existing
  * controls, callbacks and persisted settings are preserved. */
+/* WOZT_0852_LOCAL_INPUT_MINUS_18PX
+ * The two diagonal labels determine the minimum width of the input grid.
+ * The screenshot measures ~20px between the final `100` glyph and its frame;
+ * retain 2px. Compact the labels' glyph spacing by ~18px rather than
+ * shorten the 116px scales, truncate text, or falsify responsive budgets.
+ * -660 Pango units is ~0.64px between adjacent letters. */
+static void wozt_tighten_local_diagonal_label(GtkWidget *grid, const char *name)
+{
+    GtkWidget *label = NULL, *control = NULL;
+    int row = -1;
+    if (!wozt_find_grid_row(grid, name, &label, &control, &row) ||
+        !GTK_IS_LABEL(label)) {
+        g_warning("wozt-ui: local diagonal calibration label not found: %s", name);
+        return;
+    }
+    PangoAttrList *attrs = pango_attr_list_new();
+    pango_attr_list_insert(attrs, pango_attr_letter_spacing_new(-660));
+    gtk_label_set_attributes(GTK_LABEL(label), attrs);
+    pango_attr_list_unref(attrs);
+}
+
 static void wozt_compact_controller_input(void)
 {
     GtkWidget *grid = g_c.wozt_inner_input;
@@ -3367,6 +3388,8 @@ static void wozt_compact_controller_input(void)
         g_c.rt_threshold, g_c.deadzone[1], g_c.range[1], g_c.diagonal[1]
     };
     wozt_compact_calibration_scales(input_scales);
+    wozt_tighten_local_diagonal_label(grid, "left diagonal saturation (%)");
+    wozt_tighten_local_diagonal_label(grid, "right diagonal saturation (%)");
 }
 
 /* WOZT_0831_COMPACT_BUTTONS

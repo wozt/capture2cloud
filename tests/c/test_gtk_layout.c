@@ -713,6 +713,37 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (g_c.deadzone[0])
         gtk_widget_get_size_request(g_c.deadzone[0], &input_slider_width, NULL);
     t_eq_int("Input sliders match Output's 116px width", input_slider_width, 116);
+    /* WOZT_0852: real GtkGrid labels, not a fake frame width-request.
+     * The 116px scales must remain unchanged; the two width-dominating
+     * labels have slightly tighter Pango glyph spacing. */
+    gboolean input_label_spacing_ok = GTK_IS_GRID(g_c.wozt_inner_input);
+    for (int side = 0; side < 2; ++side) {
+        GtkWidget *scale = g_c.diagonal[side];
+        gint diagonal_row = -1;
+        if (!input_label_spacing_ok || !GTK_IS_SCALE(scale)) {
+            input_label_spacing_ok = FALSE;
+            continue;
+        }
+        gtk_container_child_get(GTK_CONTAINER(g_c.wozt_inner_input), scale,
+                                "top-attach", &diagonal_row, NULL);
+        GtkWidget *label = diagonal_row >= 0
+            ? gtk_grid_get_child_at(GTK_GRID(g_c.wozt_inner_input),
+                                    0, diagonal_row) : NULL;
+        PangoAttrList *attrs = GTK_IS_LABEL(label)
+            ? gtk_label_get_attributes(GTK_LABEL(label)) : NULL;
+        if (!attrs) {
+            input_label_spacing_ok = FALSE;
+            continue;
+        }
+        PangoAttrIterator *iterator = pango_attr_list_get_iterator(attrs);
+        PangoAttribute *attr = pango_attr_iterator_get(
+            iterator, PANGO_ATTR_LETTER_SPACING);
+        input_label_spacing_ok = input_label_spacing_ok && attr &&
+            ((PangoAttrInt *)attr)->value == -660;
+        pango_attr_iterator_destroy(iterator);
+    }
+    t_ok("Input grid regains 18px without shortening sliders or labels",
+         input_label_spacing_ok && input_slider_width == 116);
     /* WOZT_0841_GTK_REGRESSIONS */
     GtkWidget *device_inline = g_c.gamepad_device
         ? gtk_widget_get_parent(g_c.gamepad_device) : NULL;
