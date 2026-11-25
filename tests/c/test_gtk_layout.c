@@ -636,19 +636,32 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(1144, 0), 2);
     t_eq_int("1144px: compact input fits beside two-column Output",
              wozt_dashboard_group_columns(1144, 1), 2);
-    t_eq_int("Compact local input has a 350px packing budget",
+    t_eq_int("Unrealized Local input retains its 350px fallback",
              wozt_section_target_width[3], 350);
-    t_eq_int("960px: controller sections wrap before minimum widths collide",
-             wozt_dashboard_group_columns(960, 1), 1);
-    t_eq_int("1050px: controller sections share the row again",
-             wozt_dashboard_group_columns(1050, 1), 2);
+    /* Real GTK preferred widths, not the obsolete 620/350 estimates,
+     * determine when the controller pair must wrap. */
+    gint output_min = 0, output_nat = 0;
+    gint input_min = 0, input_nat = 0;
+    gtk_widget_get_preferred_width(g_c.wozt_sections[2],
+                                   &output_min, &output_nat);
+    gtk_widget_get_preferred_width(g_c.wozt_sections[3],
+                                   &input_min, &input_nat);
+    t_ok("Controller widths are measured from GTK content",
+         output_nat > 0 && input_nat > 0 &&
+         wozt_section_layout_width(2) == MAX(output_min, output_nat) &&
+         wozt_section_layout_width(3) == MAX(input_min, input_nat));
+    t_ok("Other dashboard rows preserve their independent width budgets",
+         wozt_section_layout_width(0) == wozt_section_target_width[0] &&
+         wozt_section_layout_width(1) == wozt_section_target_width[1] &&
+         wozt_section_layout_width(4) == wozt_section_target_width[4] &&
+         wozt_section_layout_width(7) == wozt_section_target_width[7]);
     /* Controller budgets now match their compact two-column contents.
      * Derive the joining boundary from their targets and the 36px gutter
      * allowance, rather than relying on a stale fixed-width test. */
     t_eq_int("1650px: both compact controller sections share a row",
              wozt_dashboard_group_columns(1650, 1), 2);
     const int controller_join_width =
-        wozt_section_target_width[2] + wozt_section_target_width[3] + 36;
+        wozt_section_layout_width(2) + wozt_section_layout_width(3) + 36;
     t_eq_int("Controller sections separate just below their width budget",
              wozt_dashboard_group_columns(controller_join_width - 1, 1), 1);
     t_eq_int("Controller sections join at their width budget",
@@ -832,8 +845,7 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
          gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
-    /* Both controller frames stay compact on a shared row: surplus is
-     * outside their borders and therefore shrinks on window resize. */
+    /* Two naturally sized controller frames, with no spacer between them. */
     t_ok("Both controller frames keep natural width on their shared row",
          g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
          gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_START &&
@@ -874,11 +886,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(720);
-    t_ok("Controller output fills its row again when alone",
-         g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]));
-    t_ok("Local input fills its own row when responsive controller panels stack",
-         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_FILL);
+    t_ok("Controller output stays compact after responsive wrapping",
+         g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_START);
+    t_ok("Local input stays compact after responsive wrapping",
+         g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START);
     t_ok("A narrow window wraps the controller panels into separate rows",
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[3]));
@@ -903,18 +916,19 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     wozt_dashboard_reflow(controller_join_width);
     GtkWidget *input_line = gtk_widget_get_parent(g_c.wozt_sections[3]);
     gboolean input_expand = TRUE, input_fill = TRUE;
-    GtkPackType input_pack_type = GTK_PACK_START;
+    GtkPackType input_pack_type = GTK_PACK_END;
     if (GTK_IS_BOX(input_line)) {
         guint input_padding = 0;
         gtk_box_query_child_packing(GTK_BOX(input_line), g_c.wozt_sections[3],
                                     &input_expand, &input_fill,
                                     &input_padding, &input_pack_type);
     }
-    t_ok("Local input stays compact and docks to the right edge",
+    t_ok("Local input is packed immediately after Output",
          GTK_IS_BOX(input_line) && !input_expand && !input_fill &&
-         input_pack_type == GTK_PACK_END &&
+         input_pack_type == GTK_PACK_START &&
          !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START);
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START &&
+         gtk_box_get_spacing(GTK_BOX(input_line)) == 6);
     gboolean output_expand = TRUE, output_fill = TRUE;
     GtkPackType output_pack_type = GTK_PACK_END;
     if (GTK_IS_BOX(input_line)) {
@@ -923,7 +937,7 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                     &output_expand, &output_fill,
                                     &output_padding, &output_pack_type);
     }
-    t_ok("Output docks left without absorbing spare row width",
+    t_ok("Output packs directly before Local input without expanding",
          GTK_IS_BOX(input_line) && !output_expand && !output_fill &&
          output_pack_type == GTK_PACK_START &&
          !gtk_widget_get_hexpand(g_c.wozt_sections[2]));

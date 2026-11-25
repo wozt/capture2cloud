@@ -207,6 +207,23 @@ static const int wozt_section_target_width[8] = {
     320, 455, 410, 340 /* Capture, Monitor, Reset, Maintenance */
 };
 
+/* WOZT_0849_CONTENT_AWARE_REFLOW
+ * Fixed targets are fallbacks, not minimum or natural widget widths. A
+ * controller's actual width changes with its backend, live language and
+ * theme; its old 620/350 target forced the pair to wrap prematurely.
+ * Overview/Clients and the four tools retain their independent, already
+ * tested wrap thresholds; don't inadvertently widen their notebook tabs. */
+static int wozt_section_layout_width(int index)
+{
+    const int fallback = wozt_section_target_width[index];
+    if (index != 2 && index != 3) return fallback;
+    GtkWidget *frame = g_c.wozt_sections[index];
+    if (!GTK_IS_WIDGET(frame)) return fallback;
+    gint minimum = 0, natural = 0;
+    gtk_widget_get_preferred_width(frame, &minimum, &natural);
+    return natural > 0 ? MAX(minimum, natural) : fallback;
+}
+
 static int wozt_dashboard_group_columns(int width, int group)
 {
     if (group < 0 || group >= 3) return 1;
@@ -215,7 +232,7 @@ static int wozt_dashboard_group_columns(int width, int group)
     const int count = wozt_group_size[group];
     int total = 0, packed = 0;
     for (int i = 0; i < count; ++i) {
-        const int need = wozt_section_target_width[first + i] + (i ? 6 : 0);
+        const int need = wozt_section_layout_width(first + i) + (i ? 6 : 0);
         if (packed && total + need > space) break;
         total += need;
         ++packed;
@@ -271,22 +288,17 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
-                /* WOZT_0848_RESPONSIVE_COMPACT_PAIR:
-                 * Both controller frames stay at natural width on a shared
-                 * row, so neither grows an empty, hard-to-shrink interior.
-                 * Output docks left, Local input docks right, and surplus
-                 * background space BETWEEN them shrinks as the window does.
-                 * Once the pair wraps, each frame fills its own row. */
-                const gboolean controller_pair = group == 1 && n == 2;
-                const gboolean natural = section_index == 0 || controller_pair;
+                /* Controllers always keep their compact intrinsic widths.
+                 * Adjacent frames pack at the START with only the regular
+                 * 6px gap: no expanding panel, central spacer or PACK_END.
+                 * The same rule applies after wrapping to separate rows,
+                 * avoiding the sudden full-width empty frames. */
+                const gboolean natural = section_index == 0 || group == 1;
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
-                if (controller_pair && section_index == 3)
-                    gtk_box_pack_end(GTK_BOX(line), frame, FALSE, FALSE, 0);
-                else
-                    gtk_box_pack_start(GTK_BOX(line), frame,
-                                       !natural, !natural, 0);
+                gtk_box_pack_start(GTK_BOX(line), frame,
+                                   !natural, !natural, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);
