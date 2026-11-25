@@ -3344,7 +3344,8 @@ static void wozt_compact_controller_input(void)
         return;
     }
     gtk_grid_set_row_spacing(GTK_GRID(grid), 0);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 2);
+    /* Recover 2px without shortening or clipping slider labels. */
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 0);
     wozt_unellipsize_tree(grid);
     wozt_unellipsize_pcble_combo(g_c.gamepad_device, 210);
     if (!wozt_inline_output_row(grid, "device"))
@@ -3504,7 +3505,8 @@ static GtkWidget *make_stack_page(
 
     GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
     gtk_widget_set_margin_start(outer, 5);
-    gtk_widget_set_margin_end(outer, 5);
+    /* Save 3px only in Local input; other dashboard sections keep 5px. */
+    gtk_widget_set_margin_end(outer, index == 3 ? 2 : 5);
     gtk_widget_set_margin_top(outer, 2);
     gtk_widget_set_margin_bottom(outer, 3);
     gtk_container_add(GTK_CONTAINER(frame), outer);
@@ -4952,7 +4954,7 @@ static void build_settings_window(GtkShell *shell) {
     g_c.wozt_inner_input = grid;
     row = 0;
 
-    add_section_header(grid, row++, "Source controller and Input shaping");
+    add_section_header(grid, row++, "Source controller");
 
     /* No orphan label column: checkbox starts at the LEFT edge of
      * the one-column source/calibration grid. Keep its original callback. */
@@ -5009,7 +5011,7 @@ static void build_settings_window(GtkShell *shell) {
 
     /* Calibration follows immediately after the previews, without
      * any nested column or extra section gap. */
-    add_section_header(grid, row, "Input calibration");
+    add_section_header(grid, row, "Input calibration and Input shaping");
     GtkWidget *input_calibration_header =
         gtk_grid_get_child_at(GTK_GRID(grid), 0, row);
     if (input_calibration_header)

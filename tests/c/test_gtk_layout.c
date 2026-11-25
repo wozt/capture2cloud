@@ -836,6 +836,33 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Local input toggle starts at x=0 without an orphan label",
          g_c.gamepad_enabled && toggle_column == 0 && toggle_span == 2 &&
          gtk_widget_get_halign(g_c.gamepad_enabled) == GTK_ALIGN_START);
+    /* WOZT_0851: Both headings stay readable while the input panel
+     * gives back 5px. Keep the responsive row logic unchanged. */
+    GtkWidget *input_source_heading = GTK_IS_GRID(input_right_grid)
+        ? gtk_grid_get_child_at(GTK_GRID(input_right_grid), 0, 0) : NULL;
+    gint invert_row = -1;
+    if (GTK_IS_GRID(input_right_grid) && g_c.invert_ry)
+        gtk_container_child_get(GTK_CONTAINER(input_right_grid),
+                                g_c.invert_ry, "top-attach", &invert_row, NULL);
+    GtkWidget *input_calibration_heading =
+        GTK_IS_GRID(input_right_grid) && invert_row > 0
+        ? gtk_grid_get_child_at(GTK_GRID(input_right_grid), 0, invert_row - 1)
+        : NULL;
+    t_ok("Local input uses the new source and calibration headings",
+         GTK_IS_LABEL(input_source_heading) &&
+         g_strcmp0(gtk_label_get_text(GTK_LABEL(input_source_heading)),
+                   "Source controller") == 0 &&
+         GTK_IS_LABEL(input_calibration_heading) &&
+         g_strcmp0(gtk_label_get_text(GTK_LABEL(input_calibration_heading)),
+                   "Input calibration and Input shaping") == 0);
+    GtkWidget *input_outer = g_c.wozt_sections[3]
+        ? gtk_bin_get_child(GTK_BIN(g_c.wozt_sections[3])) : NULL;
+    t_ok("Local input trims 5px without changing its slider widths",
+         GTK_IS_BOX(input_outer) &&
+         gtk_widget_get_margin_end(input_outer) == 2 &&
+         GTK_IS_GRID(input_right_grid) &&
+         gtk_grid_get_column_spacing(GTK_GRID(input_right_grid)) == 0 &&
+         input_slider_width == 116);
     double px = -1.0, py = -1.0, radius = -1.0;
     wozt_stick_preview_geometry(70, 70, &px, &py, &radius);
     t_ok("70px preview has a centered visible 68px circle",
