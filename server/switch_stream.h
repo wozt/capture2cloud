@@ -19,9 +19,10 @@
 
 typedef struct SwitchStream SwitchStream;
 
-/* Starts the native listeners. A zero value selects that client's
- * protocol default. Returns NULL only when the primary native port
- * cannot be bound; a dedicated client port may fail independently. */
+/* Starts the transport. Zero for native_port or old3ds_port disables
+ * that listener; Wii U ports retain their historical zero=default.
+ * A disabled primary listener may coexist with an enabled Old 3DS
+ * listener. A bind failure on an enabled primary port is fatal. */
 SwitchStream *switch_stream_start(WebStream *ws,
                                   uint16_t native_port,
                                   uint16_t drc_port,

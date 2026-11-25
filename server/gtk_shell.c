@@ -83,7 +83,7 @@ typedef struct {
     GtkWidget *wup_stream_enabled, *wup_touch_mode, *wup_metrics_label;
     GtkWidget *wiiu_console_enabled, *wiiu_console_port;
     GtkWidget *wiiu_console_resolution, *wiiu_console_bitrate;
-    GtkWidget *old3ds_port;
+    GtkWidget *old3ds_enabled, *old3ds_port; /* WOZT_0860_OLD3DS_ENABLED */
     /* One line per client family, so "nothing is watching" can be told
      * apart from "something is watching and the picture is wrong"
      * without reading a terminal. Indexed by GtkShellClient. */
@@ -206,7 +206,7 @@ static const int wozt_group_first[3] = {0, 2, 4};
 static const int wozt_group_size[3] = {2, 2, 4};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
-    260, 435,   /* compact Overview fallback; Clients scroll independently */
+    260, 300,   /* compact Overview; Clients notebook scrolls horizontally */
     620, 350,   /* two output columns; compact one-column local input */
     /* Budgets MUST exceed the GTK minimum of each packed row. Otherwise
      * GTK blocks a resize before configure-event can reflow the row. */
@@ -221,11 +221,16 @@ static const int wozt_section_target_width[8] = {
 static int wozt_section_layout_width(int index)
 {
     const int fallback = wozt_section_target_width[index];
-    if (index != 0 && index != 2 && index != 3) return fallback;
+    if (index != 0 && index != 1 && index != 2 && index != 3) return fallback;
     GtkWidget *frame = g_c.wozt_sections[index];
     if (!GTK_IS_WIDGET(frame)) return fallback;
     gint minimum = 0, natural = 0;
     gtk_widget_get_preferred_width(frame, &minimum, &natural);
+    /* WOZT_0860_CLIENTS_CONTENT_MIN: all seven notebook pages scroll.
+     * Their NATURAL width must not trigger an early wrap or keep an
+     * unused strip beside the selected, narrower page. The GTK
+     * minimum still protects the tabs/controls from clipping. */
+    if (index == 1) return minimum > 0 ? MAX(240, minimum) : fallback;
     return natural > 0 ? MAX(minimum, natural) : fallback;
 }
 
@@ -2632,6 +2637,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     SDL_LockMutex(shell->lock);
     if (w == g_c.stream_enabled)       shell->settings.stream_enabled = on;
     else if (w == g_c.switch_enabled)  shell->settings.switch_enabled = on;
+    else if (w == g_c.old3ds_enabled) shell->settings.old3ds_enabled = on;
     else if (w == g_c.wiiu_pad_enabled) shell->settings.wiiu_pad_enabled = on;
     else if (w == g_c.wup_stream_enabled) shell->settings.wup_stream_enabled = on;
     else if (w == g_c.wiiu_console_enabled) shell->settings.wiiu_console_enabled = on;
@@ -3669,6 +3675,7 @@ static GtkWidget *make_page(const char *title, GtkWidget *notebook, GtkWidget **
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(scroll), 0);
+    gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(scroll), FALSE);
     gtk_widget_set_size_request(scroll, 1, 190);
     gtk_container_add(GTK_CONTAINER(scroll), grid);
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), scroll,
@@ -3822,6 +3829,7 @@ static void load_controls(GtkShell *shell) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.stream_enabled), s.stream_enabled);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.old3ds_enabled), s.old3ds_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), s.wiiu_pad_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wup_stream_enabled), s.wup_stream_enabled);
     gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.wup_touch_mode),
@@ -3965,7 +3973,7 @@ static void build_settings_window(GtkShell *shell) {
     GdkGeometry geometry = {0};
     /* Actual minimum, not the natural width of the nested controller grids.
      * Main scroll view handles any temporary overflow while resizing. */
-    geometry.min_width = 600;
+    geometry.min_width = 460;
     geometry.min_height = 420;
     gtk_window_set_geometry_hints(GTK_WINDOW(win), win, &geometry, GDK_HINT_MIN_SIZE);
     /* GTK3 exposes a setter, not a public geometry-hints getter. Keep the
@@ -4518,6 +4526,12 @@ static void build_settings_window(GtkShell *shell) {
     /* --- Client · Old 3DS / Old 2DS ------------------------------- */
     make_page("Client · Old 3DS / Old 2DS", clients, &grid);
     row = 0;
+
+    g_c.old3ds_enabled = add_row(
+        grid, row++, "serve to Old 3DS / 2DS", make_check(shell, "on"));
+    gtk_widget_set_tooltip_text(g_c.old3ds_enabled,
+        "Open or close the dedicated Old 3DS/2DS TCP listener. "
+        "Does not disable Switch, Android, or the Wii U clients.");
 
     g_c.old3ds_port = add_row(
         grid,

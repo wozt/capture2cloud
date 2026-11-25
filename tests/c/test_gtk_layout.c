@@ -609,9 +609,9 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     gtk_widget_get_size_request(sh->settings_window, &requested_width, NULL);
     const gint configured_minimum = GPOINTER_TO_INT(g_object_get_data(
         G_OBJECT(sh->settings_window), "wozt-minimum-width"));
-    t_ok("The window config permits shrinking to 600px",
+    t_ok("The window permits shrinking to 460px",
          gtk_window_get_resizable(GTK_WINDOW(sh->settings_window)) &&
-         configured_minimum == 600 &&
+         configured_minimum == 460 &&
          (requested_width < 0 || requested_width <= configured_minimum));
     GtkWidget *dashboard_scroller = gtk_widget_get_parent(g_c.wozt_dashboard);
     if (GTK_IS_VIEWPORT(dashboard_scroller))
@@ -656,8 +656,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Overview reflow uses its measured natural GTK width",
          overview_nat > 0 &&
          wozt_section_layout_width(0) == MAX(overview_min, overview_nat));
+    gint clients_minimum = 0, clients_natural = 0;
+    gtk_widget_get_preferred_width(g_c.wozt_sections[1],
+                                   &clients_minimum, &clients_natural);
+    t_ok("Clients wraps according to its actual minimum, not 435px",
+         wozt_section_layout_width(1) == MAX(240, clients_minimum) &&
+         wozt_section_target_width[1] == 300);
     t_ok("Other dashboard rows preserve their independent width budgets",
-         wozt_section_layout_width(1) == wozt_section_target_width[1] &&
          wozt_section_layout_width(4) == wozt_section_target_width[4] &&
          wozt_section_layout_width(7) == wozt_section_target_width[7]);
     /* Controller budgets now match their compact two-column contents.
@@ -738,6 +743,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_vexpand(client_grid) &&
          gtk_widget_get_vexpand(g_c.wozt_clients_notebook) &&
          grid_expand && grid_fill);
+    t_ok("Old 3DS has a real toggle separate from Switch",
+         g_c.old3ds_enabled && GTK_IS_CHECK_BUTTON(g_c.old3ds_enabled) &&
+         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(g_c.old3ds_enabled)) &&
+         g_c.old3ds_enabled != g_c.switch_enabled);
     t_ok("Client ports use one-frame GTK style and compact requisitions",
          g_c.port && g_c.switch_port && g_c.wiiu_pad_port &&
          g_c.wiiu_console_port && g_c.old3ds_port &&
@@ -1319,6 +1328,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     if (g_c.old3ds_port)
         t_eq_int("Old3DS port is loaded into its own tab",
                  gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(g_c.old3ds_port)), 5085);
+    if (g_c.old3ds_enabled) {
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.old3ds_enabled), FALSE);
+        SDL_LockMutex(sh->lock);
+        const int old3ds_off = sh->settings.old3ds_enabled;
+        SDL_UnlockMutex(sh->lock);
+        t_eq_int("Old3DS toggle updates server settings", old3ds_off, 0);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.old3ds_enabled), TRUE);
+    }
 
     /* Let the application's normal 200ms on_tick consume this update. */
     probe->settings.output_backend = 1;

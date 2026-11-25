@@ -1767,11 +1767,14 @@ static int accept_thread(void *arg) {
         int map[SS_MAX_CLIENTS + 4];
         int n = 0;
 
-        pfds[n].fd = s->listen_fd;
-        pfds[n].events = POLLIN;
-        pfds[n].revents = 0;
-        map[n] = -1;
-        n++;
+        const int native_pfd = s->listen_fd >= 0 ? n : -1;
+        if (native_pfd >= 0) {
+            pfds[n].fd = s->listen_fd;
+            pfds[n].events = POLLIN;
+            pfds[n].revents = 0;
+            map[n] = -1;
+            n++;
+        }
 
         /* -2 rather than -1: the accept below has to know which door a
          * client came in through, because that is what decides the
@@ -1825,7 +1828,7 @@ static int accept_thread(void *arg) {
         if (ready > 0) {
 
         for (int door = 0; door < 4; door++) {
-            const int pfd = (door == 0) ? 0 : (door == 1) ? drc_pfd
+            const int pfd = (door == 0) ? native_pfd : (door == 1) ? drc_pfd
                           : (door == 2) ? wiiu_pfd : old3ds_pfd;
             if (pfd < 0 || !(pfds[pfd].revents & POLLIN)) {
                 continue;
@@ -2007,14 +2010,16 @@ SwitchStream *switch_stream_start(WebStream *ws,
     }
     s->web = ws;
     s->audio_udp_fd = -1;
+    s->listen_fd = -1; /* WOZT_0860_OPTIONAL_LISTENERS */
     s->drc_listen_fd = -1;
     s->wiiu_listen_fd = -1;
     s->old3ds_listen_fd = -1;
     s->old3ds_codec = C2S_CODEC_OLD3DS_MPEG1;
-    s->port = native_port ? native_port : C2S_DEFAULT_PORT;
+    /* Native and Old 3DS port 0 now mean disabled, not default.
+     * The two Wii U listeners keep their original default semantics. */
+    s->port = native_port;
     drc_port = drc_port ? drc_port : C2S_DRC_PORT;
     wiiu_port = wiiu_port ? wiiu_port : C2S_WIIU_PORT;
-    old3ds_port = old3ds_port ? old3ds_port : C2S_OLD3DS_PORT;
     s->video_codec = C2S_CODEC_VP8;
     s->width = 1280;
     s->height = 720;
@@ -2041,28 +2046,30 @@ SwitchStream *switch_stream_start(WebStream *ws,
      * exactly like "it will not launch" and has nothing in the log to
      * say why.
      */
-    s->listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (s->listen_fd < 0) {
-        perror("switch_stream: socket");
-        SDL_DestroyMutex(s->mutex);
-        free(s);
-        return NULL;
-    }
     int one = 1;
-    setsockopt(s->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(s->port);
-    if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
-        listen(s->listen_fd, SS_MAX_CLIENTS) != 0) {
-        fprintf(stderr, "switch_stream: cannot listen on port %u: %s\n", s->port, strerror(errno));
-        close(s->listen_fd);
-        SDL_DestroyMutex(s->mutex);
-        free(s);
-        return NULL;
+    if (native_port != 0) {
+        s->listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (s->listen_fd < 0) {
+            perror("switch_stream: socket");
+            SDL_DestroyMutex(s->mutex);
+            free(s);
+            return NULL;
+        }
+        setsockopt(s->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port = htons(s->port);
+        if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+            listen(s->listen_fd, SS_MAX_CLIENTS) != 0) {
+            fprintf(stderr, "switch_stream: cannot listen on port %u: %s\n",
+                    s->port, strerror(errno));
+            close(s->listen_fd);
+            SDL_DestroyMutex(s->mutex);
+            free(s);
+            return NULL;
+        }
     }
 
     /*
@@ -2119,6 +2126,7 @@ SwitchStream *switch_stream_start(WebStream *ws,
 
     /* Old 3DS clients never share a port or encoder with the other
      * native clients.  Failure is non-fatal for every other family. */
+    if (old3ds_port != 0) {
     s->old3ds_listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s->old3ds_listen_fd >= 0) {
         setsockopt(s->old3ds_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -2140,6 +2148,8 @@ SwitchStream *switch_stream_start(WebStream *ws,
                     old3ds_port);
         }
     }
+
+    } /* Old 3DS listener disabled when port == 0. */
 
     /*
      * UDP needs no listen/bind on the host: sendto() will choose the
@@ -2185,7 +2195,7 @@ SwitchStream *switch_stream_start(WebStream *ws,
             s->audio_udp_fd = -1;
         }
 
-        close(s->listen_fd);
+        if (s->listen_fd >= 0) close(s->listen_fd);
         if (s->old3ds_listen_fd >= 0) close(s->old3ds_listen_fd);
         if (s->wiiu_listen_fd >= 0) close(s->wiiu_listen_fd);
         if (s->drc_listen_fd >= 0) close(s->drc_listen_fd);
@@ -2194,7 +2204,8 @@ SwitchStream *switch_stream_start(WebStream *ws,
         return NULL;
     }
 
-    fprintf(stderr, "switch_stream: listening on port %u\n", s->port);
+    if (s->listen_fd >= 0)
+        fprintf(stderr, "switch_stream: listening on port %u\n", s->port);
     return s;
 }
 
@@ -2210,7 +2221,7 @@ void switch_stream_stop(SwitchStream *s) {
             close(s->clients[i].fd);
         }
     }
-    close(s->listen_fd);
+    if (s->listen_fd >= 0) close(s->listen_fd);
 
     if (s->audio_udp_fd >= 0) {
         close(s->audio_udp_fd);

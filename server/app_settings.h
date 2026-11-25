@@ -59,6 +59,7 @@ typedef struct {
     int wiiu_console_port;        /* dedicated native TCP port */
     int wiiu_console_height;      /* 1080, 720 or 480; 720 is the tested path */
     int wiiu_console_bitrate_mbps;
+    int old3ds_enabled;           /* independent Old 3DS/2DS listener */
     int old3ds_port;              /* dedicated Old 3DS video TCP port */
     int browser_height;     /* 1080, 720 or 480 -- what the browser gets */
     int bitrate_mbps;       /* the browser encoder's target */
@@ -119,7 +120,7 @@ typedef struct {
         .switch_port = 5081, .wiiu_pad_enabled = 0, .wiiu_pad_port = 5082,     \
         .wiiu_pad_bitrate_mbps = 6, .wup_stream_enabled = 0, .wup_touch_mode = 1, \
         .wiiu_console_enabled = 0, .wiiu_console_port = 5083,                  \
-        .wiiu_console_height = 720, .old3ds_port = 5085,                       \
+        .wiiu_console_height = 720, .old3ds_enabled = 1, .old3ds_port = 5085,                       \
         .wiiu_console_bitrate_mbps = 8,                            \
         .browser_height = 1080,         \
         .bitrate_mbps = 12, .capture_mjpeg = 0, .gamepad_enabled = 1,          \

@@ -500,7 +500,7 @@ static void publish_server_status(void)
         "running — capture %s — browser server %s — native server %s",
         g_video ? "online" : "waiting",
         (g_web && web_stream_is_running(g_web)) ? "listening" : "off",
-        g_switch ? "listening" : "off");
+        (g_switch && g_settings.switch_enabled) ? "listening" : "off");
 
     gtk_shell_set_status(g_shell, line);
 }
@@ -527,11 +527,13 @@ static void on_settings(void *userdata, const AppSettings *want) {
         }
     }
     if (want->switch_enabled != have->switch_enabled ||
+        want->old3ds_enabled != have->old3ds_enabled ||
         (want->switch_port != have->switch_port && want->switch_port > 0) ||
         (want->wiiu_pad_port != have->wiiu_pad_port && want->wiiu_pad_port > 0) ||
         (want->wiiu_console_port != have->wiiu_console_port && want->wiiu_console_port > 0) ||
         (want->old3ds_port != have->old3ds_port && want->old3ds_port > 0)) {
         have->switch_enabled = want->switch_enabled;
+        have->old3ds_enabled = want->old3ds_enabled;
         if (want->switch_port > 0) {
             have->switch_port = want->switch_port;
         }
@@ -549,17 +551,20 @@ static void on_settings(void *userdata, const AppSettings *want) {
         config_set_int("WIIU_PAD_PORT", have->wiiu_pad_port);
         config_set_int("WIIU_CONSOLE_PORT", have->wiiu_console_port);
         config_set_int("OLD3DS_PORT", have->old3ds_port);
+        config_set_int("OLD3DS_ENABLED", have->old3ds_enabled ? 1 : 0);
         /* Torn down and started again: a listening socket cannot be
          * moved. Whoever was connected is dropped, which is the honest
          * outcome -- they were told to knock on a door that is no longer
          * there, and the console has to be pointed at the new one. */
         switch_stream_stop(g_switch);
-        g_switch = have->switch_enabled
+        /* 0 disables an individual listener. The transport remains up
+         * for the other client even when Switch itself is off. */
+        g_switch = (have->switch_enabled || have->old3ds_enabled)
                        ? switch_stream_start(g_web,
-                                             (uint16_t)have->switch_port,
-                                             (uint16_t)have->wiiu_pad_port,
-                                             (uint16_t)have->wiiu_console_port,
-                                             (uint16_t)have->old3ds_port)
+                             have->switch_enabled ? (uint16_t)have->switch_port : 0,
+                             (uint16_t)have->wiiu_pad_port,
+                             (uint16_t)have->wiiu_console_port,
+                             have->old3ds_enabled ? (uint16_t)have->old3ds_port : 0)
                        : NULL;
         /* Told either way: a NULL output is what makes the encoder stop
          * being fed rather than encoding for a server that is gone. */
@@ -1477,16 +1482,18 @@ int main(int argc, char **argv) {
     g_settings.wiiu_console_height = (int)config_get_int("WIIU_CONSOLE_HEIGHT", 720, 480, 1080);
     g_settings.wiiu_console_bitrate_mbps =
         (int)config_get_int("WIIU_CONSOLE_BITRATE_MBPS", 8, 2, 30);
+    g_settings.old3ds_enabled =
+        (int)config_get_int("OLD3DS_ENABLED", g_settings.switch_enabled ? 1 : 0, 0, 1);
     g_settings.old3ds_port =
         (int)config_get_int("OLD3DS_PORT", C2S_OLD3DS_PORT, 1, 65535);
     web_stream_set_native_counter(g_web, count_native_clients, NULL);
     web_stream_set_native_adopt(g_web, adopt_web_socket, NULL);
-    g_switch = g_settings.switch_enabled
+    g_switch = (g_settings.switch_enabled || g_settings.old3ds_enabled)
                    ? switch_stream_start(g_web,
-                                         (uint16_t)g_settings.switch_port,
-                                         (uint16_t)g_settings.wiiu_pad_port,
-                                         (uint16_t)g_settings.wiiu_console_port,
-                                         (uint16_t)g_settings.old3ds_port)
+                         g_settings.switch_enabled ? (uint16_t)g_settings.switch_port : 0,
+                         (uint16_t)g_settings.wiiu_pad_port,
+                         (uint16_t)g_settings.wiiu_console_port,
+                         g_settings.old3ds_enabled ? (uint16_t)g_settings.old3ds_port : 0)
                    : NULL;
     gst_webrtc_stream_set_switch_output(g_gst, g_switch);
     /* The console client's chain, from what was remembered. Applied at
