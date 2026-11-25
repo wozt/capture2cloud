@@ -271,11 +271,12 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
-                /* Overview never stretches; when the controller pair
-                 * shares a row, Output stays compact and Local input uses
-                 * the remaining width. A lone controller still fills its row. */
+                /* Overview never stretches. Side-by-side controller frames
+                 * also use their NATURAL widths: the Local input grid must
+                 * not consume an empty strip on its right. When either
+                 * controller is alone on a row it still fills that row. */
                 const gboolean natural = section_index == 0 ||
-                    (section_index == 2 && n == 2);
+                    ((section_index == 2 || section_index == 3) && n == 2);
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
@@ -4733,6 +4734,10 @@ static void build_settings_window(GtkShell *shell) {
     gtk_grid_set_column_spacing(GTK_GRID(pcble_diagnostics), 3);
     add_section_header(pcble_diagnostics, 0, "Diagnostics");
     add_row(pcble_diagnostics, 1, "logging", g_c.pcble_verbose);
+    /* GTK show_all() skips a no-show-all container AND its children.
+     * Make the heading and checkbox visible FIRST, then preserve the
+     * backend-dependent visibility binding on the container itself. */
+    gtk_widget_show_all(pcble_diagnostics);
     gtk_widget_set_no_show_all(pcble_diagnostics, TRUE);
     gtk_grid_attach(GTK_GRID(grid), pcble_diagnostics, 0, row++, 2, 1);
     g_object_bind_property(g_c.pcble_settings, "visible",

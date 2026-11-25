@@ -526,6 +526,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(diagnostics_grid) == sliders_grid &&
          gtk_grid_get_child_at(GTK_GRID(sliders_grid), 0, 0) == diagnostics_grid &&
          gtk_widget_get_parent(g_c.pcble_verbose) == logging_row);
+    GtkWidget *diagnostics_heading = GTK_IS_GRID(diagnostics_grid)
+        ? gtk_grid_get_child_at(GTK_GRID(diagnostics_grid), 0, 0) : NULL;
+    t_ok("Diagnostics title is created and explicitly shown",
+         GTK_IS_LABEL(diagnostics_heading) &&
+         g_strcmp0(gtk_label_get_text(GTK_LABEL(diagnostics_heading)),
+                   "Diagnostics") == 0 &&
+         gtk_widget_get_visible(diagnostics_heading));
     t_ok("Output logging toggle sits immediately after its label",
          GTK_IS_BOX(logging_row) && GTK_IS_GRID(diagnostics_grid));
     GtkWidget *preview_frame = g_c.output_stick_preview[0]
@@ -825,11 +832,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
          gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
-    /* Output stays naturally narrow; input consumes the remaining
-     * horizontal space. Both frames still share the controller row. */
-    t_ok("Output stays compact and Local input fills the shared row",
+    /* Both adjacent controller frames use natural width, rather than
+     * reserving empty space on the right side of Local input. */
+    t_ok("Controller frames stay compact on their shared row",
          g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
-         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START &&
          gtk_widget_get_parent(g_c.wozt_sections[2]) ==
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     t_ok("Overview and Clients share an independent row at 1650px",
@@ -898,9 +906,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                     &input_expand, &input_fill,
                                     &input_padding, &input_pack_type);
     }
-    t_ok("Local input fills the right side beside Output",
-         GTK_IS_BOX(input_line) && input_expand && input_fill &&
-         gtk_widget_get_hexpand(g_c.wozt_sections[3]));
+    t_ok("Local input uses natural width beside Output",
+         GTK_IS_BOX(input_line) && !input_expand && !input_fill &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START);
     t_ok("Overview server status wraps instead of widening the section",
          g_c.overview_status &&
          gtk_label_get_line_wrap(GTK_LABEL(g_c.overview_status)) &&
@@ -1010,6 +1019,11 @@ static gboolean gtk_layout_probe_pcble(gpointer user_data)
         ? gtk_widget_get_parent(logging_inline) : NULL;
     t_ok("Right-column PCBLE diagnostics follows selected backend",
          GTK_IS_GRID(diagnostics_panel) && gtk_widget_get_visible(diagnostics_panel));
+    GtkWidget *diagnostics_title = GTK_IS_GRID(diagnostics_panel)
+        ? gtk_grid_get_child_at(GTK_GRID(diagnostics_panel), 0, 0) : NULL;
+    t_ok("PCBLE Diagnostics heading is visible with its settings",
+         GTK_IS_LABEL(diagnostics_title) &&
+         gtk_widget_get_visible(diagnostics_title));
     t_ok("pcble Pair / Sync button is visible",
          g_c.pcble_pair && gtk_widget_get_visible(g_c.pcble_pair));
     t_ok("Titan panel is hidden while pcble is selected",
