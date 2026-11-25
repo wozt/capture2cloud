@@ -19,6 +19,7 @@
 #include "gamepad_bridge.h"
 #include "output_pcble.h"
 #include "wiiu_pad.h"
+#include "wup_stream.h"
 #include "app_config.h"
 #include "audio_capture.h"
 #include "app_settings.h"
@@ -101,6 +102,7 @@ static SwitchStream *g_switch = NULL;
  * see wiiu_pad.h for why it is not a thread in here.
  */
 static WiiuPad *g_wiiu_pad = NULL;
+static WupStream *g_wup_stream = NULL;
 
 typedef enum {
     WIIU_PAD_REQUEST_NONE = 0,
@@ -552,6 +554,13 @@ static void on_settings(void *userdata, const AppSettings *want) {
     }
     if (want->wiiu_pad_enabled != have->wiiu_pad_enabled ||
         (want->wiiu_pad_enabled && !g_wiiu_pad)) {
+        if (want->wiiu_pad_enabled && have->wup_stream_enabled) {
+            audio_capture_set_wupstream(g_audio, NULL);
+            wup_stream_stop(g_wup_stream);
+            g_wup_stream = NULL;
+            have->wup_stream_enabled = 0;
+            config_set_int("WUP_STREAM_AUTOSTART", 0);
+        }
         have->wiiu_pad_enabled = want->wiiu_pad_enabled;
 
         /*
@@ -570,6 +579,31 @@ static void on_settings(void *userdata, const AppSettings *want) {
                 : WIIU_PAD_REQUEST_DISABLE);
     }
 
+    if (want->wup_touch_mode != have->wup_touch_mode) {
+        have->wup_touch_mode = want->wup_touch_mode ? 1 : 0;
+        config_set_str("WUP_TOUCH_MODE", have->wup_touch_mode ? "absolute" : "relative");
+    }
+    if (want->wup_stream_enabled != have->wup_stream_enabled) {
+        if (want->wup_stream_enabled) {
+            if (have->wiiu_pad_enabled) {
+                have->wiiu_pad_enabled = 0;
+                config_set_int("WIIU_PAD_AUTOSTART", 0);
+                SDL_AtomicSet(&g_wiiu_pad_request, WIIU_PAD_REQUEST_DISABLE);
+            }
+            if (!g_wup_stream) {
+                char ip_buf[80];
+                const char *ip = config_get_str("WUP_STREAM_PAD_IP", ip_buf, sizeof(ip_buf), "");
+                g_wup_stream = wup_stream_start(g_project_dir, ip);
+            }
+            audio_capture_set_wupstream(g_audio, g_wup_stream);
+        } else {
+            audio_capture_set_wupstream(g_audio, NULL);
+            wup_stream_stop(g_wup_stream);
+            g_wup_stream = NULL;
+        }
+        have->wup_stream_enabled = want->wup_stream_enabled;
+        config_set_int("WUP_STREAM_AUTOSTART", have->wup_stream_enabled);
+    }
     if (want->browser_height != have->browser_height) {
         have->browser_height = want->browser_height;
         const int w = want->browser_height * 16 / 9;
@@ -920,15 +954,26 @@ static void on_action(void *userdata, GtkShellAction action) {
             gamepad_bridge_reset();
             break;
         case GTK_SHELL_ACTION_WIIU_START:
-            SDL_AtomicSet(
-                &g_wiiu_pad_request,
-                WIIU_PAD_REQUEST_RESTART);
+            if (g_settings.wup_stream_enabled) {
+                audio_capture_set_wupstream(g_audio, NULL);
+                wup_stream_stop(g_wup_stream);
+                char ip_buf[80];
+                const char *ip = config_get_str("WUP_STREAM_PAD_IP", ip_buf, sizeof(ip_buf), "");
+                g_wup_stream = wup_stream_start(g_project_dir, ip);
+                audio_capture_set_wupstream(g_audio, g_wup_stream);
+            } else {
+                SDL_AtomicSet(&g_wiiu_pad_request, WIIU_PAD_REQUEST_RESTART);
+            }
             break;
 
         case GTK_SHELL_ACTION_WIIU_STOP:
-            SDL_AtomicSet(
-                &g_wiiu_pad_request,
-                WIIU_PAD_REQUEST_STOP);
+            if (g_settings.wup_stream_enabled) {
+                audio_capture_set_wupstream(g_audio, NULL);
+                wup_stream_stop(g_wup_stream);
+                g_wup_stream = NULL;
+            } else {
+                SDL_AtomicSet(&g_wiiu_pad_request, WIIU_PAD_REQUEST_STOP);
+            }
             break;
         case GTK_SHELL_ACTION_WIIU_CONSOLE_KEYFRAME:
             /* Every chain gets one, not just the console's: the request
@@ -1355,6 +1400,14 @@ int main(int argc, char **argv) {
     /* Off unless asked for, like the pad's, and for a milder reason: a
      * chain nobody is on costs nothing, but a machine that has never
      * seen a Wii U should not be listening on its behalf. */
+    g_settings.wup_stream_enabled = (int)config_get_int("WUP_STREAM_AUTOSTART", 0, 0, 1);
+    { char mode_buf[24];
+      const char *mode = config_get_str("WUP_TOUCH_MODE", mode_buf, sizeof(mode_buf), "relative");
+      g_settings.wup_touch_mode = strcmp(mode, "absolute") == 0; }
+    if (g_settings.wup_stream_enabled && g_settings.wiiu_pad_enabled) {
+        fprintf(stderr, "wup_stream: disabling direct radio mode; WUP selected\n");
+        g_settings.wiiu_pad_enabled = 0;
+    }
     g_settings.wiiu_console_enabled = (int)config_get_int("WIIU_CONSOLE_ENABLED", 0, 0, 1);
     g_settings.wiiu_console_port =
         (int)config_get_int("WIIU_CONSOLE_PORT", C2S_WIIU_PORT, 1, 65535);
@@ -1405,6 +1458,13 @@ int main(int argc, char **argv) {
         gst_webrtc_stream_destroy(g_gst);
         video_capture_close(g_video);
         return 1;
+    }
+
+    if (g_settings.wup_stream_enabled) {
+        char ip_buf[80];
+        const char *ip = config_get_str("WUP_STREAM_PAD_IP", ip_buf, sizeof(ip_buf), "");
+        g_wup_stream = wup_stream_start(g_project_dir, ip);
+        fprintf(stderr, "wup_stream: %s\n", wup_stream_status(g_wup_stream));
     }
 
     SDL_Texture *texture = NULL;
@@ -1512,6 +1572,7 @@ int main(int argc, char **argv) {
     AudioCapture *audio =
         audio_capture_start(audio_source, &g_app.running, g_web, g_gst, !g_headless);
     g_audio = audio;
+    audio_capture_set_wupstream(g_audio, g_wup_stream);
     if (!audio) {
         fprintf(stderr, "audio capture unavailable, continuing without sound\n");
     }
@@ -1634,6 +1695,7 @@ int main(int argc, char **argv) {
          * on its own stops claiming to be running. */
         wiiu_pad_poll(g_wiiu_pad);
         process_wiiu_pad_request();
+        wup_stream_poll(g_wup_stream, g_settings.wup_touch_mode);
 
         /*
          * NOT torn down when the client exits.
@@ -1651,7 +1713,9 @@ int main(int argc, char **argv) {
             if (g_shell && now_pad - pad_status_at >= 1000) {
                 pad_status_at = now_pad;
                 gtk_shell_set_wiiu_status(g_shell,
-                    g_wiiu_pad ? wiiu_pad_status(g_wiiu_pad) : "not running");
+                    g_settings.wup_stream_enabled
+                      ? (g_wup_stream ? wup_stream_status(g_wup_stream) : "WUP Stream stopped")
+                      : (g_wiiu_pad ? wiiu_pad_status(g_wiiu_pad) : "not running"));
                 publish_client_status();
                 publish_server_status();
             }
@@ -1824,6 +1888,8 @@ int main(int argc, char **argv) {
                         native_fed ? "feeding" : "idle", native);
             }
 
+            /* Independent, nonblocking frame path into isolated WUP codec. */
+            wup_stream_push_video(g_wup_stream, &frame, (int)g_app.width, (int)g_app.height);
             const int av_format = av_format_of(frame.pixel);
             if (watchers > 0) {
                 gst_webrtc_stream_push_video(g_gst, frame.plane, frame.stride, av_format,
@@ -1867,6 +1933,9 @@ int main(int argc, char **argv) {
      * process's own, while the adapter is a device left in a state for
      * whatever runs next. */
     local_pad_shutdown();
+    audio_capture_set_wupstream(g_audio, NULL);
+    wup_stream_stop(g_wup_stream);
+    g_wup_stream = NULL;
     gamepad_bridge_shutdown();
 
     /* Before the transport it is connected to, so its last frames go

@@ -186,6 +186,33 @@ The same recovery path is used by:
 
 ---
 
+## WUP Stream: third Wii U GamePad route
+
+The **Client · Wii U GamePad** GTK page can start a third independent route,
+using the WUP Stream homebrew already installed on the GamePad. It
+streams Capture2Cloud HDMI video/audio over ordinary Wi-Fi and brings
+GamePad buttons/sticks back through the normal controller bridge.
+The direct Nintendo-radio route and Wii U console RPX still exist.
+The WUP helper is a separate executable to isolate the patched x264
+from libdrc/GStreamer. Build it once with:
+
+```sh
+./scripts/build_wupstream.sh
+```
+
+Set `WUP_STREAM_AUTOSTART=1` (or enable it in GTK).
+Optionally set `WUP_STREAM_PAD_IP`; empty means auto-discover.
+The touchscreen supports **relative touchpad** gestures (tap=left click,
+drag=left hold, long press=right click) and **virtual absolute**
+position, switchable in GTK / `WUP_TOUCH_MODE=relative|absolute`.
+Touch is routed through PCBLE only when a Joy-Con 2 profile is active.
+Because Joy-Con 2 HID has no absolute pointer protocol, the absolute
+mode uses a software cursor estimate and may drift. No GamePad
+microphone support in this first version. Technical details in
+[wiiu_wupstream/README.md](wiiu_wupstream/README.md).
+
+---
+
 ## Console wake
 
 Capture2Cloud has a server-side reset/wake abstraction.

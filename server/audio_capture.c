@@ -7,6 +7,7 @@
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <pulse/pulseaudio.h>
+#include "wup_stream.h"
 #include <pulse/simple.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,6 +157,8 @@ struct AudioCapture {
     volatile int local_volume;  /* 0..100, 13 = about the source's own level */
     SDL_Thread *playback_thread;
     struct PlaybackRing ring;
+    SDL_mutex *wup_lock; /* guards lifetime across capture and main threads */
+    WupStream *wup_sink;
 };
 
 /* Consumes the ring at the speakers' own pace. Blocking here is fine --
@@ -643,6 +646,13 @@ static int audio_thread(void *arg) {
             }
         }
 
+        /* The WUP helper uses the same filtered 48-kHz stereo samples. */
+        if (ac->wup_lock) {
+            SDL_LockMutex(ac->wup_lock);
+            if (ac->wup_sink)
+                wup_stream_push_audio(ac->wup_sink, samples, chunk_frames);
+            SDL_UnlockMutex(ac->wup_lock);
+        }
         if (ac->web && ac->gst && web_stream_is_running(ac->web)) {
             size_t copied = 0;
             while (copied < chunk_frames) {
@@ -728,6 +738,8 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
     if (!ac) {
         return NULL;
     }
+    ac->wup_lock = SDL_CreateMutex();
+    if (!ac->wup_lock) { free(ac); return NULL; }
     ac->running = running;
     ac->web = web;
     ac->gst = gst;
@@ -753,6 +765,7 @@ AudioCapture *audio_capture_start(const char *source, volatile sig_atomic_t *run
     ac->thread = SDL_CreateThread(audio_thread, "audio", ac);
     if (!ac->thread) {
         fprintf(stderr, "audio_capture: SDL_CreateThread failed\n");
+        SDL_DestroyMutex(ac->wup_lock);
         free(ac);
         return NULL;
     }
@@ -848,10 +861,18 @@ void audio_capture_set_local_mute(AudioCapture *ac, int muted) {
     }
 }
 
+void audio_capture_set_wupstream(AudioCapture *ac, WupStream *wup) {
+    if (!ac || !ac->wup_lock) return;
+    SDL_LockMutex(ac->wup_lock);
+    ac->wup_sink = wup;
+    SDL_UnlockMutex(ac->wup_lock);
+}
+
 void audio_capture_stop(AudioCapture *ac) {
     if (!ac) {
         return;
     }
     SDL_WaitThread(ac->thread, NULL);
+    SDL_DestroyMutex(ac->wup_lock);
     free(ac);
 }

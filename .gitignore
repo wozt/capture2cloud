@@ -77,6 +77,8 @@ android/local.properties
 # libraries that belong to their own projects.
 wiiu_gamepad/wiiu_pad
 wiiu_gamepad/vendor/
+/wiiu_wupstream/build/
+/wiiu_wupstream/wup_stream_helper
 
 # The Wii U console homebrew's build output.
 wiiu_console/build/

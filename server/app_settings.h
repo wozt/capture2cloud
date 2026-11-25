@@ -44,6 +44,9 @@ typedef struct {
     int wiiu_pad_enabled;
     int wiiu_pad_port;           /* dedicated native TCP port */
     int wiiu_pad_bitrate_mbps;   /* what that chain is encoded at */
+    /* WUP Stream over LAN: standalone helper, distinct from Nintendo radio. */
+    int wup_stream_enabled;
+    int wup_touch_mode; /* 0 relative touchpad, 1 virtual absolute */
     /*
      * Whether a homebrew running ON a Wii U console is being fed.
      *
@@ -114,7 +117,7 @@ typedef struct {
     {                                                                          \
         .stream_enabled = 0, .web_port = 5080, .switch_enabled = 1,             \
         .switch_port = 5081, .wiiu_pad_enabled = 0, .wiiu_pad_port = 5082,     \
-        .wiiu_pad_bitrate_mbps = 6,                                             \
+        .wiiu_pad_bitrate_mbps = 6, .wup_stream_enabled = 0, .wup_touch_mode = 0, \
         .wiiu_console_enabled = 0, .wiiu_console_port = 5083,                  \
         .wiiu_console_height = 720, .old3ds_port = 5085,                       \
         .wiiu_console_bitrate_mbps = 8,                            \

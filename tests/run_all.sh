@@ -115,6 +115,7 @@ run_c_test() {
 # functions; the pkg-config sets below are just that file's own deps.
 timed "C: gamepad bridge"  run_c_test test_gamepad_bridge "libusb-1.0 sdl2"
 timed "C: controller shaping" run_c_test test_controller_shaping "" "-lm"
+timed "C: WUP touch"          run_c_test test_wup_touch ""
 timed "C: pcble output"     run_c_test test_output_pcble "sdl2 gio-2.0"
 timed "C: pcble protocol"   run_c_test test_pcble_protocol ""
 timed "C: reset method"     run_c_test test_reset_method "sdl2 gio-2.0"

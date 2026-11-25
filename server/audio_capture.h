@@ -20,6 +20,9 @@
  */
 
 typedef struct AudioCapture AudioCapture;
+typedef struct WupStream WupStream;
+/* A synchronized optional sink for the already-filtered HDMI PCM. */
+void audio_capture_set_wupstream(AudioCapture *ac, WupStream *wup);
 
 /* Starts the capture thread. `source` is a PulseAudio source name, or
  * NULL for the server default. `running` is the shared flag the thread

@@ -76,6 +76,7 @@ struct GtkShell {
 typedef struct {
     GtkWidget *stream_enabled, *port, *switch_enabled, *switch_port, *resolution, *bitrate, *capture_format;
     GtkWidget *wiiu_pad_enabled, *wiiu_pad_port, *wiiu_pad_bitrate;
+    GtkWidget *wup_stream_enabled, *wup_touch_mode;
     GtkWidget *wiiu_console_enabled, *wiiu_console_port;
     GtkWidget *wiiu_console_resolution, *wiiu_console_bitrate;
     GtkWidget *old3ds_port;
@@ -2280,6 +2281,7 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     if (w == g_c.stream_enabled)       shell->settings.stream_enabled = on;
     else if (w == g_c.switch_enabled)  shell->settings.switch_enabled = on;
     else if (w == g_c.wiiu_pad_enabled) shell->settings.wiiu_pad_enabled = on;
+    else if (w == g_c.wup_stream_enabled) shell->settings.wup_stream_enabled = on;
     else if (w == g_c.wiiu_console_enabled) shell->settings.wiiu_console_enabled = on;
     else if (w == g_c.gamepad_enabled) shell->settings.gamepad_enabled = on;
     else if (w == g_c.invert_ry)       shell->settings.invert_ry = on;
@@ -2288,6 +2290,11 @@ static void on_toggle(GtkWidget *w, gpointer user_data) {
     else if (w == g_c.muted)           shell->settings.local_muted = on;
     else if (w == g_c.vsync)           shell->settings.vsync = on;
     SDL_UnlockMutex(shell->lock);
+    /* WUP and Nintendo-radio bridge are mutually exclusive. */
+    if (on && !shell->loading && w == g_c.wup_stream_enabled && g_c.wiiu_pad_enabled)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), FALSE);
+    if (on && !shell->loading && w == g_c.wiiu_pad_enabled && g_c.wup_stream_enabled)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wup_stream_enabled), FALSE);
     publish(shell);
 }
 
@@ -2445,6 +2452,8 @@ static void on_combo(GtkWidget *w, gpointer user_data) {
     if (w == g_c.resolution) {
         static const int HEIGHTS[] = {1080, 720, 480};
         if (i >= 0 && i < 3) shell->settings.browser_height = HEIGHTS[i];
+    } else if (w == g_c.wup_touch_mode) {
+        shell->settings.wup_touch_mode = (i == 1);
     } else if (w == g_c.wiiu_console_resolution) {
         static const int HEIGHTS[] = {1080, 720, 480};
         if (i >= 0 && i < 3) shell->settings.wiiu_console_height = HEIGHTS[i];
@@ -2679,6 +2688,8 @@ static void load_controls(GtkShell *shell) {
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.port), s.web_port);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.switch_enabled), s.switch_enabled);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_pad_enabled), s.wiiu_pad_enabled);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wup_stream_enabled), s.wup_stream_enabled);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.wup_touch_mode), s.wup_touch_mode ? 1 : 0);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(g_c.wiiu_pad_port), s.wiiu_pad_port);
     gtk_range_set_value(GTK_RANGE(g_c.wiiu_pad_bitrate), s.wiiu_pad_bitrate_mbps);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g_c.wiiu_console_enabled),
@@ -3144,6 +3155,28 @@ static void build_settings_window(GtkShell *shell) {
         add_row(grid, row++, "radio", ap_buttons);
     }
 
+
+    /* WUP Stream: independent LAN protocol on the same GamePad. */
+    add_section_header(grid, row++, "WUP Stream (Wi-Fi homebrew)");
+    g_c.wup_stream_enabled = add_row(
+        grid, row++, "WUP Stream via Wi-Fi", make_check(shell, "on"));
+    gtk_widget_set_tooltip_text(g_c.wup_stream_enabled,
+        "Uses WUP Stream running on the GamePad; no Nintendo Wi-Fi adapter. "
+        "Exclusive with the direct radio bridge. Build: scripts/build_wupstream.sh");
+    g_c.wup_touch_mode = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wup_touch_mode),
+        "Relative touchpad (tap / drag / long press)");
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_c.wup_touch_mode),
+        "Absolute (virtual Joy-Con 2 cursor position)");
+    g_signal_connect(g_c.wup_touch_mode, "changed", G_CALLBACK(on_combo), shell);
+    add_row(grid, row++, "touch -> Joy-Con 2", g_c.wup_touch_mode);
+    GtkWidget *wup_note = gtk_label_new(
+        "WUP Stream carries HDMI video/audio and GamePad controls. "
+        "Touch is available only with a Joy-Con 2 PCBLE profile. "
+        "Absolute mode estimates position from relative Joy-Con 2 movements.");
+    gtk_label_set_line_wrap(GTK_LABEL(wup_note), TRUE);
+    gtk_widget_set_halign(wup_note, GTK_ALIGN_START);
+    add_row(grid, row++, "", wup_note);
 
     /* --- Client · Wii U Console ----------------------------------- */
     make_page("Client · Wii U Console", clients, &grid);

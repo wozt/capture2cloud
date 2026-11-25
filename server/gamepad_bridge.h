@@ -14,6 +14,7 @@
 #define GAMEPAD_SOURCE_BROWSER(i) (0x100u + (unsigned)(i))
 #define GAMEPAD_SOURCE_NATIVE(i)  (0x200u + (unsigned)(i))
 #define GAMEPAD_SOURCE_LOCAL      0x300u
+#define GAMEPAD_SOURCE_WUPSTREAM  0x400u
 
 int gamepad_bridge_init(void);
 
