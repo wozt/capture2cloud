@@ -166,6 +166,19 @@ static char g_first[512];
 
 /* Every GLib message, from any thread, including the ones GTK would
  * otherwise print and nobody would read. */
+/* The compact CSS tokens omit whitespace. GTK3 expands CSS shorthands
+ * and serializes selectors/declarations in its own canonical order. Ensure
+ * each declaration belongs to the requested rule rather than another scale. */
+static gboolean wozt_css_rule_has_declaration(const char *css,
+                                              const char *selector,
+                                              const char *declaration)
+{
+    const char *rule = css ? strstr(css, selector) : NULL;
+    const char *end = rule ? strchr(rule, '}') : NULL;
+    const char *found = rule ? strstr(rule, declaration) : NULL;
+    return end && found && found < end;
+}
+
 static void count_warnings(const gchar *domain, GLogLevelFlags level, const gchar *message,
                            gpointer user_data) {
     (void)user_data;
@@ -366,11 +379,22 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          strstr(slider_css, "scaleslider") &&
          strstr(slider_css, "background-image:none") &&
          strstr(slider_css, "background-color:"));
+    /* GTK3 serializes border-width:0 as four longhand border widths.
+     * Check the actual calibration CSS rules, not a raw shorthand string
+     * or declarations belonging to unrelated scales. */
     t_ok("Controller slider CSS defines a 3px track and 12px thumb core",
-         slider_css && strstr(slider_css, "scale.wozt-calibration-scale") &&
-         strstr(slider_css, "min-height:3px") &&
-         strstr(slider_css, "min-height:12px") &&
-         strstr(slider_css, "border-width:0"));
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletrough{", "min-height:3px;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletrough{", "border-top-width:0;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaletrough{", "border-bottom-width:0;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaleslider{", "min-height:12px;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaleslider{", "min-width:12px;") &&
+         wozt_css_rule_has_declaration(
+             slider_css, "scale.wozt-calibration-scaleslider{", "border-top-width:1px;"));
     if (slider_tokens) g_string_free(slider_tokens, TRUE);
     g_free(slider_rules);
     GList *output_children = g_c.wozt_inner_output
