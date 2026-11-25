@@ -651,8 +651,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(overview_join_width - 1, 0), 1);
     t_eq_int("Overview/Clients join at their measured breakpoint",
              wozt_dashboard_group_columns(overview_join_width, 0), 2);
-    t_eq_int("1144px: overview and clients fit on one line",
-             wozt_dashboard_group_columns(1144, 0), 2);
+    /* With Local monitor/Capture on the first row, there are three
+     * logical items, not two. The stack remains two distinct frames. */
+    t_eq_int("1144px: Overview, Clients and Monitor/Capture share first row",
+             wozt_dashboard_group_columns(1144, 0), 3);
     t_eq_int("1144px: compact input fits beside two-column Output",
              wozt_dashboard_group_columns(1144, 1), 2);
     t_eq_int("Unrealized Local input retains its 350px fallback",
