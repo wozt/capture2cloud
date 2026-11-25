@@ -282,23 +282,18 @@ static void wozt_dashboard_reflow(int width)
             gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
             for (int j = 0; j < n; ++j) {
                 GtkWidget *frame = g_c.wozt_sections[first + offset + j];
-                /* WOZT_0833_OVERVIEW_NATURAL_WIDTH:
-                 * A GtkBox with two TRUE/TRUE children splits its surplus
-                 * 50/50, creating a huge unused area in Overview. Only
-                 * Clients consumes extra horizontal space. This also works
-                 * when Overview occupies a line on its own. */
-                const int section_index = first + offset + j;
-                /* Controllers always keep their compact intrinsic widths.
-                 * Adjacent frames pack at the START with only the regular
-                 * 6px gap: no expanding panel, central spacer or PACK_END.
-                 * The same rule applies after wrapping to separate rows,
-                 * avoiding the sudden full-width empty frames. */
-                const gboolean natural = section_index == 0 || group == 1;
+                /* WOZT_0850_RIGHTMOST_FILLS_ROW:
+                 * Keep the first n-1 frames compact and adjacent. ONLY the
+                 * final frame of every independent dashboard line absorbs
+                 * surplus width. This holds for controllers, Overview/Clients,
+                 * the four tools, and their wrapped single-frame rows.
+                 * Reflow breakpoints still use the GTK preferred widths. */
+                const gboolean last = j == n - 1;
                 gtk_widget_set_halign(frame,
-                    natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
-                gtk_widget_set_hexpand(frame, !natural);
+                                      last ? GTK_ALIGN_FILL : GTK_ALIGN_START);
+                gtk_widget_set_hexpand(frame, last);
                 gtk_box_pack_start(GTK_BOX(line), frame,
-                                   !natural, !natural, 0);
+                                   last, last, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);

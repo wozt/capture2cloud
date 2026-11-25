@@ -845,12 +845,13 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_preview_frame && GTK_IS_FRAME(input_preview_frame) &&
          gtk_frame_get_shadow_type(GTK_FRAME(input_preview_frame)) == GTK_SHADOW_NONE);
     wozt_dashboard_reflow(1650);
-    /* Two naturally sized controller frames, with no spacer between them. */
-    t_ok("Both controller frames keep natural width on their shared row",
+    /* The final frame expands, but the preceding one stays compact.
+     * Both frames remain adjacent in their shared horizontal row. */
+    t_ok("Rightmost Local input absorbs surplus in the shared controller row",
          g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
          gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_START &&
-         g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START &&
+         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_FILL &&
          gtk_widget_get_parent(g_c.wozt_sections[2]) ==
              gtk_widget_get_parent(g_c.wozt_sections[3]));
     t_ok("Overview and Clients share an independent row at 1650px",
@@ -866,6 +867,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              gtk_widget_get_parent(g_c.wozt_sections[6]) &&
          gtk_widget_get_parent(g_c.wozt_sections[6]) ==
              gtk_widget_get_parent(g_c.wozt_sections[7]));
+    t_ok("Maintenance alone expands at the end of the four-tool row",
+         !gtk_widget_get_hexpand(g_c.wozt_sections[4]) &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[5]) &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[6]) &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[7]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[7]) == GTK_ALIGN_FILL);
     t_ok("The three functional rows have distinct parents",
          gtk_widget_get_parent(g_c.wozt_sections[0]) !=
              gtk_widget_get_parent(g_c.wozt_sections[2]) &&
@@ -886,12 +893,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
     wozt_dashboard_reflow(720);
-    t_ok("Controller output stays compact after responsive wrapping",
-         g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_START);
-    t_ok("Local input stays compact after responsive wrapping",
-         g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START);
+    t_ok("A wrapped Output frame fills its own line",
+         g_c.wozt_sections[2] && gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[2]) == GTK_ALIGN_FILL);
+    t_ok("A wrapped Local input frame fills its own line",
+         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_FILL);
     t_ok("A narrow window wraps the controller panels into separate rows",
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
              gtk_widget_get_parent(g_c.wozt_sections[3]));
@@ -899,6 +906,18 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
     t_ok("Default width keeps Overview and Clients together",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
+    t_ok("At 1144px the last widget of each lower tool pair expands",
+         wozt_dashboard_group_columns(1144, 2) == 2 &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[4]) &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[5]) &&
+         !gtk_widget_get_hexpand(g_c.wozt_sections[6]) &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[7]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[4]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[5]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[6]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[7]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[5]) !=
+             gtk_widget_get_parent(g_c.wozt_sections[7]));
     /* Unlike the previous TRUE/TRUE GtkBox packing, Overview must not
      * take half of the available width. Clients absorbs all spare width. */
     GtkWidget *overview_line = gtk_widget_get_parent(g_c.wozt_sections[0]);
@@ -923,11 +942,11 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                     &input_expand, &input_fill,
                                     &input_padding, &input_pack_type);
     }
-    t_ok("Local input is packed immediately after Output",
-         GTK_IS_BOX(input_line) && !input_expand && !input_fill &&
+    t_ok("Local input is packed immediately after Output and fills the right edge",
+         GTK_IS_BOX(input_line) && input_expand && input_fill &&
          input_pack_type == GTK_PACK_START &&
-         !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
-         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_START &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_halign(g_c.wozt_sections[3]) == GTK_ALIGN_FILL &&
          gtk_box_get_spacing(GTK_BOX(input_line)) == 6);
     gboolean output_expand = TRUE, output_fill = TRUE;
     GtkPackType output_pack_type = GTK_PACK_END;
