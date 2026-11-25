@@ -33,7 +33,11 @@ static SDL_Thread *g_thread;
 static int g_running;
 static int g_dirty;
 static int g_pair_mode;
+/* g_mixed means at least one Joy-Con 2 BLE half is active. */
 static int g_mixed;
+static int g_reverse_mixed;
+/* 0 none, 1 left Joy-Con 2, 2 right Joy-Con 2. */
+static int g_mouse_side;
 
 /*
  * Joy-Con 2 mouse sensor input (Joy-Con 1 (L) + Joy-Con 2 (R) profile).
@@ -110,28 +114,39 @@ static int g_reconnect_attempt;
 
 #define PCBLE_RUNNER "/usr/local/libexec/capture2cloud/pcble/run-classic.sh"
 
-/*
- * Controller profiles:
- *   pro           Pro Controller (Classic)
- *   joycon-pair   Joy-Con 1 (L) + Joy-Con 1 (R), two Classic adapters
- *   joycon-mixed  Joy-Con 1 (L) Classic + Joy-Con 2 (R) Bluetooth LE
- * Both pair profiles use the joycon-left/joycon-right sockets.
- */
+/* All profiles supported by the current Classic and Joy-Con 2 helpers. */
 static int parse_profile(const char *profile, int *pair_mode, int *mixed)
 {
     if (!profile || strcmp(profile, "pro") == 0) {
-        *pair_mode = 0;
-        *mixed = 0;
+        *pair_mode = 0; *mixed = 0;
     } else if (strcmp(profile, "joycon-pair") == 0) {
-        *pair_mode = 1;
-        *mixed = 0;
-    } else if (strcmp(profile, "joycon-mixed") == 0) {
-        *pair_mode = 1;
-        *mixed = 1;
+        *pair_mode = 1; *mixed = 0;
+    } else if (strcmp(profile, "joycon2-left") == 0 ||
+               strcmp(profile, "joycon2-right") == 0) {
+        *pair_mode = 0; *mixed = 1;
+    } else if (strcmp(profile, "joycon-mixed") == 0 ||
+               strcmp(profile, "joycon-mixed-reverse") == 0 ||
+               strcmp(profile, "joycon2-pair") == 0) {
+        *pair_mode = 1; *mixed = 1;
     } else {
         return 0;
     }
     return 1;
+}
+
+static int pcble_mouse_side(const char *profile)
+{
+    if (!profile) return 0;
+    if (strcmp(profile, "joycon2-left") == 0 ||
+        strcmp(profile, "joycon-mixed-reverse") == 0) return 1;
+    if (strcmp(profile, "joycon2-pair") == 0) {
+        char saved[16];
+        const char *side = config_get_str("PCBLE_MOUSE_SIDE", saved, sizeof(saved), "right");
+        return strcmp(side, "left") == 0 ? 1 : 2;
+    }
+    if (strcmp(profile, "joycon2-right") == 0 ||
+        strcmp(profile, "joycon-mixed") == 0) return 2;
+    return 0;
 }
 
 static int pressed(const int8_t state[CONTROLLER_STATE_COUNT], int index)
@@ -413,6 +428,8 @@ static int send_input(
     int validate_override,
     const int *mouse,
     int pair_mode,
+    int mouse_side,
+    int peer_from_right,
     int *initialized,
     char *peer,
     size_t peer_size)
@@ -432,36 +449,27 @@ static int send_input(
         buttons[2] |= 1u << 6; /* L */
     }
 
-    char mouse_field[96] = "";
-
+    /* A JC2 pair receives optical-mouse data on ONE selected side only. */
+    char plain_request[256];
+    snprintf(plain_request, sizeof(plain_request),
+             "{\"version\":1,\"method\":\"input\","
+             "\"buttons\":[%u,%u,%u],\"sticks\":[%u,%u,%u,%u]}\n",
+             buttons[0], buttons[1], buttons[2],
+             sticks[0], sticks[1], sticks[2], sticks[3]);
+    char mouse_request[352];
     if (mouse) {
-        snprintf(
-            mouse_field,
-            sizeof(mouse_field),
-            ",\"mouse\":[%d,%d,%d,%d,%d]",
-            mouse[0],
-            mouse[1],
-            mouse[2],
-            mouse[3],
-            mouse[4]);
+        snprintf(mouse_request, sizeof(mouse_request),
+                 "{\"version\":1,\"method\":\"input\","
+                 "\"buttons\":[%u,%u,%u],\"sticks\":[%u,%u,%u,%u],"
+                 "\"mouse\":[%d,%d,%d,%d,%d]}\n",
+                 buttons[0], buttons[1], buttons[2],
+                 sticks[0], sticks[1], sticks[2], sticks[3],
+                 mouse[0], mouse[1], mouse[2], mouse[3], mouse[4]);
     }
-
-    char request[352];
-
-    snprintf(
-        request,
-        sizeof(request),
-        "{\"version\":1,\"method\":\"input\","
-        "\"buttons\":[%u,%u,%u],"
-        "\"sticks\":[%u,%u,%u,%u]%s}\n",
-        buttons[0],
-        buttons[1],
-        buttons[2],
-        sticks[0],
-        sticks[1],
-        sticks[2],
-        sticks[3],
-        mouse_field);
+    const char *left_request = mouse && (!pair_mode || mouse_side == 1)
+                                  ? mouse_request : plain_request;
+    const char *right_request = mouse && mouse_side == 2
+                                   ? mouse_request : plain_request;
 
     char path[320];
     int left_initialized = 0;
@@ -474,10 +482,10 @@ static int send_input(
     int left_ok =
         socket_request(
             path,
-            request,
+            left_request,
             &left_initialized,
-            peer,
-            peer_size);
+            peer_from_right ? NULL : peer,
+            peer_from_right ? 0 : peer_size);
 
     if (!pair_mode) {
         if (initialized) {
@@ -496,10 +504,10 @@ static int send_input(
     int right_ok =
         socket_request(
             path,
-            request,
+            right_request,
             &right_initialized,
-            NULL,
-            0);
+            peer_from_right ? peer : NULL,
+            peer_from_right ? peer_size : 0);
 
     if (initialized) {
         *initialized =
@@ -544,6 +552,8 @@ static int worker(void *unused)
         int home = 0;
         int capture = 0;
         int pair_mode = 0;
+        int mouse_side = 0;
+        int peer_from_right = 0;
         int was_ipc_up = 0;
         int validate = 0;
         int mouse[5];
@@ -572,6 +582,8 @@ static int worker(void *unused)
         if (should_send) {
             memcpy(state, g_state, sizeof(state));
             pair_mode = g_pair_mode;
+            mouse_side = g_mouse_side;
+            peer_from_right = g_reverse_mixed;
             home =
                 g_home_until != 0 &&
                 (Sint32)(g_home_until - now) > 0;
@@ -629,6 +641,8 @@ static int worker(void *unused)
                 validate,
                 send_mouse ? mouse : NULL,
                 pair_mode,
+                mouse_side,
+                peer_from_right,
                 &initialized,
                 peer,
                 sizeof(peer));
@@ -718,7 +732,10 @@ static int output_pcble_init(void)
             profile);
         g_pair_mode = 0;
         g_mixed = 0;
+        profile = "pro";
     }
+    g_reverse_mixed = strcmp(profile, "joycon-mixed-reverse") == 0;
+    g_mouse_side = pcble_mouse_side(profile);
 
     const char *override =
         getenv("CAPTURE2CLOUD_PCBLE_SOCKET_DIR");
@@ -782,7 +799,7 @@ static int output_pcble_init(void)
     fprintf(
         stderr,
         "pcble: backend ready (%s), socket directory %s\n",
-        g_mixed ? "joycon-mixed" : g_pair_mode ? "joycon-pair" : "pro",
+        profile,
         g_socket_dir);
 
     /*
@@ -1307,6 +1324,8 @@ int output_pcble_set_controller(const char *profile)
     if (!g_lock) {
         g_pair_mode = pair_mode;
         g_mixed = mixed;
+        g_reverse_mixed = profile && strcmp(profile, "joycon-mixed-reverse") == 0;
+        g_mouse_side = pcble_mouse_side(profile);
         return 1;
     }
 
@@ -1314,6 +1333,8 @@ int output_pcble_set_controller(const char *profile)
 
     g_pair_mode = pair_mode;
     g_mixed = mixed;
+    g_reverse_mixed = profile && strcmp(profile, "joycon-mixed-reverse") == 0;
+    g_mouse_side = pcble_mouse_side(profile);
     g_mouse_dx = 0;
     g_mouse_dy = 0;
     g_mouse_wheel = 0;
@@ -1495,7 +1516,7 @@ int output_pcble_start_session(
         return 0;
     }
 
-    if (!pair_mode &&
+    if (strcmp(profile, "pro") == 0 &&
         (!valid_color(body_color) ||
          !valid_color(button_color) ||
          !valid_color(left_grip_color) ||
@@ -1527,7 +1548,7 @@ int output_pcble_start_session(
         return 0;
     }
 
-    const char *args[32];
+    const char *args[40];
     int n = 0;
 
     args[n++] = "pkexec";
@@ -1540,7 +1561,7 @@ int output_pcble_start_session(
     if (pair_mode) {
         args[n++] = "--secondary";
         args[n++] = secondary_adapter;
-    } else {
+    } else if (strcmp(profile, "pro") == 0) {
         args[n++] = "--body-color";
         args[n++] = body_color;
         args[n++] = "--button-color";
@@ -1549,6 +1570,22 @@ int output_pcble_start_session(
         args[n++] = left_grip_color;
         args[n++] = "--right-grip-color";
         args[n++] = right_grip_color;
+    }
+
+    /* Pass the MAC selected in GTK, not just an unstable hciN name. */
+    char primary_mac[32];
+    const char *primary_expected = config_get_str(
+        "PCBLE_PRIMARY_ADAPTER", primary_mac, sizeof(primary_mac), "");
+    if (valid_mac(primary_expected)) {
+        args[n++] = "--expect-primary-address";
+        args[n++] = primary_mac;
+    }
+    char secondary_mac[32];
+    const char *secondary_expected = config_get_str(
+        "PCBLE_SECONDARY_ADAPTER", secondary_mac, sizeof(secondary_mac), "");
+    if (pair_mode && valid_mac(secondary_expected)) {
+        args[n++] = "--expect-secondary-address";
+        args[n++] = secondary_mac;
     }
 
     if (reconnect_address && *reconnect_address) {
@@ -1667,14 +1704,15 @@ static int output_pcble_start_saved_reconnect(
             sizeof(paired_adapter_buf),
             "");
 
-    const int mixed = strcmp(profile, "joycon-mixed") == 0;
+    const int reverse = strcmp(profile, "joycon-mixed-reverse") == 0;
+    const int mixed = strcmp(profile, "joycon-mixed") == 0 || reverse;
 
     if (strcmp(profile, "pro") != 0 && !mixed) {
         if (error && error_size) {
             snprintf(
                 error,
                 error_size,
-                "Reconnect is supported for the Pro Controller and Joy-Con 1 (L) + Joy-Con 2 (R) profiles");
+                "Reconnect supported for Pro Controller and both mixed Joy-Con profiles");
         }
 
         return 0;
@@ -1726,7 +1764,7 @@ static int output_pcble_start_saved_reconnect(
         char secondary_buf[32];
         const char *secondary =
             config_get_str(
-                "PCBLE_SECONDARY_ADAPTER",
+                reverse ? "PCBLE_PRIMARY_ADAPTER" : "PCBLE_SECONDARY_ADAPTER",
                 secondary_buf,
                 sizeof(secondary_buf),
                 "");
@@ -1802,9 +1840,9 @@ static int output_pcble_start_saved_reconnect(
         paired_adapter);
 
     return output_pcble_start_session(
-        hci,
-        mixed ? secondary_hci : NULL,
-        mixed ? "joycon-mixed" : "pro",
+        reverse ? secondary_hci : hci,
+        mixed ? (reverse ? hci : secondary_hci) : NULL,
+        profile,
         peer,
         body,
         buttons,
@@ -2123,6 +2161,22 @@ void output_pcble_peer(char *out, size_t out_size)
 
     SDL_LockMutex(g_lock);
     snprintf(out, out_size, "%s", g_peer);
+    SDL_UnlockMutex(g_lock);
+}
+
+void output_pcble_set_mouse_side(int side)
+{
+    if (side != 1 && side != 2) return;
+    if (!g_lock) {
+        g_mouse_side = side;
+        return;
+    }
+    SDL_LockMutex(g_lock);
+    g_mouse_side = side;
+    g_mouse_dx = g_mouse_dy = g_mouse_wheel = 0;
+    g_mouse_buttons = 0;
+    g_mouse_active = 0;
+    g_dirty = 1;
     SDL_UnlockMutex(g_lock);
 }
 

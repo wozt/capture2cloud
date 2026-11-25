@@ -92,6 +92,7 @@ typedef struct {
 
     GtkWidget *pcble_settings;
     GtkWidget *pcble_controller;
+    GtkWidget *pcble_mouse_side;
     GtkWidget *pcble_primary;
     GtkWidget *pcble_secondary;
     GtkWidget *pcble_paired;
@@ -1003,26 +1004,31 @@ static int pcble_mac_valid(const char *s)
 
 static const char *pcble_profile(void)
 {
-    if (!g_c.pcble_controller) {
-        return "pro";
-    }
-
-    switch (gtk_combo_box_get_active(
-                GTK_COMBO_BOX(g_c.pcble_controller))) {
-    case 1:
-        return "joycon-pair";
-    case 2:
-        return "joycon-mixed";
-    default:
-        return "pro";
+    if (!g_c.pcble_controller) return "pro";
+    switch (gtk_combo_box_get_active(GTK_COMBO_BOX(g_c.pcble_controller))) {
+    case 1: return "joycon-pair";
+    case 2: return "joycon-mixed";
+    case 3: return "joycon2-left";
+    case 4: return "joycon2-right";
+    case 5: return "joycon2-pair";
+    case 6: return "joycon-mixed-reverse";
+    default: return "pro";
     }
 }
 
-/* Both Joy-Con profiles need a second adapter and the left/right sockets. */
 static int pcble_profile_is_pair(const char *profile)
 {
     return strcmp(profile, "joycon-pair") == 0 ||
-           strcmp(profile, "joycon-mixed") == 0;
+           strcmp(profile, "joycon-mixed") == 0 ||
+           strcmp(profile, "joycon2-pair") == 0 ||
+           strcmp(profile, "joycon-mixed-reverse") == 0;
+}
+
+static int pcble_profile_reconnect_supported(const char *profile)
+{
+    return strcmp(profile, "pro") == 0 ||
+           strcmp(profile, "joycon-mixed") == 0 ||
+           strcmp(profile, "joycon-mixed-reverse") == 0;
 }
 
 static int pcble_selected_adapter(GtkWidget *combo)
@@ -1108,8 +1114,8 @@ static void pcble_update_controls(GtkShell *shell)
     const int pair =
         pcble_profile_is_pair(pcble_profile());
 
-    const int mixed =
-        strcmp(pcble_profile(), "joycon-mixed") == 0;
+    const char *profile = pcble_profile();
+    const int can_reconnect_profile = pcble_profile_reconnect_supported(profile);
 
     const int running =
         output_pcble_session_running() ||
@@ -1180,20 +1186,24 @@ static void pcble_update_controls(GtkShell *shell)
         pair && !busy);
 
     gtk_widget_set_sensitive(
+        g_c.pcble_mouse_side,
+        strcmp(profile, "joycon2-pair") == 0);
+
+    gtk_widget_set_sensitive(
         g_c.pcble_body_color,
-        !pair && !busy);
+        strcmp(profile, "pro") == 0 && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_button_color,
-        !pair && !busy);
+        strcmp(profile, "pro") == 0 && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_left_grip_color,
-        !pair && !busy);
+        strcmp(profile, "pro") == 0 && !busy);
 
     gtk_widget_set_sensitive(
         g_c.pcble_right_grip_color,
-        !pair && !busy);
+        strcmp(profile, "pro") == 0 && !busy);
 
     int primary =
         pcble_selected_adapter(
@@ -1211,14 +1221,15 @@ static void pcble_update_controls(GtkShell *shell)
 
     int reconnect_ok = 0;
 
-    if ((!pair || mixed) &&
+    if (can_reconnect_profile &&
         primary >= 0 &&
         g_c.pcble_paired_switch[0] &&
         g_c.pcble_paired_adapter[0]) {
-        reconnect_ok =
-            g_ascii_strcasecmp(
-                g_c.pcble_adapters[primary].address,
-                g_c.pcble_paired_adapter) == 0;
+        const int classic = strcmp(profile, "joycon-mixed-reverse") == 0
+            ? secondary : primary;
+        reconnect_ok = classic >= 0 &&
+            g_ascii_strcasecmp(g_c.pcble_adapters[classic].address,
+                               g_c.pcble_paired_adapter) == 0;
     }
 
     gtk_widget_set_sensitive(
@@ -1459,6 +1470,16 @@ static void pcble_controller_changed(
     pcble_update_controls(shell);
 }
 
+static void pcble_mouse_side_changed(GtkWidget *widget, gpointer user_data)
+{
+    GtkShell *shell = user_data;
+    if (shell->loading) return;
+    int selected = gtk_combo_box_get_active(GTK_COMBO_BOX(widget));
+    int side = selected == 1 ? 1 : 2;
+    config_set_str("PCBLE_MOUSE_SIDE", side == 1 ? "left" : "right");
+    output_pcble_set_mouse_side(side);
+}
+
 static void pcble_color_changed(
     GtkWidget *widget,
     gpointer user_data)
@@ -1676,13 +1697,23 @@ static void pcble_load_config(GtkShell *shell)
 
     shell->loading = 1;
 
-    gtk_combo_box_set_active(
-        GTK_COMBO_BOX(g_c.pcble_controller),
-        strcmp(profile, "joycon-mixed") == 0
-            ? 2
-            : strcmp(profile, "joycon-pair") == 0
-                ? 1
-                : 0);
+    static const char *const profiles[] = {
+        "pro", "joycon-pair", "joycon-mixed", "joycon2-left",
+        "joycon2-right", "joycon2-pair", "joycon-mixed-reverse"
+    };
+    int profile_index = 0;
+    for (size_t i = 0; i < G_N_ELEMENTS(profiles); ++i) {
+        if (strcmp(profile, profiles[i]) == 0) {
+            profile_index = (int)i;
+            break;
+        }
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.pcble_controller), profile_index);
+    char mouse_side[16];
+    const char *side = config_get_str("PCBLE_MOUSE_SIDE", mouse_side,
+                                      sizeof(mouse_side), "right");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(g_c.pcble_mouse_side),
+                             strcmp(side, "left") == 0 ? 1 : 0);
 
     config_get_str(
         "PCBLE_SWITCH_ADDRESS",
@@ -1805,12 +1836,11 @@ static void pcble_refresh_status(GtkShell *shell)
          * Remember it together with the physical adapter identity so a
          * later reconnect cannot accidentally use another dongle.
          */
-        if ((strcmp(profile, "pro") == 0 ||
-             strcmp(profile, "joycon-mixed") == 0) &&
+        if (pcble_profile_reconnect_supported(profile) &&
             pcble_mac_valid(peer)) {
-            int primary =
-                pcble_selected_adapter(
-                    g_c.pcble_primary);
+            int primary = pcble_selected_adapter(g_c.pcble_primary);
+            if (strcmp(profile, "joycon-mixed-reverse") == 0)
+                primary = pcble_selected_adapter(g_c.pcble_secondary);
 
             if (primary >= 0) {
                 const char *adapter =
@@ -3319,6 +3349,19 @@ static void build_settings_window(GtkShell *shell) {
             GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
             "Joy-Con 1 (L) Classic + Joy-Con 2 (R) BLE");
 
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Joy-Con 2 (L) BLE");
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Joy-Con 2 (R) BLE");
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Joy-Con 2 pair (L + R) BLE");
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_controller),
+            "Joy-Con 2 (L) BLE + Joy-Con 1 (R) Classic");
+
         gtk_widget_set_tooltip_text(
             g_c.pcble_controller,
             "Joy-Con 1 (L) + Joy-Con 2 (R): the right adapter must support "
@@ -3375,11 +3418,21 @@ static void build_settings_window(GtkShell *shell) {
             "right Joy-Con adapter",
             g_c.pcble_secondary);
 
+        g_c.pcble_mouse_side = gtk_combo_box_text_new();
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_mouse_side), "Right Joy-Con 2");
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(g_c.pcble_mouse_side), "Left Joy-Con 2");
+        g_signal_connect(g_c.pcble_mouse_side, "changed",
+                         G_CALLBACK(pcble_mouse_side_changed), shell);
+        add_row(g_c.pcble_settings, pr++, "BLE mouse sensor",
+                g_c.pcble_mouse_side);
+
         gtk_widget_set_tooltip_text(
             g_c.pcble_secondary,
-            "Used by the Joy-Con profiles: right Joy-Con, or the Joy-Con 2 "
-            "(R) Bluetooth LE adapter. It must be different from the "
-            "primary adapter.");
+            "Used by all pair profiles. In reverse hybrid mode this is "
+            "the Classic right-hand adapter, not the BLE adapter. "
+            "Both adapters must be different.");
 
         g_c.pcble_paired =
             gtk_label_new("not paired yet");

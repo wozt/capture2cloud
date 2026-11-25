@@ -222,6 +222,28 @@ static void test_mouse(void)
     g_lock = NULL;
 }
 
+static void test_new_ble_profiles(void)
+{
+    t_begin("pcble complete Switch 2 controller catalog");
+    struct { const char *profile; int pair, ble, side; } cases[] = {
+        {"pro", 0, 0, 0},
+        {"joycon-pair", 1, 0, 0},
+        {"joycon-mixed", 1, 1, 2},
+        {"joycon2-left", 0, 1, 1},
+        {"joycon2-right", 0, 1, 2},
+        {"joycon2-pair", 1, 1, 2},
+        {"joycon-mixed-reverse", 1, 1, 1}
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        int pair = -1, ble = -1;
+        t_ok(cases[i].profile, parse_profile(cases[i].profile, &pair, &ble));
+        t_eq_int("paired sockets", pair, cases[i].pair);
+        t_eq_int("BLE transport", ble, cases[i].ble);
+        t_eq_int("mouse sensor side", pcble_mouse_side(cases[i].profile), cases[i].side);
+    }
+    t_ok("invalid profile rejected", !parse_profile("joycon2", &(int){0}, &(int){0}));
+}
+
 int main(void)
 {
     test_neutral();
@@ -231,6 +253,7 @@ int main(void)
     test_home_override();
     test_profiles();
     test_mouse();
+    test_new_ble_profiles();
 
     return t_report();
 }

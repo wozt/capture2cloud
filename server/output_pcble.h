@@ -73,6 +73,8 @@ void output_pcble_peer(char *out, size_t out_size);
  * buttons: bit 0 left (R), bit 1 right (ZR), bit 2 middle (stick click).
  */
 int output_pcble_mouse_enabled(void);
+/* 1 = left BLE sensor, 2 = right BLE sensor. */
+void output_pcble_set_mouse_side(int side);
 void output_pcble_mouse(int dx, int dy, int wheel, unsigned buttons, int active);
 
 #endif

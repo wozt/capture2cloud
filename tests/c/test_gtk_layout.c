@@ -271,6 +271,8 @@ int output_pcble_start_session(
     return 1;
 }
 
+/* GTK layout test stub: never accesses Bluetooth hardware. */
+void output_pcble_set_mouse_side(int side) { (void)side; }
 void output_pcble_stop_session(void) {}
 int output_pcble_ipc_up(void) { return 0; }
 int output_pcble_session_running(void) { return 0; }

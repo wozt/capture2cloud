@@ -9,6 +9,8 @@ shift
 desktop=false
 profile=pro
 secondary=
+expected_primary=
+expected_secondary=
 reconnect=
 verbose=false
 wake_probe=false
@@ -53,6 +55,8 @@ while [[ $# -gt 0 ]]; do
         --desktop) desktop=true; shift ;;
         --profile) [[ $# -ge 2 ]] || { echo 'Missing profile value' >&2; exit 2; }; profile=$2; shift 2 ;;
         --secondary) [[ $# -ge 2 && $2 =~ ^hci[0-9]+$ ]] || { echo 'Invalid secondary adapter' >&2; exit 2; }; secondary=$2; shift 2 ;;
+        --expect-primary-address) [[ $# -ge 2 && $2 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { echo 'Invalid primary address' >&2; exit 2; }; expected_primary=${2^^}; shift 2 ;;
+        --expect-secondary-address) [[ $# -ge 2 && $2 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { echo 'Invalid secondary address' >&2; exit 2; }; expected_secondary=${2^^}; shift 2 ;;
         --reconnect)
             [[ $# -ge 2 && $2 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || { echo 'Invalid reconnect MAC' >&2; exit 2; }
             reconnect=$2
@@ -82,6 +86,32 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
+# Verify stable MAC -> current hciN mapping while BlueZ is still running.
+# Never hijack a different dongle after a hotplug/reboot renumbering.
+verify_adapter() {
+    local device=$1 expected=$2 property actual
+    [[ -z $expected ]] && return 0
+    if ! property=$(busctl --system get-property org.bluez \
+        "/org/bluez/$device" org.bluez.Adapter1 Address 2>/dev/null); then
+        echo "Cannot verify Bluetooth adapter identity: $device" >&2
+        return 1
+    fi
+    if [[ $property =~ ^s[[:space:]]\"(([[:xdigit:]]{2}:){5}[[:xdigit:]]{2})\"$ ]]; then
+        actual=${BASH_REMATCH[1]^^}
+    else
+        echo "Cannot parse Bluetooth address for $device" >&2
+        return 1
+    fi
+    [[ $actual == "$expected" ]] || {
+        echo "Adapter identity changed: $device is $actual (expected $expected)" >&2
+        return 1
+    }
+}
+verify_adapter "$adapter" "$expected_primary"
+if [[ -n $secondary ]]; then verify_adapter "$secondary" "$expected_secondary"; fi
+printf '[ROUTE] profile=%s primary=%s mac=%s secondary=%s mac=%s\n' \
+    "$profile" "$adapter" "${expected_primary:-unknown}" \
+    "${secondary:-none}" "${expected_secondary:-none}"
 if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
     # Joy-Con 2 runs its own BLE stack on an exclusive HCI user channel. It
     # does not touch the bluetoothd configuration; the kernel hands the
@@ -94,7 +124,7 @@ if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
     done
     [[ -n "$jc2" ]] || { echo 'Build the Joy-Con 2 backend first.' >&2; exit 1; }
     [[ -d /sys/class/bluetooth/$adapter ]] || { echo 'Adapter not present' >&2; exit 1; }
-    jc2_options=(--side "${profile#joycon2-}")
+    jc2_options=(--side "${profile#joycon2-}" --socket pro.sock)
     $verbose && jc2_options+=(--verbose)
     [[ -n $reconnect ]] && jc2_options+=(--reconnect)
     if $desktop; then
@@ -111,11 +141,64 @@ if [[ $profile == joycon2-left || $profile == joycon2-right ]]; then
     echo "Adapter returned to BlueZ. Private log: $capture"
     exit $status
 fi
-[[ $profile == pro || $profile == joycon-pair || $profile == joycon-mixed ]] || { echo 'Profile must be pro, joycon-pair, joycon-mixed, joycon2-left or joycon2-right' >&2; exit 2; }
+if [[ $profile == joycon2-pair ]]; then
+    $desktop || { echo 'Joy-Con 2 pair requires desktop mode' >&2; exit 2; }
+    [[ -n ${PKEXEC_UID:-} ]] || { echo 'Joy-Con 2 pair requires pkexec' >&2; exit 2; }
+    [[ -n $secondary && $secondary != "$adapter" ]] || { echo 'Two distinct BLE adapters required' >&2; exit 2; }
+    [[ -d /sys/class/bluetooth/$adapter && -d /sys/class/bluetooth/$secondary ]] || {
+        echo 'One of the Joy-Con 2 adapters is missing' >&2; exit 2;
+    }
+    jc2=
+    for candidate in "$script_dir/capture2cloud-pcble-joycon2-backend" \
+                     "$script_dir/../capture2cloud-pcble-joycon2-backend"; do
+        if [[ -x $candidate ]]; then jc2=$candidate; break; fi
+    done
+    [[ -n $jc2 ]] || { echo 'Build the Joy-Con 2 backend first' >&2; exit 1; }
+    mkdir -p "/run/capture2cloud/pcble/$PKEXEC_UID"
+    chown "$PKEXEC_UID" "/run/capture2cloud/pcble/$PKEXEC_UID"
+    chmod 700 "/run/capture2cloud/pcble/$PKEXEC_UID"
+    capture=$(mktemp -d "/tmp/capture2cloud-pcble-${PKEXEC_UID}-XXXXXXXX")
+    chmod 700 "$capture"
+    left_pid=; right_pid=
+    dual_cleanup() {
+        trap - EXIT INT TERM
+        [[ -z $left_pid ]] || kill -TERM "$left_pid" 2>/dev/null || true
+        [[ -z $right_pid ]] || kill -TERM "$right_pid" 2>/dev/null || true
+        [[ -z $left_pid ]] || wait "$left_pid" 2>/dev/null || true
+        [[ -z $right_pid ]] || wait "$right_pid" 2>/dev/null || true
+        find "$capture" -type f -exec chmod 600 {} +
+        chown -R "$PKEXEC_UID" "$capture"
+        echo "BLE pair stopped. Private logs: $capture"
+    }
+    trap dual_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    options=(--vertical --desktop "$PKEXEC_UID")
+    [[ -z $reconnect ]] || options+=(--reconnect)
+    $verbose && options+=(--verbose)
+    "$jc2" "$adapter" --side left --socket joycon-left.sock "${options[@]}" > "$capture/joycon2-left.log" 2>&1 &
+    left_pid=$!
+    "$jc2" "$secondary" --side right --socket joycon-right.sock "${options[@]}" > "$capture/joycon2-right.log" 2>&1 &
+    right_pid=$!
+    left_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-left.sock"
+    right_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-right.sock"
+    for _ in {1..100}; do
+        [[ -S $left_socket && -S $right_socket ]] && break
+        kill -0 "$left_pid" 2>/dev/null && kill -0 "$right_pid" 2>/dev/null || break
+        sleep .05
+    done
+    [[ -S $left_socket && -S $right_socket ]] || { echo 'BLE pair failed to open both sockets' >&2; exit 1; }
+    set +e
+    first_pid=
+    if wait -n -p first_pid "$left_pid" "$right_pid"; then status=0; else status=$?; fi
+    set -e
+    echo "[EXIT] profile=joycon2-pair first pid=${first_pid:-none} status=$status"
+    exit "$status"
+fi
+[[ $profile == pro || $profile == joycon-pair || $profile == joycon-mixed || $profile == joycon-mixed-reverse ]] || { echo 'Unknown controller profile' >&2; exit 2; }
 jc2=
-if [[ $profile == joycon-mixed ]]; then
-    # Joy-Con 1 (L) Classic on the primary adapter, Joy-Con 2 (R) BLE on the
-    # secondary adapter through its own HCI user-channel backend.
+if [[ $profile == joycon-mixed || $profile == joycon-mixed-reverse ]]; then
+    # Mixed profiles run a Classic and a BLE backend on separate radios.
     for candidate in \
         "$script_dir/capture2cloud-pcble-joycon2-backend" \
         "$script_dir/../capture2cloud-pcble-joycon2-backend"; do
@@ -123,11 +206,16 @@ if [[ $profile == joycon-mixed ]]; then
     done
     [[ -n "$jc2" ]] || { echo 'Build the Joy-Con 2 backend first.' >&2; exit 1; }
 fi
-if [[ $profile == joycon-pair || $profile == joycon-mixed ]]; then
+if [[ $profile == joycon-pair || $profile == joycon-mixed || $profile == joycon-mixed-reverse ]]; then
     $desktop || { echo 'Joy-Con pair currently requires desktop mode' >&2; exit 2; }
     [[ -n $secondary && $secondary != "$adapter" ]] || { echo 'Joy-Con pair requires two distinct adapters' >&2; exit 2; }
 fi
-[[ -z $reconnect || $profile == pro || $profile == joycon-mixed ]] || { echo 'Reconnect is implemented for the Pro Controller and the Joy-Con 1 (L) + Joy-Con 2 (R) profiles.' >&2; exit 2; }
+# The backend always runs Classic on $adapter; reverse hybrid puts Classic
+# on the user's secondary (right) radio and BLE on their primary (left) radio.
+if [[ $profile == joycon-mixed-reverse ]]; then
+    original=$adapter; adapter=$secondary; secondary=$original
+fi
+[[ -z $reconnect || $profile == pro || $profile == joycon-mixed || $profile == joycon-mixed-reverse ]] || { echo 'Reconnect not implemented for this Classic profile' >&2; exit 2; }
 backend_options=()
 $verbose && backend_options+=(--verbose)
 [[ -n $reconnect ]] && backend_options+=(--reconnect "$reconnect")
@@ -289,26 +377,33 @@ if $desktop; then
     chmod 700 "/run/capture2cloud/pcble/$PKEXEC_UID"
     if [[ $profile == pro ]]; then
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type pro "${backend_options[@]}" | tee "$capture/daemon.log"
-    elif [[ $profile == joycon-mixed ]]; then
-        jc2_options=(--side right --vertical --socket joycon-right.sock --desktop "$PKEXEC_UID")
+    elif [[ $profile == joycon-mixed || $profile == joycon-mixed-reverse ]]; then
+        jc2_side=right; classic_side=left
+        if [[ $profile == joycon-mixed-reverse ]]; then jc2_side=left; classic_side=right; fi
+        jc2_options=(--side "$jc2_side" --vertical --socket "joycon-$jc2_side.sock" --desktop "$PKEXEC_UID")
         [[ -n $reconnect ]] && jc2_options+=(--reconnect)
         $verbose && jc2_options+=(--verbose)
-        "$jc2" "$secondary" "${jc2_options[@]}" > "$capture/joycon2-right.log" 2>&1 &
-        right_pid=$!;backend_pids+=("$right_pid")
-        right_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-right.sock"
-        for _ in {1..100}; do [[ -S $right_socket ]] && break; kill -0 "$right_pid" 2>/dev/null || break; sleep .05; done
-        [[ -S $right_socket ]] || { echo 'Joy-Con 2 (R) backend failed to start' >&2; wait "$right_pid" || true; exit 1; }
-        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
-        left_pid=$!;backend_pids+=("$left_pid")
+        "$jc2" "$secondary" "${jc2_options[@]}" > "$capture/joycon2-$jc2_side.log" 2>&1 &
+        jc2_pid=$!; backend_pids+=("$jc2_pid")
+        jc2_socket="/run/capture2cloud/pcble/$PKEXEC_UID/joycon-$jc2_side.sock"
+        for _ in {1..100}; do
+            [[ -S $jc2_socket ]] && break
+            kill -0 "$jc2_pid" 2>/dev/null || break
+            sleep .05
+        done
+        [[ -S $jc2_socket ]] || { echo 'Joy-Con 2 backend did not open IPC socket' >&2; exit 1; }
+        "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type "joycon-${classic_side:0:1}" "${backend_options[@]}" > "$capture/joycon-$classic_side.log" 2>&1 &
+        classic_pid=$!; backend_pids+=("$classic_pid")
         set +e
-        # One half alone is not a usable pair: stop the other when either exits.
-        wait -n "$left_pid" "$right_pid"
-        kill -TERM "$left_pid" "$right_pid" 2>/dev/null
-        wait "$left_pid"; left_status=$?
-        wait "$right_pid"; right_status=$?
+        first_pid=
+        if wait -n -p first_pid "$classic_pid" "$jc2_pid"; then first_status=0; else first_status=$?; fi
+        kill -TERM "$classic_pid" "$jc2_pid" 2>/dev/null
+        wait "$classic_pid" 2>/dev/null || true
+        wait "$jc2_pid" 2>/dev/null || true
         backend_pids=()
         set -e
-        echo "Joy-Con 1 (L) exit $left_status, Joy-Con 2 (R) exit $right_status"
+        echo "[EXIT] profile=$profile first=${first_pid:-none} status=$first_status"
+        exit "$first_status"
     else
         "$app" "$adapter" "$sdp" --desktop "$PKEXEC_UID" --type joycon-l --allow-adapter "$secondary" "${backend_options[@]}" > "$capture/joycon-left.log" 2>&1 &
         left_pid=$!;backend_pids+=("$left_pid")

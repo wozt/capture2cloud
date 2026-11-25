@@ -166,11 +166,15 @@ Controllers (`PCBLE_CONTROLLER`):
 | --- | --- |
 | `pro` | Pro Controller, one Classic adapter |
 | `joycon-pair` | Joy-Con (L) + Joy-Con (R), two Classic adapters |
-| `joycon-mixed` | Joy-Con 1 (L) on a Classic adapter + Joy-Con 2 (R) on a Bluetooth LE adapter with LE 2M (`PCBLE_SECONDARY_ADAPTER`) |
+| `joycon-mixed` | Joy-Con 1 (L) Classic + Joy-Con 2 (R) BLE, two adapters |
+| `joycon2-left` | Joy-Con 2 (L) BLE, one adapter |
+| `joycon2-right` | Joy-Con 2 (R) BLE, one adapter |
+| `joycon2-pair` | Joy-Con 2 (L) + (R) BLE, two adapters |
+| `joycon-mixed-reverse` | Joy-Con 2 (L) BLE + Joy-Con 1 (R) Classic, two adapters |
 
-The Joy-Con 2 half runs its own BLE stack on an exclusive HCI user channel, so that adapter is unavailable to BlueZ while the session runs. Pair / Sync on a Joy-Con profile holds L+R automatically once both halves are connected; press A to leave Change Grip/Order. Reconnect works for `pro` and `joycon-mixed`.
+The Joy-Con 2 half runs its own BLE stack on an exclusive HCI user channel, so that adapter is unavailable to BlueZ while the session runs. Pair / Sync on a Joy-Con profile holds L+R automatically once both halves are connected; press A to leave Change Grip/Order. Automatic reconnect is exposed for `pro`, `joycon-mixed`, and `joycon-mixed-reverse`; the BLE-only profiles use Pair / Sync and their existing bond records, but automatic recovery is not yet exposed by Capture2Cloud.
 
-With `joycon-mixed` running, clicking the stream window captures the PC mouse for the Joy-Con 2 mouse mode: movement drives the optical sensor, left/right/middle click are R/ZR/stick click and the wheel nudges the stick. Right Ctrl, or the window losing focus, releases it. `PCBLE_MOUSE_SENSITIVITY` (default `1.5`) scales the movement. Other profiles never capture the mouse.
+With any Joy-Con 2 BLE profile running, clicking the stream window captures the PC mouse for the optical sensor. Right Ctrl or focus loss releases it, and `PCBLE_MOUSE_SENSITIVITY` scales motion. In a dual-BLE Joy-Con 2 pair, select the sensor via `PCBLE_MOUSE_SIDE=left|right` or the GTK selector; motion is sent to that half only. Pro Controller and Classic Joy-Con 1 pairs do not capture the mouse.
 
 The same recovery path is used by:
 
@@ -381,7 +385,8 @@ Important options include:
 | `WIIU_CONSOLE_PORT` | Wii U console client port |
 | `OLD3DS_PORT` | Old 3DS / Old 2DS client port |
 | `GAMEPAD_OUTPUT_BACKEND` | `titan` or `pcble` |
-| `PCBLE_CONTROLLER` | `pro`, `joycon-pair` or `joycon-mixed` |
+| `PCBLE_CONTROLLER` | `pro`, `joycon-pair`, `joycon-mixed`, `joycon2-left`, `joycon2-right`, `joycon2-pair`, `joycon-mixed-reverse` |
+| `PCBLE_MOUSE_SIDE` | `left` or `right` for the optical mouse in a Joy-Con 2 pair |
 | `PCBLE_SECONDARY_ADAPTER` | Right Joy-Con (Classic) or Joy-Con 2 (BLE) adapter MAC |
 | `PCBLE_MOUSE_SENSITIVITY` | Joy-Con 2 mouse scale, default `1.5` |
 | `RESET_METHOD` | `script` or `bluetooth` |
