@@ -194,16 +194,15 @@ static Controls g_c;
 
 /* WOZT GTK Standard: responsive sections, live themes/languages and custom
  * window chrome. Only this GTK thread touches the widget hierarchy. */
-/* WOZT_0831_INDEPENDENT_ROWS
- * Three logical GROUPS with independent horizontal ROWS:
- *   Overview + Clients; the two controller panels; and four small tools.
- * Unlike GtkGrid, a tall section in one row never stretches or positions
- * any section in another row. Widths are packed greedily per group, using
- * useful control widths instead of hard-coded 1/2/3/4 global grid modes.
- * These are target widths, NOT GTK minimum size requests. The scroller can
- * always contract, and all widgets remain available at narrow widths. */
-static const int wozt_group_first[3] = {0, 2, 4};
-static const int wozt_group_size[3] = {2, 2, 3};
+/* WOZT_0864_TOP_ROW_MONITOR_CAPTURE:
+ * Three responsive groups: Overview, Clients and a compact two-frame
+ * Local monitor/Capture stack; both controller frames; Reset/Maintenance.
+ * The stack is one LOGICAL item, but retains two independent GtkFrames.
+ * Only the current group's last row item gets surplus width (except that
+ * Clients absorbs it when the compact stack is the top row's third item).
+ * Rows explicitly refuse excess vertical expansion. */
+static const int wozt_group_first[3] = {0, 2, 6};
+static const int wozt_group_size[3] = {3, 2, 2};
 /* WOZT_0840_COMPACT_CONTROLLER_ROWS */
 static const int wozt_section_target_width[8] = {
     260, 300,   /* compact Overview; Clients notebook scrolls horizontally */
@@ -243,14 +242,11 @@ static int wozt_dashboard_group_columns(int width, int group)
     const int count = wozt_group_size[group];
     int total = 0, packed = 0;
     for (int i = 0; i < count; ++i) {
-        /* WOZT_0862_MONITOR_CAPTURE_STACK: monitor and Capture are
-         * two framed, VERTICALLY stacked sections but only one column
-         * in the responsive group. Other groups keep their original order. */
-        const int need_width = group == 2
-            ? (i == 0 ? MAX(wozt_section_layout_width(5),
-                            wozt_section_layout_width(4))
-                      : wozt_section_layout_width(5 + i))
-            : wozt_section_layout_width(first + i);
+        /* The pair travels together as one responsive slot. The real GTK
+         * widths (not a guessed 310px budget) decide when it wraps. */
+        const int need_width = (group == 0 && i == 2)
+            ? MAX(wozt_section_layout_width(5), wozt_section_layout_width(4))
+            : wozt_section_layout_width(group == 2 ? 6 + i : first + i);
         const int need = need_width + (i ? 6 : 0);
         if (packed && total + need > space) break;
         total += need;
@@ -308,44 +304,45 @@ static void wozt_dashboard_reflow(int width)
             for (int j = 0; j < n; ++j) {
                 const int slot = offset + j;
                 const gboolean last = j == n - 1;
-                if (group == 2 && slot == 0) {
-                    /* Local monitor above Capture, with TWO distinct frames.
-                     * They travel together through every responsive reflow. */
+                if (group == 0 && slot == 2) {
+                    /* Keep the pair compact at the RIGHT of Clients. Clients
+                     * takes spare horizontal width; the stack never becomes
+                     * a very wide monitor panel or a tall empty column.
+                     * Alone on a wrapped row, it still fills that row. */
+                    const gboolean alone = n == 1;
                     GtkWidget *column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
                     gtk_widget_set_halign(column,
-                                         last ? GTK_ALIGN_FILL : GTK_ALIGN_START);
-                    gtk_widget_set_hexpand(column, last);
-                    /* Fill the tool row's actual height without requesting
-                     * any extra height for the dashboard as a whole. */
-                    gtk_widget_set_valign(column, GTK_ALIGN_FILL);
+                                         alone ? GTK_ALIGN_FILL : GTK_ALIGN_START);
+                    gtk_widget_set_hexpand(column, alone);
+                    gtk_widget_set_valign(column, GTK_ALIGN_START);
                     gtk_widget_set_vexpand(column, FALSE);
-                    gtk_box_pack_start(GTK_BOX(line), column, last, last, 0);
+                    gtk_box_pack_start(GTK_BOX(line), column, alone, alone, 0);
                     GtkWidget *monitor = g_c.wozt_sections[5];
                     GtkWidget *capture = g_c.wozt_sections[4];
                     gtk_widget_set_halign(monitor, GTK_ALIGN_FILL);
                     gtk_widget_set_halign(capture, GTK_ALIGN_FILL);
                     gtk_widget_set_hexpand(monitor, TRUE);
                     gtk_widget_set_hexpand(capture, TRUE);
-                    /* Only Local monitor fills any small height difference
-                     * versus Reset/Maintenance; Capture stays one short row.
-                     * The enclosing dashboard row NEVER grows vertically. */
-                    gtk_widget_set_valign(monitor, GTK_ALIGN_FILL);
-                    gtk_widget_set_valign(capture, GTK_ALIGN_FILL);
-                    gtk_widget_set_vexpand(monitor, TRUE);
+                    gtk_widget_set_valign(monitor, GTK_ALIGN_START);
+                    gtk_widget_set_valign(capture, GTK_ALIGN_START);
+                    gtk_widget_set_vexpand(monitor, FALSE);
                     gtk_widget_set_vexpand(capture, FALSE);
-                    gtk_box_pack_start(GTK_BOX(column), monitor, TRUE, TRUE, 0);
+                    gtk_box_pack_start(GTK_BOX(column), monitor, FALSE, TRUE, 0);
                     gtk_box_pack_start(GTK_BOX(column), capture, FALSE, TRUE, 0);
                     gtk_widget_show_all(column);
                     continue;
                 }
                 GtkWidget *frame = g_c.wozt_sections[
-                    group == 2 ? 5 + slot : first + slot];
-                /* Rightmost item of each row takes the surplus. The vertical
-                 * monitor/capture pair counts as ONE such item. */
+                    group == 2 ? 6 + slot : first + slot];
+                /* In the three-item top row, Clients expands while the last
+                 * stack stays compact. Else the last item of each row fills
+                 * surplus width. There are no artificial middle spacers. */
+                const gboolean grow = last ||
+                    (group == 0 && slot == 1 && n == 3);
                 gtk_widget_set_halign(frame,
-                                      last ? GTK_ALIGN_FILL : GTK_ALIGN_START);
-                gtk_widget_set_hexpand(frame, last);
-                gtk_box_pack_start(GTK_BOX(line), frame, last, last, 0);
+                                      grow ? GTK_ALIGN_FILL : GTK_ALIGN_START);
+                gtk_widget_set_hexpand(frame, grow);
+                gtk_box_pack_start(GTK_BOX(line), frame, grow, grow, 0);
                 gtk_widget_show(frame);
             }
             gtk_widget_show(line);

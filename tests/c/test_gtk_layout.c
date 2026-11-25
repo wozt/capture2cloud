@@ -686,16 +686,20 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          wozt_section_layout_width(7) == wozt_section_target_width[7]);
     const int monitor_capture_width = MAX(wozt_section_layout_width(4),
                                           wozt_section_layout_width(5));
-    const int tools_two_width = monitor_capture_width + wozt_section_layout_width(6) + 36;
-    const int tools_three_width = tools_two_width + wozt_section_layout_width(7) + 6;
-    t_eq_int("Monitor/Capture stack wraps before it collides with Reset",
+    const int top_three_width = wozt_section_layout_width(0) +
+        wozt_section_layout_width(1) + monitor_capture_width + 42;
+    t_eq_int("Monitor/Capture wraps just before the first row fits three items",
+             wozt_dashboard_group_columns(top_three_width - 1, 0), 2);
+    t_eq_int("Overview, Clients and compact Monitor/Capture fit at the breakpoint",
+             wozt_dashboard_group_columns(top_three_width, 0), 3);
+    t_eq_int("1650px: the compact stack is on the top row",
+             wozt_dashboard_group_columns(1650, 0), 3);
+    const int tools_two_width = wozt_section_layout_width(6) +
+                                wozt_section_layout_width(7) + 36;
+    t_eq_int("Reset and Maintenance wrap before colliding",
              wozt_dashboard_group_columns(tools_two_width - 1, 2), 1);
-    t_eq_int("Monitor/Capture stack and Reset share a row when they fit",
+    t_eq_int("Reset and Maintenance join when both fit",
              wozt_dashboard_group_columns(tools_two_width, 2), 2);
-    t_eq_int("Maintenance joins as the third logical column at its breakpoint",
-             wozt_dashboard_group_columns(tools_three_width, 2), 3);
-    t_eq_int("Maintenance wraps just below its breakpoint",
-             wozt_dashboard_group_columns(tools_three_width - 1, 2), 2);
     /* Controller budgets now match their compact two-column contents.
      * Derive the joining boundary from their targets and the 36px gutter
      * allowance, rather than relying on a stale fixed-width test. */
@@ -709,11 +713,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              wozt_dashboard_group_columns(controller_join_width, 1), 2);
     t_eq_int("1800px: controller sections share one line",
              wozt_dashboard_group_columns(1800, 1), 2);
-    t_eq_int("Wide tool row has three logical columns, not four",
-             wozt_dashboard_group_columns(2200, 2), 3);
-    t_ok("Only three tool slots participate in responsive reflow",
-         wozt_group_size[2] == 3 &&
-         wozt_dashboard_group_columns(1650, 2) == 3);
+    t_eq_int("Reset/Maintenance group always has two slots at wide widths",
+             wozt_dashboard_group_columns(2200, 2), 2);
+    t_ok("Three first-row slots and two bottom-row slots are configured",
+         wozt_group_size[0] == 3 && wozt_group_size[2] == 2 &&
+         wozt_group_first[2] == 6 &&
+         wozt_dashboard_group_columns(1650, 0) == 3);
     t_ok("Dashboard is a vertical container of independent rows",
          GTK_IS_BOX(g_c.wozt_dashboard) &&
          gtk_orientable_get_orientation(GTK_ORIENTABLE(g_c.wozt_dashboard)) ==
@@ -1069,20 +1074,26 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         gtk_box_query_child_packing(GTK_BOX(monitor_stack), g_c.wozt_sections[4],
                                     &capture_expand, &capture_fill, NULL, NULL);
     }
-    t_ok("Monitor fills lower-left tool gutter while Capture stays compact",
+    t_ok("Compact Monitor/Capture stack never claims excess vertical height",
          GTK_IS_BOX(monitor_stack) &&
-         gtk_widget_get_valign(monitor_stack) == GTK_ALIGN_FILL &&
+         gtk_widget_get_valign(monitor_stack) == GTK_ALIGN_START &&
          !gtk_widget_get_vexpand(monitor_stack) &&
-         gtk_widget_get_vexpand(g_c.wozt_sections[5]) &&
+         !gtk_widget_get_vexpand(g_c.wozt_sections[5]) &&
          !gtk_widget_get_vexpand(g_c.wozt_sections[4]) &&
-         monitor_expand && monitor_fill && !capture_expand && capture_fill);
-    t_ok("Monitor/Capture column, Reset and Maintenance share the wide tool row",
+         !monitor_expand && monitor_fill && !capture_expand && capture_fill);
+    t_ok("Compact stack sits beside Clients on first row at wide widths",
          GTK_IS_BOX(tool_line) &&
          gtk_orientable_get_orientation(GTK_ORIENTABLE(tool_line)) ==
              GTK_ORIENTATION_HORIZONTAL &&
-         gtk_widget_get_parent(g_c.wozt_sections[6]) == tool_line &&
-         gtk_widget_get_parent(g_c.wozt_sections[7]) == tool_line &&
-         !gtk_widget_get_hexpand(monitor_stack) &&
+         gtk_widget_get_parent(g_c.wozt_sections[0]) == tool_line &&
+         gtk_widget_get_parent(g_c.wozt_sections[1]) == tool_line &&
+         gtk_widget_get_hexpand(g_c.wozt_sections[1]) &&
+         !gtk_widget_get_hexpand(monitor_stack));
+    GtkWidget *reset_row = gtk_widget_get_parent(g_c.wozt_sections[6]);
+    t_ok("Reset and Maintenance occupy the separate bottom utility row",
+         GTK_IS_BOX(reset_row) &&
+         reset_row != tool_line &&
+         gtk_widget_get_parent(g_c.wozt_sections[7]) == reset_row &&
          !gtk_widget_get_hexpand(g_c.wozt_sections[6]) &&
          gtk_widget_get_hexpand(g_c.wozt_sections[7]));
     gint monitor_scale_width = -1, monitor_scale_height = -1;
@@ -1095,11 +1106,11 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                      "wozt-calibration-scale") &&
          gtk_style_context_has_class(gtk_widget_get_style_context(g_c.contrast),
                                      "wozt-calibration-scale"));
-    t_ok("The three functional rows have distinct parents",
+    t_ok("The three functional groups remain independent",
          gtk_widget_get_parent(g_c.wozt_sections[0]) !=
              gtk_widget_get_parent(g_c.wozt_sections[2]) &&
          gtk_widget_get_parent(g_c.wozt_sections[2]) !=
-             gtk_widget_get_parent(g_c.wozt_sections[4]));
+             gtk_widget_get_parent(g_c.wozt_sections[6]));
     /* Verify actual GTK reparenting both below and at the packing
      * threshold; keep all widgets, callbacks and settings intact. */
     wozt_dashboard_reflow(controller_join_width - 1);
@@ -1134,26 +1145,24 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
              gtk_widget_get_parent(g_c.wozt_sections[1]));
     GtkWidget *monitor_stack_default =
         gtk_widget_get_parent(g_c.wozt_sections[5]);
-    GtkWidget *default_tool_line = monitor_stack_default
+    GtkWidget *default_top_line = monitor_stack_default
         ? gtk_widget_get_parent(monitor_stack_default) : NULL;
-    const int tool_capacity = wozt_dashboard_group_columns(1144, 2);
-    t_ok("The two monitor/capture frames stay stacked at default width",
+    t_ok("Monitor and Capture stay stacked on first row at default width",
+         wozt_dashboard_group_columns(1144, 0) == 3 &&
          GTK_IS_BOX(monitor_stack_default) &&
          gtk_orientable_get_orientation(GTK_ORIENTABLE(monitor_stack_default)) ==
              GTK_ORIENTATION_VERTICAL &&
          gtk_widget_get_parent(g_c.wozt_sections[4]) == monitor_stack_default &&
-         tool_capacity >= 1 && tool_capacity <= 3 &&
-         (tool_capacity == 1 ||
-          gtk_widget_get_parent(g_c.wozt_sections[6]) == default_tool_line) &&
-         (tool_capacity < 3 ||
-          gtk_widget_get_parent(g_c.wozt_sections[7]) == default_tool_line));
-    wozt_dashboard_reflow(tools_two_width - 1);
+         default_top_line == gtk_widget_get_parent(g_c.wozt_sections[0]) &&
+         default_top_line == gtk_widget_get_parent(g_c.wozt_sections[1]));
+    wozt_dashboard_reflow(top_three_width - 1);
     GtkWidget *narrow_stack = gtk_widget_get_parent(g_c.wozt_sections[5]);
-    t_ok("Capture remains immediately below Monitor after narrow reflow",
+    t_ok("Monitor/Capture remains one vertical block when top row wraps",
          GTK_IS_BOX(narrow_stack) &&
          gtk_widget_get_parent(g_c.wozt_sections[4]) == narrow_stack &&
          gtk_widget_get_parent(narrow_stack) !=
-             gtk_widget_get_parent(g_c.wozt_sections[6]));
+             gtk_widget_get_parent(g_c.wozt_sections[1]) &&
+         gtk_box_get_spacing(GTK_BOX(narrow_stack)) == 5);
     wozt_dashboard_reflow(1144);
     /* Unlike the previous TRUE/TRUE GtkBox packing, Overview must not
      * take half of the available width. Clients absorbs all spare width. */
