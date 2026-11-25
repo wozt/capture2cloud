@@ -3511,17 +3511,18 @@ static void build_settings_window(GtkShell *shell) {
     g_c.overview_status = gtk_label_new("starting...");
     gtk_widget_set_halign(g_c.overview_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.overview_status), TRUE);
-    /* Keep every status character, wrapping rather than widening Overview. */
+    /* add_row() assigns a generic GtkLabel width of 46 characters.
+     * Apply Overview's narrower width AFTER it attaches the control. */
     gtk_label_set_line_wrap(GTK_LABEL(g_c.overview_status), TRUE);
-    gtk_label_set_max_width_chars(GTK_LABEL(g_c.overview_status), 34);
     add_row(grid, row++, "status", g_c.overview_status);
+    gtk_label_set_max_width_chars(GTK_LABEL(g_c.overview_status), 34);
 
     g_c.backend_status = gtk_label_new("");
     gtk_widget_set_halign(g_c.backend_status, GTK_ALIGN_START);
     gtk_label_set_selectable(GTK_LABEL(g_c.backend_status), TRUE);
     gtk_label_set_line_wrap(GTK_LABEL(g_c.backend_status), TRUE);
-    gtk_label_set_max_width_chars(GTK_LABEL(g_c.backend_status), 34);
     add_row(grid, row++, "controller output", g_c.backend_status);
+    gtk_label_set_max_width_chars(GTK_LABEL(g_c.backend_status), 34);
 
     add_section_header(grid, row++, "Connected clients");
 

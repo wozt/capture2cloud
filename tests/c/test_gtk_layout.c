@@ -544,6 +544,10 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.overview_status &&
          gtk_label_get_line_wrap(GTK_LABEL(g_c.overview_status)) &&
          gtk_label_get_max_width_chars(GTK_LABEL(g_c.overview_status)) == 34);
+    t_ok("Overview controller output status keeps its compact width",
+         g_c.backend_status &&
+         gtk_label_get_line_wrap(GTK_LABEL(g_c.backend_status)) &&
+         gtk_label_get_max_width_chars(GTK_LABEL(g_c.backend_status)) == 34);
     t_ok("Overview client statuses use compact natural widths",
          g_c.overview_client_status[GTK_SHELL_CLIENT_BROWSER] &&
          gtk_label_get_max_width_chars(GTK_LABEL(
