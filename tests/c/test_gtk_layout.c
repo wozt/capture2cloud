@@ -372,6 +372,12 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
         ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_output)) : NULL;
     GList *input_children = g_c.wozt_inner_input
         ? gtk_container_get_children(GTK_CONTAINER(g_c.wozt_inner_input)) : NULL;
+    GtkWidget *reconnect_text = g_c.pcble_reconnect && GTK_IS_BIN(g_c.pcble_reconnect)
+        ? gtk_bin_get_child(GTK_BIN(g_c.pcble_reconnect)) : NULL;
+    t_ok("Long PCBLE actions keep a single line and the original font size",
+         reconnect_text && GTK_IS_LABEL(reconnect_text) &&
+         gtk_label_get_single_line_mode(GTK_LABEL(reconnect_text)) &&
+         gtk_label_get_ellipsize(GTK_LABEL(reconnect_text)) == PANGO_ELLIPSIZE_END);
     t_ok("Controller output has three genuine internal columns",
          g_c.wozt_inner_output && GTK_IS_BOX(g_c.wozt_inner_output) &&
          g_list_length(output_children) == 3);
@@ -406,13 +412,40 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
                                 &default_width, &default_height);
     t_ok("Default window is 1144x840 (+10% width, +20% height)",
          default_width == 1144 && default_height == 840);
+    GdkGeometry window_hints = {0};
+    GdkWindowHints hint_mask = 0;
+    gtk_window_get_geometry_hints(GTK_WINDOW(sh->settings_window),
+                                  &window_hints, &hint_mask);
+    t_ok("The window can shrink back to 600px wide",
+         (hint_mask & GDK_HINT_MIN_SIZE) && window_hints.min_width <= 600);
+    GtkWidget *dashboard_scroller = gtk_widget_get_parent(g_c.wozt_dashboard);
+    if (GTK_IS_VIEWPORT(dashboard_scroller))
+        dashboard_scroller = gtk_widget_get_parent(dashboard_scroller);
+    GtkPolicyType horizontal = GTK_POLICY_NEVER, vertical = GTK_POLICY_NEVER;
+    if (GTK_IS_SCROLLED_WINDOW(dashboard_scroller))
+        gtk_scrolled_window_get_policy(GTK_SCROLLED_WINDOW(dashboard_scroller),
+                                       &horizontal, &vertical);
+    t_ok("Scrolled dashboard permits shrinking and safe overflow",
+         GTK_IS_SCROLLED_WINDOW(dashboard_scroller) &&
+         horizontal == GTK_POLICY_AUTOMATIC && vertical == GTK_POLICY_AUTOMATIC);
 
-    t_eq_int("1040px window uses multiple dashboard columns",
-             wozt_dashboard_layout_for_width(1040), 1);
-    t_eq_int("1650px window uses side-by-side controller sections",
-             wozt_dashboard_layout_for_width(1650), 2);
-    t_eq_int("2200px window uses three dashboard columns",
-             wozt_dashboard_layout_for_width(2200), 3);
+    /* Each functional row picks its own capacity; no shared grid columns. */
+    t_eq_int("720px: overview and clients stack",
+             wozt_dashboard_group_columns(720, 0), 1);
+    t_eq_int("1144px: overview and clients fit on one line",
+             wozt_dashboard_group_columns(1144, 0), 2);
+    t_eq_int("1144px: controller panels remain full width",
+             wozt_dashboard_group_columns(1144, 1), 1);
+    t_eq_int("1650px: controller sections share one line",
+             wozt_dashboard_group_columns(1650, 1), 2);
+    t_eq_int("1650px: all four small sections share one line",
+             wozt_dashboard_group_columns(1650, 2), 4);
+    t_eq_int("2200px: four small sections remain in one line",
+             wozt_dashboard_group_columns(2200, 2), 4);
+    t_ok("Dashboard is a vertical container of independent rows",
+         GTK_IS_BOX(g_c.wozt_dashboard) &&
+         gtk_orientable_get_orientation(GTK_ORIENTABLE(g_c.wozt_dashboard)) ==
+             GTK_ORIENTATION_VERTICAL);
     GtkWidget *small_brand = sh->settings_window
         ? g_object_get_data(G_OBJECT(sh->settings_window), "wozt-brand-icon") : NULL;
     GdkPixbuf *brand_pixbuf = small_brand && GTK_IS_IMAGE(small_brand)
@@ -461,18 +494,34 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          input_right_grid && GTK_IS_GRID(input_right_grid) &&
          g_c.gamepad_device &&
          input_right_grid != gtk_widget_get_parent(g_c.gamepad_device));
-    wozt_dashboard_reflow(1);
-    if (g_c.wozt_dashboard && g_c.wozt_sections[1]) {
-        gint clients_col = -1, output_span = 0;
-        gtk_container_child_get(GTK_CONTAINER(g_c.wozt_dashboard), g_c.wozt_sections[1],
-                                "left-attach", &clients_col, NULL);
-        gtk_container_child_get(GTK_CONTAINER(g_c.wozt_dashboard), g_c.wozt_sections[2],
-                                "width", &output_span, NULL);
-        t_eq_int("Clients is in the second dashboard column", clients_col, 1);
-        t_eq_int("Controller output spans both columns at 1040px", output_span, 2);
-    }
-    wozt_dashboard_reflow(wozt_dashboard_layout_for_width(
-        gtk_widget_get_allocated_width(sh->settings_window)));
+    wozt_dashboard_reflow(1650);
+    t_ok("Overview and Clients share an independent row at 1650px",
+         gtk_widget_get_parent(g_c.wozt_sections[0]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[1]));
+    t_ok("Controller panels share their own row at 1650px",
+         gtk_widget_get_parent(g_c.wozt_sections[2]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[3]));
+    t_ok("Four small sections occupy the same row at 1650px",
+         gtk_widget_get_parent(g_c.wozt_sections[4]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[5]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[5]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[6]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[6]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[7]));
+    t_ok("The three functional rows have distinct parents",
+         gtk_widget_get_parent(g_c.wozt_sections[0]) !=
+             gtk_widget_get_parent(g_c.wozt_sections[2]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[2]) !=
+             gtk_widget_get_parent(g_c.wozt_sections[4]));
+    wozt_dashboard_reflow(720);
+    t_ok("A narrow window wraps the controller panels into separate rows",
+         gtk_widget_get_parent(g_c.wozt_sections[2]) !=
+             gtk_widget_get_parent(g_c.wozt_sections[3]));
+    wozt_dashboard_reflow(1144);
+    t_ok("Default width keeps Overview and Clients together",
+         gtk_widget_get_parent(g_c.wozt_sections[0]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[1]));
+    wozt_dashboard_reflow(gtk_widget_get_allocated_width(sh->settings_window));
 
     /* Real live-theme and localization checks, also on the GTK thread.
      * Restore the initial theme/language without touching persistent .env. */

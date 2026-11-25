@@ -188,52 +188,90 @@ static Controls g_c;
 
 /* WOZT GTK Standard: responsive sections, live themes/languages and custom
  * window chrome. Only this GTK thread touches the widget hierarchy. */
-/* Layout 1 starts around a 900px window, not 1260px: this was the reason
- * ordinary laptop-sized windows never left the single-column layout.
- * Wider controller sections span both columns when their internal stick
- * calibration is arranged in pairs. */
-static int wozt_dashboard_layout_for_width(int width)
+/* WOZT_0831_INDEPENDENT_ROWS
+ * Three logical GROUPS with independent horizontal ROWS:
+ *   Overview + Clients; the two controller panels; and four small tools.
+ * Unlike GtkGrid, a tall section in one row never stretches or positions
+ * any section in another row. Widths are packed greedily per group, using
+ * useful control widths instead of hard-coded 1/2/3/4 global grid modes.
+ * These are target widths, NOT GTK minimum size requests. The scroller can
+ * always contract, and all widgets remain available at narrow widths. */
+static const int wozt_group_first[3] = {0, 2, 4};
+static const int wozt_group_size[3] = {2, 2, 4};
+static const int wozt_section_target_width[8] = {
+    260, 565,   /* Overview, Clients notebook */
+    760, 760,   /* Controller output, Local input */
+    225, 330, 365, 325 /* Capture, Monitor, Reset, Maintenance */
+};
+
+static int wozt_dashboard_group_columns(int width, int group)
 {
-    if (width >= 2080) return 3;
-    if (width >= 1460) return 2;
-    if (width >= 900) return 1;
-    return 0;
+    if (group < 0 || group >= 3) return 1;
+    const int space = MAX(180, width - 30);
+    const int first = wozt_group_first[group];
+    const int count = wozt_group_size[group];
+    int total = 0, packed = 0;
+    for (int i = 0; i < count; ++i) {
+        const int need = wozt_section_target_width[first + i] + (i ? 6 : 0);
+        if (packed && total + need > space) break;
+        total += need;
+        ++packed;
+    }
+    return MAX(1, packed);
 }
 
-static void wozt_dashboard_reflow(int layout)
+static int wozt_dashboard_signature(int width)
 {
-    if (!g_c.wozt_dashboard || g_c.wozt_section_count != 8 ||
-        g_c.wozt_layout_mode == layout) return;
-    GtkWidget *grid = g_c.wozt_dashboard;
+    /* Reparent only when the number of sections in a logical row changes.
+     * Continuous resize between those points stays smooth and cheap. */
+    return wozt_dashboard_group_columns(width, 0)
+         + 10 * wozt_dashboard_group_columns(width, 1)
+         + 100 * wozt_dashboard_group_columns(width, 2);
+}
+
+static void wozt_dashboard_reflow(int width)
+{
+    if (!GTK_IS_BOX(g_c.wozt_dashboard) || g_c.wozt_section_count != 8) return;
+    const int signature = wozt_dashboard_signature(width);
+    if (signature == g_c.wozt_layout_mode) return;
+    GtkWidget *dashboard = g_c.wozt_dashboard;
+
+    /* Take one reference per section before detaching. No callbacks, controls,
+     * settings or views are recreated during a responsive transition. */
     for (int i = 0; i < 8; ++i) {
         g_object_ref(g_c.wozt_sections[i]);
-        gtk_container_remove(GTK_CONTAINER(grid), g_c.wozt_sections[i]);
+        GtkWidget *parent = gtk_widget_get_parent(g_c.wozt_sections[i]);
+        if (GTK_IS_CONTAINER(parent))
+            gtk_container_remove(GTK_CONTAINER(parent), g_c.wozt_sections[i]);
     }
-    for (int i = 0; i < 8; ++i) {
-        int column = 0, row = i, span = 1;
-        if (layout == 1) {
-            /* 2 columns at 1040px; calibration panels are full-width,
-             * allowing their internal left/right controls to sit together. */
-            static const int xs[8] = {0, 1, 0, 0, 0, 1, 0, 1};
-            static const int ys[8] = {0, 0, 1, 2, 3, 3, 4, 4};
-            column = xs[i]; row = ys[i];
-            if (i == 2 || i == 3) span = 2;
-        } else if (layout == 2) {
-            /* Room for two entire controller panels side by side. */
-            column = i % 2;
-            row = i / 2;
-        } else if (layout == 3) {
-            /* Three sections per row on ultra-wide desktops. */
-            static const int xs[8] = {0, 1, 0, 1, 2, 0, 1, 2};
-            static const int ys[8] = {0, 0, 1, 1, 1, 2, 2, 2};
-            column = xs[i]; row = ys[i];
-            if (i == 1) span = 2;
+    /* Old independent line containers are now empty. When the first layout
+     * is applied, the dashboard instead contains direct child frames. */
+    GList *old_rows = gtk_container_get_children(GTK_CONTAINER(dashboard));
+    for (GList *it = old_rows; it; it = it->next)
+        gtk_container_remove(GTK_CONTAINER(dashboard), GTK_WIDGET(it->data));
+    g_list_free(old_rows);
+
+    for (int group = 0; group < 3; ++group) {
+        const int first = wozt_group_first[group];
+        const int count = wozt_group_size[group];
+        const int capacity = wozt_dashboard_group_columns(width, group);
+        for (int offset = 0; offset < count; offset += capacity) {
+            const int n = MIN(capacity, count - offset);
+            GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+            gtk_widget_set_hexpand(line, TRUE);
+            gtk_box_pack_start(GTK_BOX(dashboard), line, FALSE, FALSE, 0);
+            for (int j = 0; j < n; ++j) {
+                GtkWidget *frame = g_c.wozt_sections[first + offset + j];
+                gtk_widget_set_halign(frame, GTK_ALIGN_FILL);
+                gtk_widget_set_hexpand(frame, TRUE);
+                gtk_box_pack_start(GTK_BOX(line), frame, TRUE, TRUE, 0);
+                gtk_widget_show(frame);
+            }
+            gtk_widget_show(line);
         }
-        gtk_grid_attach(GTK_GRID(grid), g_c.wozt_sections[i], column, row, span, 1);
-        gtk_widget_show(g_c.wozt_sections[i]);
-        g_object_unref(g_c.wozt_sections[i]);
     }
-    g_c.wozt_layout_mode = layout;
+    for (int i = 0; i < 8; ++i) g_object_unref(g_c.wozt_sections[i]);
+    g_c.wozt_layout_mode = signature;
 }
 
 static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *event,
@@ -241,9 +279,12 @@ static gboolean wozt_window_configured(GtkWidget *widget, GdkEventConfigure *eve
 {
     (void)widget;
     (void)userdata;
-    wozt_dashboard_reflow(wozt_dashboard_layout_for_width(event->width));
-    /* Keep the inner columns readable on narrow/tiled windows. */
-    GtkOrientation direction = event->width >= 1050
+    const int width = event->width;
+    wozt_dashboard_reflow(width);
+    /* The three internal controller columns fit when they have the full row.
+     * If both controllers share a row, base orientation on HALF the space. */
+    const int controller_width = width / wozt_dashboard_group_columns(width, 1);
+    GtkOrientation direction = controller_width >= 880
         ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL;
     if (g_c.wozt_inner_output)
         gtk_orientable_set_orientation(GTK_ORIENTABLE(g_c.wozt_inner_output), direction);
@@ -2836,8 +2877,13 @@ static GtkWidget *add_row(GtkWidget *grid, int row, const char *label, GtkWidget
     }
     GtkWidget *l = gtk_label_new(label);
     gtk_widget_set_halign(l, GTK_ALIGN_START);
-    gtk_label_set_line_wrap(GTK_LABEL(l), TRUE);
-    gtk_label_set_max_width_chars(GTK_LABEL(l), 20);
+    /* Never increase row/button height because a field title wrapped.
+     * Full names remain accessible and translated in the tooltip. */
+    gtk_label_set_line_wrap(GTK_LABEL(l), FALSE);
+    gtk_label_set_single_line_mode(GTK_LABEL(l), TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(l), PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars(GTK_LABEL(l), 18);
+    if (label && *label) gtk_widget_set_tooltip_text(l, label);
     gtk_grid_attach(GTK_GRID(grid), l, 0, row, 1, 1);
 
     gtk_widget_set_hexpand(control, FALSE);
@@ -2950,6 +2996,36 @@ static void wozt_split_stick_calibration(GtkWidget *calibration, gboolean output
     };
     for (guint i = 0; i < G_N_ELEMENTS(fields); ++i)
         wozt_move_calibration_row(calibration, right, fields[i], (int)i);
+}
+
+/* WOZT_0831_COMPACT_BUTTONS
+ * GtkButton labels stay at their existing font size. Ellipsizing their
+ * width instead of wrapping avoids double-height actions on a narrow row.
+ * If a button had no tooltip, preserve its full original label there. */
+static void wozt_compact_action_labels(GtkWidget *widget)
+{
+    if (GTK_IS_BUTTON(widget) && GTK_IS_BIN(widget)) {
+        GtkWidget *child = gtk_bin_get_child(GTK_BIN(widget));
+        if (GTK_IS_LABEL(child)) {
+            const char *original = gtk_label_get_text(GTK_LABEL(child));
+            if (original && *original) {
+                gchar *existing = gtk_widget_get_tooltip_text(widget);
+                if (!existing || !*existing)
+                    gtk_widget_set_tooltip_text(widget, original);
+                g_free(existing);
+                gtk_label_set_line_wrap(GTK_LABEL(child), FALSE);
+                gtk_label_set_single_line_mode(GTK_LABEL(child), TRUE);
+                gtk_label_set_ellipsize(GTK_LABEL(child), PANGO_ELLIPSIZE_END);
+                gtk_label_set_max_width_chars(GTK_LABEL(child), 18);
+            }
+        }
+    }
+    if (GTK_IS_CONTAINER(widget)) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(widget));
+        for (GList *it = children; it; it = it->next)
+            wozt_compact_action_labels(GTK_WIDGET(it->data));
+        g_list_free(children);
+    }
 }
 
 static GtkWidget *make_scale(GtkShell *shell, int lo, int hi, int step, const char *suffix) {
@@ -3067,7 +3143,9 @@ static GtkWidget *make_stack_page(
     gtk_grid_set_column_spacing(GTK_GRID(grid), 5);
     gtk_box_pack_start(GTK_BOX(outer), grid, FALSE, FALSE, 0);
     if (index < 8) g_c.wozt_sections[index] = frame;
-    gtk_grid_attach(GTK_GRID(dashboard), frame, 0, index, 1, 1);
+    /* Temporarily append the frame. The first configure event moves it
+     * into an independent horizontal row, without changing widget identity. */
+    gtk_box_pack_start(GTK_BOX(dashboard), frame, FALSE, FALSE, 0);
     *grid_out = grid;
     return frame;
 }
@@ -3277,8 +3355,10 @@ static void build_settings_window(GtkShell *shell) {
      */
     gtk_window_set_default_size(GTK_WINDOW(win), 1144, 840);
     GdkGeometry geometry = {0};
-    geometry.min_width = 820;
-    geometry.min_height = 540;
+    /* Actual minimum, not the natural width of the nested controller grids.
+     * Main scroll view handles any temporary overflow while resizing. */
+    geometry.min_width = 600;
+    geometry.min_height = 420;
     gtk_window_set_geometry_hints(GTK_WINDOW(win), win, &geometry, GDK_HINT_MIN_SIZE);
     g_signal_connect(
         win,
@@ -3372,17 +3452,20 @@ static void build_settings_window(GtkShell *shell) {
     gtk_box_pack_start(GTK_BOX(header), close_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), header, FALSE, FALSE, 0);
 
-    /* One vertically scrollable dashboard. No left navigation and no
-     * horizontal scroll; only the Clients section has an inner notebook. */
+    /* Responsive independently-packed horizontal lines, not a GtkGrid.
+     * AUTOMATIC horizontal overflow matters: GTK must never prevent the
+     * user shrinking the window because a translated button is too wide.
+     * Narrow layouts remain usable through scrolling while lines reflow. */
     GtkWidget *body = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(body),
-                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(body), 0);
+    gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(body), FALSE);
+    gtk_widget_set_size_request(body, 1, 1);
     gtk_style_context_add_class(gtk_widget_get_style_context(body), "wozt-dashboard");
     gtk_box_pack_start(GTK_BOX(root), body, TRUE, TRUE, 0);
-    GtkWidget *dashboard = gtk_grid_new();
+    GtkWidget *dashboard = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
     gtk_widget_set_hexpand(dashboard, TRUE);
-    gtk_grid_set_row_spacing(GTK_GRID(dashboard), 5);
-    gtk_grid_set_column_spacing(GTK_GRID(dashboard), 5);
     gtk_widget_set_margin_start(dashboard, 6);
     gtk_widget_set_margin_end(dashboard, 6);
     gtk_widget_set_margin_top(dashboard, 5);
@@ -5192,6 +5275,7 @@ static void build_settings_window(GtkShell *shell) {
 
     set_window_icon(win);
     shell->settings_window = win;
+    wozt_compact_action_labels(dashboard);
 
     load_controls(shell);
     shell->loading = 1;
