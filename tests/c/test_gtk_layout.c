@@ -700,9 +700,14 @@ static gboolean gtk_layout_probe_initial(gpointer user_data)
          g_c.gamepad_device &&
          input_right_grid != gtk_widget_get_parent(g_c.gamepad_device));
     wozt_dashboard_reflow(1650);
-    t_ok("Output stays naturally narrow only beside Local input",
+    /* Both controller panels now use natural widths when sharing a row.
+     * Neither should expand into the spare space; the responsive path
+     * still expands them when each occupies its own row (checked below). */
+    t_ok("Both controller panels stay naturally narrow when sharing a row",
          g_c.wozt_sections[2] && !gtk_widget_get_hexpand(g_c.wozt_sections[2]) &&
-         g_c.wozt_sections[3] && gtk_widget_get_hexpand(g_c.wozt_sections[3]));
+         g_c.wozt_sections[3] && !gtk_widget_get_hexpand(g_c.wozt_sections[3]) &&
+         gtk_widget_get_parent(g_c.wozt_sections[2]) ==
+             gtk_widget_get_parent(g_c.wozt_sections[3]));
     t_ok("Overview and Clients share an independent row at 1650px",
          gtk_widget_get_parent(g_c.wozt_sections[0]) ==
              gtk_widget_get_parent(g_c.wozt_sections[1]));
