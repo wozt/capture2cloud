@@ -271,12 +271,14 @@ static void wozt_dashboard_reflow(int width)
                  * Clients consumes extra horizontal space. This also works
                  * when Overview occupies a line on its own. */
                 const int section_index = first + offset + j;
-                /* Overview never stretches. Side-by-side controller frames
-                 * also use their NATURAL widths: the Local input grid must
-                 * not consume an empty strip on its right. When either
-                 * controller is alone on a row it still fills that row. */
+                /* Overview always stays compact. When the controllers
+                 * share a row, Output absorbs the spare width while Local
+                 * input keeps its natural width and compact contents. Thus
+                 * no empty strip remains OUTSIDE both frames and none is
+                 * introduced INSIDE Local input. When stacked, each section
+                 * fills its own row, as before. */
                 const gboolean natural = section_index == 0 ||
-                    ((section_index == 2 || section_index == 3) && n == 2);
+                    (section_index == 3 && n == 2);
                 gtk_widget_set_halign(frame,
                     natural ? GTK_ALIGN_START : GTK_ALIGN_FILL);
                 gtk_widget_set_hexpand(frame, !natural);
